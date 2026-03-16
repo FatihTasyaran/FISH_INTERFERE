@@ -4,11 +4,12 @@ FISH CLI — Command-line interface for FISH profiling tools.
 Invoked by the bash ros2 wrapper:
     ros2 run fish gpu              → list GPU processes
     ros2 run fish gpu list         → list GPU processes
-    ros2 run fish gpu relaunch     → manual kill and relaunch
-    ros2 run fish gpu daemon       → start background auto-relaunch daemon
+    ros2 run fish gpu relaunch     → manual kill and relaunch with nsys
+    ros2 run fish gpu daemon       → start background daemon
     ros2 run fish gpu daemon stop  → stop the daemon
     ros2 run fish gpu daemon status → check daemon status
     ros2 run fish gpu daemon fg    → run daemon in foreground (debug)
+    ros2 run fish gpu nodes        → list all ROS 2 nodes (GPU + CPU)
 """
 
 import sys
@@ -23,15 +24,24 @@ from fish.gpu import (
     stop_daemon,
     FishLogger,
 )
+from fish.perf import (
+    display_ros2_processes,
+    scan_ros2_processes,
+)
 
 
 def cmd_gpu(args: list[str]) -> int:
-    """GPU profiling subcommand dispatcher."""
+    """GPU and profiling subcommand dispatcher."""
     subcmd = args[0] if args else "list"
 
     if subcmd == "list":
         processes = scan_gpu_processes()
         display_gpu_processes(processes)
+        return 0
+
+    elif subcmd == "nodes":
+        processes = scan_ros2_processes()
+        display_ros2_processes(processes)
         return 0
 
     elif subcmd == "relaunch":
@@ -85,7 +95,6 @@ def cmd_gpu(args: list[str]) -> int:
             nsys_proc.wait(timeout=10)
 
         print(f"[FISH] nsys exited with code {nsys_proc.returncode}")
-        print(f"[FISH] Traces in /tmp/fish_traces/")
         return nsys_proc.returncode or 0
 
     elif subcmd == "daemon":
@@ -98,7 +107,6 @@ def cmd_gpu(args: list[str]) -> int:
         elif daemon_cmd == "status":
             return daemon_status()
         elif daemon_cmd == "fg":
-            # Run in foreground for debugging
             print("[FISH] Running daemon in foreground (Ctrl+C to stop)")
             try:
                 daemon_loop()
@@ -112,7 +120,7 @@ def cmd_gpu(args: list[str]) -> int:
 
     else:
         print(f"[FISH] Unknown gpu subcommand: {subcmd}")
-        print("Available: list, relaunch, daemon")
+        print("Available: list, nodes, relaunch, daemon")
         return 1
 
 
@@ -123,8 +131,9 @@ def main() -> int:
         print()
         print("Commands:")
         print("  gpu list            — List GPU compute processes")
+        print("  gpu nodes           — List all ROS 2 nodes (GPU + CPU)")
         print("  gpu relaunch        — Manual kill and relaunch with nsys")
-        print("  gpu daemon          — Start auto-relaunch daemon")
+        print("  gpu daemon          — Start profiling daemon")
         print("  gpu daemon stop     — Stop the daemon")
         print("  gpu daemon status   — Check daemon status")
         print("  gpu daemon fg       — Run daemon in foreground (debug)")
