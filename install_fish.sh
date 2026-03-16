@@ -1,0 +1,225 @@
+#!/bin/bash
+# install_fish.sh — Installs the FISH profiling framework
+#
+# Components:
+#   1. ros2 wrapper (bash — intercepts ros2 run/launch for LTTng tracing)
+#   2. Trace session management (bash — LTTng start/stop/counter + GPU daemon)
+#   3. Python package (GPU detection, kill-relaunch, daemon, logging)
+#
+# Output structure per session:
+#   /tmp/fish_traces/<session_name>/
+#     ├── ros2/       — LTTng trace data (ros2_trace output)
+#     ├── nsys/       — Nsight Systems reports (.nsys-rep, .sqlite)
+#     └── fishlog/    — FISH event logs (kill/resurrect/detect events)
+#
+# Usage: source install_fish.sh
+
+FISH_ROOT=/opt/ros/humble/fish
+FISH_BIN=$FISH_ROOT/bin
+FISH_SCRIPTS=$FISH_ROOT/scripts
+FISH_PYTHON=$FISH_ROOT/python
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+mkdir -p $FISH_BIN $FISH_SCRIPTS $FISH_PYTHON/fish
+
+# --- Read events from fish_events.txt ---
+if [[ -f "$SCRIPT_DIR/fish_events.txt" ]]; then
+    EVENTS=$(grep -v '^#' "$SCRIPT_DIR/fish_events.txt" | grep -v '^$' | tr '\n' ' ')
+else
+    echo "[FISH] WARNING: fish_events.txt not found, using all events"
+    EVENTS=""
+fi
+
+# --- Copy Python package ---
+if [[ -d "$SCRIPT_DIR/python/fish" ]]; then
+    cp "$SCRIPT_DIR"/python/fish/*.py $FISH_PYTHON/fish/
+else
+    echo "[FISH] WARNING: python/fish/ not found, GPU features unavailable"
+fi
+
+# --- Generate trace session script (bash) ---
+cat > $FISH_SCRIPTS/trace_session.sh << TRACE_EOF
+#!/bin/bash
+# FISH trace session management (LTTng + GPU daemon)
+
+FISH_COUNTER=/tmp/fish_session_count
+FISH_SESSION_NAME_FILE=/tmp/fish_session_name
+FISH_SESSION_DIR_FILE=/tmp/fish_session_dir
+FISH_ROOT=/opt/ros/humble/fish
+FISH_PYTHON=\$FISH_ROOT/python
+REAL_ROS2=\$(which -a ros2 | grep -v /fish/bin | head -1)
+
+start_session() {
+    SESSION=\$(cat \$FISH_SESSION_NAME_FILE 2>/dev/null)
+    if [[ -z "\$SESSION" ]] || ! lttng list "\$SESSION" &>/dev/null; then
+        SESSION="fish_\$(date +%Y%m%d_%H%M%S)"
+        SESSION_DIR="/tmp/fish_traces/\$SESSION"
+        echo "\$SESSION" > \$FISH_SESSION_NAME_FILE
+        echo "\$SESSION_DIR" > \$FISH_SESSION_DIR_FILE
+
+        # Create structured output directories
+        mkdir -p "\$SESSION_DIR/ros2"
+        mkdir -p "\$SESSION_DIR/nsys"
+        mkdir -p "\$SESSION_DIR/fishlog"
+
+        echo "[FISH] Starting trace session: \$SESSION"
+        echo "[FISH] Output: \$SESSION_DIR/"
+        lttng-sessiond --daemonize 2>/dev/null
+
+        # LTTng trace writes to ros2/ subdirectory
+        (echo ""; sleep infinity) | \$REAL_ROS2 trace \\
+            --session-name "\$SESSION" \\
+            --path "\$SESSION_DIR/ros2" \\
+            -u $EVENTS &
+        echo \$! > /tmp/fish_trace_pid
+        sleep 2
+        echo "[FISH] Trace session started"
+
+        # Auto-start GPU daemon
+        PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.cli gpu daemon start 2>/dev/null
+    fi
+}
+
+stop_session() {
+    # Stop GPU daemon first
+    PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.cli gpu daemon stop 2>/dev/null
+
+    echo "[FISH] Stopping trace session..."
+    SESSION=\$(cat \$FISH_SESSION_NAME_FILE 2>/dev/null)
+    SESSION_DIR=\$(cat \$FISH_SESSION_DIR_FILE 2>/dev/null)
+    if [[ -n "\$SESSION" ]]; then
+        lttng stop "\$SESSION" 2>/dev/null
+        lttng destroy "\$SESSION" 2>/dev/null
+    fi
+    TPID=\$(cat /tmp/fish_trace_pid 2>/dev/null)
+    [[ -n "\$TPID" ]] && kill \$TPID 2>/dev/null
+    rm -f \$FISH_COUNTER \$FISH_SESSION_NAME_FILE \$FISH_SESSION_DIR_FILE /tmp/fish_trace_pid
+    if [[ -n "\$SESSION_DIR" ]]; then
+        echo "[FISH] Session stopped. Output: \$SESSION_DIR/"
+    else
+        echo "[FISH] Session stopped."
+    fi
+}
+
+get_status() {
+    COUNT=\$(cat \$FISH_COUNTER 2>/dev/null || echo 0)
+    SESSION=\$(cat \$FISH_SESSION_NAME_FILE 2>/dev/null || echo "none")
+    SESSION_DIR=\$(cat \$FISH_SESSION_DIR_FILE 2>/dev/null || echo "none")
+    if [[ "\$SESSION" != "none" ]] && lttng list "\$SESSION" &>/dev/null; then
+        echo "[FISH] Session '\$SESSION' active, \$COUNT node(s) tracked"
+        echo "[FISH] Output: \$SESSION_DIR/"
+    else
+        echo "[FISH] No active session"
+    fi
+    PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.cli gpu daemon status 2>/dev/null
+}
+
+increment_counter() {
+    COUNT=\$(cat \$FISH_COUNTER 2>/dev/null || echo 0)
+    echo \$((COUNT + 1)) > \$FISH_COUNTER
+    echo "[FISH] Node starting (\$((COUNT + 1)) active)"
+}
+
+decrement_counter() {
+    COUNT=\$(cat \$FISH_COUNTER 2>/dev/null || echo 1)
+    echo \$((COUNT - 1)) > \$FISH_COUNTER
+    if [[ \$((COUNT - 1)) -le 0 ]]; then
+        echo "[FISH] Last node exited, stopping trace session..."
+        stop_session
+        return 0
+    else
+        echo "[FISH] Node exited, \$((COUNT - 1)) still active"
+        return 1
+    fi
+}
+
+case "\$1" in
+    start)   start_session ;;
+    stop)    stop_session ;;
+    status)  get_status ;;
+    inc)     increment_counter ;;
+    dec)     decrement_counter ;;
+    *)       echo "Usage: trace_session.sh {start|stop|status|inc|dec}" ;;
+esac
+TRACE_EOF
+chmod +x $FISH_SCRIPTS/trace_session.sh
+
+# --- Generate ros2 wrapper (bash) ---
+cat > $FISH_BIN/ros2 << WRAPPER_EOF
+#!/bin/bash
+# FISH ros2 wrapper (generated by install_fish.sh)
+# Intercepts ros2 run/launch for automatic LTTng tracing.
+# Delegates GPU and analysis commands to Python.
+
+REAL_ROS2=\$(which -a ros2 | grep -v /fish/bin | head -1)
+FISH_ROOT=/opt/ros/humble/fish
+FISH_SCRIPTS=\$FISH_ROOT/scripts
+FISH_PYTHON=\$FISH_ROOT/python
+
+# --- FISH subcommands: ros2 run fish <cmd> ---
+if [[ "\$1" == "run" && "\$2" == "fish" ]]; then
+    case "\$3" in
+        stop)
+            \$FISH_SCRIPTS/trace_session.sh stop
+            exit 0
+            ;;
+        status)
+            \$FISH_SCRIPTS/trace_session.sh status
+            exit 0
+            ;;
+        gpu)
+            PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.cli gpu "\${@:4}"
+            exit \$?
+            ;;
+        "")
+            echo "Lurking in depths..."
+            exit 0
+            ;;
+        *)
+            echo "[FISH] Unknown command: \$3"
+            echo "Available: stop, status, gpu"
+            exit 1
+            ;;
+    esac
+fi
+
+# --- Automatic tracing when FISH_ENABLED=1 ---
+if [[ "\$FISH_ENABLED" == "1" && ("\$1" == "run" || "\$1" == "launch") ]]; then
+    \$FISH_SCRIPTS/trace_session.sh start
+    trap "\$FISH_SCRIPTS/trace_session.sh stop; exit 0" SIGTERM SIGINT
+    \$FISH_SCRIPTS/trace_session.sh inc
+
+    \$REAL_ROS2 "\$@" &
+    NODE_PID=\$!
+    wait \$NODE_PID 2>/dev/null
+    EXIT_CODE=\$?
+
+    \$FISH_SCRIPTS/trace_session.sh dec
+    exit \$EXIT_CODE
+fi
+
+# FISH disabled — pass through
+exec \$REAL_ROS2 "\$@"
+WRAPPER_EOF
+chmod +x $FISH_BIN/ros2
+
+# --- Set up PATH and PYTHONPATH ---
+export PATH=$FISH_BIN:$PATH
+grep -q "fish/bin" ~/.bashrc || echo "export PATH=$FISH_BIN:\$PATH" >> ~/.bashrc
+export PYTHONPATH=$FISH_PYTHON:$PYTHONPATH
+grep -q "fish/python" ~/.bashrc || echo "export PYTHONPATH=$FISH_PYTHON:\$PYTHONPATH" >> ~/.bashrc
+
+EVENT_COUNT=$(echo $EVENTS | wc -w)
+echo "[FISH] Setup complete ($EVENT_COUNT events, Python package installed)"
+echo "ros2 -> $(which ros2)"
+echo ""
+echo "Commands:"
+echo "  export FISH_ENABLED=1         # enable tracing"
+echo "  ros2 run <pkg> <node>         # auto-traced (daemon auto-starts)"
+echo "  ros2 launch <pkg> <file>      # auto-traced"
+echo "  ros2 run fish                 # wrapper test"
+echo "  ros2 run fish status          # session + daemon info"
+echo "  ros2 run fish stop            # stop everything"
+echo "  ros2 run fish gpu             # list GPU processes"
+echo "  ros2 run fish gpu relaunch    # manual kill + nsys relaunch"
+echo "  ros2 run fish gpu daemon fg   # run daemon in foreground (debug)"
