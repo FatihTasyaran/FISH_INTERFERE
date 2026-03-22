@@ -2,14 +2,13 @@
 FISH settings reader.
 
 Reads configuration from fish_settings.ini.
-Shared by all FISH Python modules (gpu, perf, cli).
+Shared by all FISH Python modules.
 """
 
 import configparser
 import os
 from pathlib import Path
 
-# Search paths for settings file, in priority order
 _SETTINGS_SEARCH_PATHS = [
     "/opt/ros/humble/fish/fish_settings.ini",
     os.path.expanduser("~/fish_interfere/fish_settings.ini"),
@@ -18,7 +17,6 @@ _SETTINGS_SEARCH_PATHS = [
 
 
 def _find_settings_file() -> str:
-    """Find the settings file from known locations."""
     for path in _SETTINGS_SEARCH_PATHS:
         if os.path.isfile(path):
             return path
@@ -26,19 +24,9 @@ def _find_settings_file() -> str:
 
 
 def load_settings() -> configparser.ConfigParser:
-    """
-    Load FISH settings from fish_settings.ini.
-    Returns a ConfigParser with defaults if file is not found.
-    """
     config = configparser.ConfigParser()
 
-    # Defaults
     config.read_dict({
-        "perf": {
-            "sampling_frequency": "10000",
-            "call_graph_method": "dwarf",
-            "auto_attach": "true",
-        },
         "nsys": {
             "trace": "cuda,nvtx",
             "cuda_memory_usage": "true",
@@ -67,5 +55,4 @@ def load_settings() -> configparser.ConfigParser:
     return config
 
 
-# Module-level singleton
 settings = load_settings()
