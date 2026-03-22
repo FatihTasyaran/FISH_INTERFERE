@@ -44,7 +44,7 @@ def load_settings() -> configparser.ConfigParser:
             "nsys_report_timeout": "120",
         },
         "trace": {
-            "output_dir": "/tmp/fish_traces",
+            "output_dir": "~/fish_traces",
         },
     })
 

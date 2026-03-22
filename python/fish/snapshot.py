@@ -41,7 +41,7 @@ def get_session_dir() -> str:
     try:
         return Path(FISH_SESSION_DIR_FILE).read_text().strip()
     except FileNotFoundError:
-        return "/tmp/fish_traces/unsorted"
+        return os.path.expanduser("~/fish_traces/unsorted")
 
 
 def get_snapshot_dir() -> str:

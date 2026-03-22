@@ -17,7 +17,7 @@ Daemon lifecycle:
   5. Shutdown → stop collectors → save hz → stop nsys (write reports)
 
 Output structure (per session):
-  /tmp/fish_traces/<session>/
+  ~/fish_traces/<session>/
     ├── ros2/       — LTTng trace (callback boundaries, executor, pub/sub)
     ├── nsys/       — nsys reports (GPU kernel chains, memory ops)
     ├── fishlog/    — FISH event logs (kill/resurrect timestamps)
@@ -76,7 +76,7 @@ def get_session_dir() -> str:
     try:
         return Path(FISH_SESSION_DIR_FILE).read_text().strip()
     except FileNotFoundError:
-        fallback = settings.get("trace", "output_dir") + "/unsorted"
+        fallback = os.path.expanduser(settings.get("trace", "output_dir")) + "/unsorted"
         os.makedirs(fallback, exist_ok=True)
         return fallback
 

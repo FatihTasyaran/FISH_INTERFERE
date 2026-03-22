@@ -9,7 +9,7 @@
 #   4. Settings file (fish_settings.ini)
 #
 # Output structure per session:
-#   /tmp/fish_traces/<session>/
+#   ~/fish_traces/<session>/
 #     ├── ros2/       — LTTng trace data (callback boundaries, executor, pub/sub)
 #     ├── nsys/       — Nsight Systems reports (GPU kernel chains, memory ops)
 #     ├── fishlog/    — FISH event logs (kill/resurrect timestamps)
@@ -63,7 +63,7 @@ start_session() {
     SESSION=\$(cat \$FISH_SESSION_NAME_FILE 2>/dev/null)
     if [[ -z "\$SESSION" ]] || ! lttng list "\$SESSION" &>/dev/null; then
         SESSION="fish_\$(date +%Y%m%d_%H%M%S)"
-        SESSION_DIR="/tmp/fish_traces/\$SESSION"
+        SESSION_DIR="\$HOME/fish_traces/\$SESSION"
         echo "\$SESSION" > \$FISH_SESSION_NAME_FILE
         echo "\$SESSION_DIR" > \$FISH_SESSION_DIR_FILE
 
