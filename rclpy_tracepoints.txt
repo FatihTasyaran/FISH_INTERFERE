@@ -1,0 +1,363 @@
+Custom LTTng Tracepoints for rclpy Callback Chain
+==================================================
+
+1. The Problem
+--------------
+rclpy (Python ROS 2 client) uses the rcl C library via pybind11 bindings.
+The rclcpp-level tracepoints are compiled into librclcpp.so and NEVER
+execute for Python nodes. This breaks the entire callback chain:
+
+  Missing for rclpy nodes:
+    rclcpp_subscription_init             — subscription object link
+    rclcpp_subscription_callback_added   — subscription → callback
+    rclcpp_service_callback_added        — service → callback
+    rclcpp_timer_callback_added          — timer → callback
+    rclcpp_timer_link_node               — timer → node
+    rclcpp_callback_register             — callback → symbol name
+    callback_start / callback_end        — runtime execution timing
+    rclcpp_executor_*                    — executor scheduling
+
+  Present for rclpy nodes (rcl level, fires from C library):
+    rcl_init, rcl_node_init              — node structure      ✓
+    rcl_subscription_init                — entity handle+topic ✓
+    rcl_service_init                     — entity handle+name  ✓
+    rcl_timer_init                       — entity handle+period✓
+    rcl_publisher_init                   — publisher handle    ✓
+    rcl_publish, rcl_take                — runtime messages    ✓
+
+Result: FISH can build Entity layer (L2) from rcl events, but Function
+layer (L3) is completely empty — no callback can be attributed.
+
+
+2. Verification from Trace Data
+-------------------------------
+Session: fish_20260322_212915
+Node: yolo_inference_node (PID 938, rclpy, procname=python3)
+
+  rcl_subscription_init events:    2  (including /clock)
+  rclcpp_subscription_init:        0
+  rclcpp_callback_register:        0
+  callback_start/end:              0
+  rclcpp_executor_*:               0
+
+  Total ros2_trace events PID 938: 388,431
+  All are rcl/rmw level. Zero rclcpp-level events.
+
+See case_of_non_rclcpp.txt for full analysis.
+
+
+3. Solution: 5 New rclpy Tracepoints
+-------------------------------------
+We add 5 new tracepoints that mirror the rclcpp chain but are designed
+to be called from Python via ctypes into libtracetools.so.
+
+  Naming: rclpy_* prefix (not rclcpp_) to distinguish origin.
+  Reason: rclpy callback "pointers" are Python id() values, not C++
+  object addresses. Separate events prevent confusion in analysis.
+
+  A. rclpy_subscription_callback_added
+     ──────────────────────────────────
+     When:    Subscription.__init__() in subscription.py
+     Args:    (subscription_handle, callback)
+              subscription_handle = sub.handle.pointer (rcl_subscription_t*)
+              callback = id(python_callback)
+     Purpose: Links rcl subscription handle directly to callback ID.
+              In rclcpp this is a 2-step chain (subscription_init →
+              subscription_callback_added). In rclpy we skip the
+              intermediate C++ wrapper since there's no intra-process
+              split — 1 subscription always maps to 1 callback.
+
+     Chain:
+       rcl_subscription_init.subscription_handle       (already in trace)
+         → rclpy_subscription_callback_added.subscription_handle  (same ptr)
+         → rclpy_subscription_callback_added.callback
+         → rclpy_callback_register.callback → symbol
+
+  B. rclpy_service_callback_added
+     ─────────────────────────────
+     When:    Service.__init__() in service.py
+     Args:    (service_handle, callback)
+              service_handle = srv.handle.pointer (rcl_service_t*)
+              callback = id(python_callback)
+     Purpose: Links rcl service handle to callback ID.
+
+  C. rclpy_timer_callback_added
+     ───────────────────────────
+     When:    Timer.__init__() in timer.py
+     Args:    (timer_handle, callback)
+              timer_handle = tmr.handle.pointer (rcl_timer_t*)
+              callback = id(python_callback)
+     Purpose: Links rcl timer handle to callback ID.
+
+  D. rclpy_timer_link_node
+     ──────────────────────
+     When:    Node.create_timer() in node.py, after Timer() construction
+     Args:    (timer_handle, node_handle)
+              timer_handle = tmr.handle.pointer
+              node_handle = self.handle.pointer (rcl_node_t*)
+     Purpose: Links timer to its parent node. In rclcpp this fires from
+              rclcpp::Node::create_wall_timer. In rclpy, timers are created
+              without an explicit node link — we add it in Node.create_timer().
+
+  E. rclpy_callback_register
+     ────────────────────────
+     When:    Alongside each _callback_added call
+     Args:    (callback, symbol)
+              callback = id(python_callback)
+              symbol = callback.__module__ + '.' + callback.__qualname__
+                       e.g. "yolo_node.YoloNode.on_image_callback"
+     Purpose: Maps callback ID to human-readable symbol string.
+              This is the rclpy equivalent of rclcpp_callback_register.
+              Using Python's __qualname__ gives the class and method name.
+
+  Reused (existing, no modification needed):
+  ──────────────────────────────────────────
+  F. callback_start(callback, is_intra_process=False)
+     When:    executors.py, before await_or_execute(entity.callback, ...)
+     Note:    is_intra_process is always False for rclpy.
+
+  G. callback_end(callback)
+     When:    executors.py, after await_or_execute returns
+
+
+4. Callback ID Strategy
+-----------------------
+In rclcpp, the "callback" field is a C++ object pointer (const void*).
+In rclpy, we use id(python_callback_function) which is the CPython
+memory address of the callable. This is:
+  - Unique per object (within its lifetime)
+  - Stable (doesn't change between calls)
+  - Castable to void* via ctypes for LTTng
+
+Since FISH only correlates callback values within the same PID and
+session, id() uniqueness is sufficient.
+
+
+5. Implementation: ctypes Bridge
+--------------------------------
+Python cannot call LTTng tracepoints directly. We call the exported
+C functions in libtracetools.so via ctypes.
+
+  Module: fish_rclpy_trace.py (installed alongside rclpy or via overlay)
+
+    import ctypes
+
+    _tracetools = ctypes.CDLL("libtracetools.so")
+
+    # New rclpy tracepoints
+    _tracetools.ros_trace_rclpy_subscription_callback_added.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p]
+    _tracetools.ros_trace_rclpy_subscription_callback_added.restype = None
+
+    _tracetools.ros_trace_rclpy_service_callback_added.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p]
+    _tracetools.ros_trace_rclpy_service_callback_added.restype = None
+
+    _tracetools.ros_trace_rclpy_timer_callback_added.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p]
+    _tracetools.ros_trace_rclpy_timer_callback_added.restype = None
+
+    _tracetools.ros_trace_rclpy_timer_link_node.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p]
+    _tracetools.ros_trace_rclpy_timer_link_node.restype = None
+
+    _tracetools.ros_trace_rclpy_callback_register.argtypes = [
+        ctypes.c_void_p, ctypes.c_char_p]
+    _tracetools.ros_trace_rclpy_callback_register.restype = None
+
+    # Existing tracepoints (reused)
+    _tracetools.ros_trace_callback_start.argtypes = [
+        ctypes.c_void_p, ctypes.c_bool]
+    _tracetools.ros_trace_callback_start.restype = None
+
+    _tracetools.ros_trace_callback_end.argtypes = [ctypes.c_void_p]
+    _tracetools.ros_trace_callback_end.restype = None
+
+    # Convenience wrappers
+    def trace_callback_added_sub(sub_handle_ptr, callback):
+        cb_id = ctypes.c_void_p(id(callback))
+        _tracetools.ros_trace_rclpy_subscription_callback_added(
+            ctypes.c_void_p(sub_handle_ptr), cb_id)
+        _register(callback, cb_id)
+
+    def trace_callback_added_srv(srv_handle_ptr, callback):
+        cb_id = ctypes.c_void_p(id(callback))
+        _tracetools.ros_trace_rclpy_service_callback_added(
+            ctypes.c_void_p(srv_handle_ptr), cb_id)
+        _register(callback, cb_id)
+
+    def trace_callback_added_tmr(tmr_handle_ptr, callback):
+        cb_id = ctypes.c_void_p(id(callback))
+        _tracetools.ros_trace_rclpy_timer_callback_added(
+            ctypes.c_void_p(tmr_handle_ptr), cb_id)
+        _register(callback, cb_id)
+
+    def trace_timer_link_node(tmr_handle_ptr, node_handle_ptr):
+        _tracetools.ros_trace_rclpy_timer_link_node(
+            ctypes.c_void_p(tmr_handle_ptr),
+            ctypes.c_void_p(node_handle_ptr))
+
+    def trace_callback_start(callback):
+        _tracetools.ros_trace_callback_start(
+            ctypes.c_void_p(id(callback)), False)
+
+    def trace_callback_end(callback):
+        _tracetools.ros_trace_callback_end(
+            ctypes.c_void_p(id(callback)))
+
+    def _register(callback, cb_id):
+        sym = getattr(callback, '__qualname__', None)
+        mod = getattr(callback, '__module__', None)
+        if sym and mod:
+            symbol = f"{mod}.{sym}"
+        elif sym:
+            symbol = sym
+        else:
+            symbol = repr(callback)
+        _tracetools.ros_trace_rclpy_callback_register(
+            cb_id, symbol.encode('utf-8'))
+
+
+6. Instrumentation Points (rclpy Source)
+----------------------------------------
+5 files modified:
+
+  A. subscription.py — Subscription.__init__()
+     After self.callback = callback:
+       from fish_rclpy_trace import trace_callback_added_sub
+       trace_callback_added_sub(self.handle.pointer, self.callback)
+
+  B. service.py — Service.__init__()
+     After self.callback = callback:
+       from fish_rclpy_trace import trace_callback_added_srv
+       trace_callback_added_srv(self.handle.pointer, self.callback)
+
+  C. timer.py — Timer.__init__()
+     After self.callback = callback:
+       from fish_rclpy_trace import trace_callback_added_tmr
+       trace_callback_added_tmr(self.handle.pointer, self.callback)
+
+  D. node.py — Node.create_timer(), after timer = Timer(...)
+       from fish_rclpy_trace import trace_timer_link_node
+       trace_timer_link_node(timer.handle.pointer, self.handle.pointer)
+
+  E. executors.py — _execute_subscription(), _execute_timer(), _execute_service()
+     Wrap callback invocations with callback_start/end:
+
+     Before:
+       async def _execute_subscription(self, sub, msg):
+           if msg:
+               await await_or_execute(sub.callback, msg)
+
+     After:
+       async def _execute_subscription(self, sub, msg):
+           if msg:
+               trace_callback_start(sub.callback)
+               try:
+                   await await_or_execute(sub.callback, msg)
+               finally:
+                   trace_callback_end(sub.callback)
+
+     Same pattern for _execute_timer and _execute_service.
+
+
+7. How This Fixes the FISH Model
+---------------------------------
+Before (current state):
+
+  Entity (sub: /clock on yolo_inference_node)
+    → Function: EMPTY
+
+  identify_callbacks() tries:
+    rcl_subscription_init(sub_handle for /clock)
+      → rclcpp_subscription_init(sub_handle → ?)  ← NOT FOUND (rclpy node)
+  Chain breaks.
+
+After (with new tracepoints):
+
+  Entity (sub: /clock on yolo_inference_node)
+    → Function: yolo_node.YoloNode.on_clock
+
+  identify_callbacks() new rclpy path:
+    rcl_subscription_init(sub_handle for /clock)
+      → rclpy_subscription_callback_added(sub_handle → callback_id)
+      → rclpy_callback_register(callback_id → "yolo_node.YoloNode.on_clock")
+  Chain complete.
+
+  At runtime:
+    callback_start(callback_id) fires with timestamp, vpid, vtid
+    FISH maps callback_id → entity via rclpy_subscription_callback_added
+    Result: each Python callback is timed and attributed.
+
+
+8. Implementation Files
+-----------------------
+tracetools overlay (C — extends install.sh):
+  tp_call.h     — 5 new TRACEPOINT_EVENT definitions
+  tracetools.h  — 5 new DECLARE_TRACEPOINT declarations
+  tracetools.c  — 5 new void TRACEPOINT() implementations
+
+Python bridge + rclpy patches:
+  fish_rclpy_trace.py  — ctypes wrapper module (new file)
+  subscription.py      — 2 lines added in __init__
+  service.py           — 2 lines added in __init__
+  timer.py             — 2 lines added in __init__
+  node.py              — 2 lines added in create_timer
+  executors.py         — 6 lines added (start/end around 3 _execute_* methods)
+
+tracetools_trace:
+  names.py             — 5 new event strings in DEFAULT_EVENTS_ROS
+
+Build: extend fish_tracepoints/install.sh to also:
+  1. Add rclpy tracepoint definitions to tracetools overlay
+  2. Rebuild tracetools
+  3. Install fish_rclpy_trace.py to rclpy package directory
+  4. Patch rclpy .py files (subscription, service, timer, node, executors)
+  5. Update names.py
+
+
+9. Handle Pointer Access from Python
+-------------------------------------
+rclpy wraps rcl handles in pybind11 objects. The .pointer property
+gives the raw C pointer address as a Python int:
+
+  sub.handle.pointer   → int, same as rcl_subscription_init's subscription_handle
+  tmr.handle.pointer   → int, same as rcl_timer_init's timer_handle
+  srv.handle.pointer   → int, same as rcl_service_init's service_handle
+  node.handle.pointer  → int, same as rcl_node_init's node_handle
+
+Verified via executors.py source:
+  if sub.handle.pointer in subs_ready:   (line 687)
+  if tmr.handle.pointer in timers_ready: (line 677)
+  if srv.handle.pointer in services_ready: (line 712)
+
+These are the SAME pointer values that appear in rcl_*_init trace events,
+so our tracepoints link directly to existing rcl events without any
+additional mapping.
+
+
+10. Open Questions
+------------------
+  - Should we lazy-import fish_rclpy_trace to avoid import overhead when
+    tracing is disabled? Use try/except ImportError with a no-op fallback.
+
+  - Should we use the .handle property's __enter__/__exit__ context
+    manager when reading .pointer? The existing executor code doesn't
+    seem to need it for pointer reads (only for mutating operations).
+
+  - The await_or_execute() function handles both sync and async callbacks.
+    callback_start fires before, callback_end fires in finally block.
+    For async callbacks that yield, the wall-clock duration may include
+    awaiting other coroutines. Is this acceptable, or should we track
+    "active" time only? (For BCET/WCET analysis, wall-clock is correct.)
+
+  - id(callback) reuse: CPython can reuse memory addresses after GC.
+    Within a single session, if a subscription is destroyed and recreated,
+    the new callback could get the same id(). This is unlikely in
+    long-running nodes but worth noting. The structural events
+    (rclpy_*_callback_added) fire once per creation, so the latest
+    one wins.
+
+  - Should we upstream to rclpy? The ros2_tracing project has an open
+    issue about rclpy tracing support. Our approach (ctypes → tracetools)
+    could be the basis for an upstream PR.

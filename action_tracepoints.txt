@@ -1,0 +1,264 @@
+Custom LTTng Tracepoints for ROS 2 Action Server Dispatch
+==========================================================
+
+1. The Problem
+--------------
+ROS 2 action servers are built on top of 3 services + 2 publishers,
+but their callback dispatch bypasses the standard rclcpp tracepoint
+chain entirely. This makes action callbacks invisible to ros2_tracing.
+
+Standard rclcpp callback chain (works for sub, serv, tmr):
+
+  rcl_subscription_init / rcl_service_init
+    → rclcpp_subscription_init / (no rclcpp equivalent for services directly)
+      → rclcpp_subscription_callback_added / rclcpp_service_callback_added
+        → rclcpp_callback_register(callback_ptr, symbol)
+          → callback_start(callback_ptr) / callback_end(callback_ptr)
+
+For regular services, the executor calls the service callback via
+rclcpp::ServiceBase::handle_request(), which triggers callback_start
+and callback_end tracepoints around the user's callback.
+
+Action server dispatch chain (NO tracepoints fire):
+
+  Executor calls ServerBase::execute(data)
+    → std::visit dispatches based on data type:
+        GoalRequestData    → execute_goal_request_received()
+        CancelRequestData  → execute_cancel_request_received()
+        ResultRequestData  → execute_result_request_received()
+        GoalExpiredData    → execute_check_expired_goals()
+
+  ServerBase inherits from rclcpp::Waitable, NOT from rclcpp::ServiceBase.
+  The Waitable interface has its own execute() path that does not go
+  through the ServiceBase callback machinery. Therefore:
+
+    - rclcpp_service_callback_added   → NEVER fires for action services
+    - rclcpp_callback_register        → NEVER fires for action callbacks
+    - callback_start / callback_end   → NEVER fires for action dispatch
+
+  The 3 services ARE created via rcl_service_init (so the service handles
+  exist in the trace), but from that point onward the chain is broken.
+
+
+2. Verification from Trace Data
+-------------------------------
+Session: fish_20260322_212915
+Node: /Drone1/px4_interface (PID 709, node_handle 0x633CE9FE3BB0)
+Actions: land_action, takeoff_action, offboard_action, orbit_action
+
+  rcl_service_init events for action services:     12 (3 per action × 4 actions)
+  rclcpp_service_callback_added for those handles:   0
+  rclcpp_callback_register for those callbacks:      0
+  callback_start/end for those callbacks:            0
+
+  Total rclcpp_callback_register on PID 709:        18
+  All 18 accounted for:  6 subscriptions + 6 regular services + 6 timers
+  None belong to action dispatch.
+
+  Result: 12 action component service entities exist as graph vertices,
+  but their Function (L3) layer is empty — no callback can be attributed.
+  identify_callbacks() in model.py correctly reports:
+    "action component services (rclcpp_action internal dispatch, no tracepoint): 12 entities"
+
+
+3. Root Cause in Source Code
+----------------------------
+File: rclcpp/rclcpp_action/src/server.cpp
+
+ServerBase inherits from rclcpp::Waitable (line from server.hpp):
+
+  class ServerBase : public rclcpp::Waitable
+
+The Waitable interface defines: is_ready(), take_data(), execute().
+The executor calls these directly, bypassing ServiceBase::handle_request()
+where callback_start/end would normally be triggered.
+
+ServerBase::execute() (line 364-389 in server.cpp):
+
+  void ServerBase::execute(std::shared_ptr<void> & data_in) {
+    std::shared_ptr<ServerBaseData> data_ptr = ...;
+    std::visit(
+      [&](auto && data) -> void {
+        using T = std::decay_t<decltype(data)>;
+        if constexpr (std::is_same_v<T, GoalRequestData>)
+          execute_goal_request_received(data_in);     // ← no tracepoint
+        if constexpr (std::is_same_v<T, CancelRequestData>)
+          execute_cancel_request_received(data_in);   // ← no tracepoint
+        if constexpr (std::is_same_v<T, ResultRequestData>)
+          execute_result_request_received(data_in);   // ← no tracepoint
+        if constexpr (std::is_same_v<T, GoalExpiredData>)
+          execute_check_expired_goals();              // ← no tracepoint
+      },
+      data_ptr->data);
+  }
+
+Each execute_* function then:
+  1. Unpacks the request data
+  2. Calls the user's callback (e.g., call_handle_goal_callback)
+  3. Sends the response via rcl_action_send_goal_response()
+  4. Returns
+
+None of these steps trigger any LTTng tracepoint.
+
+The action_server handle (rcl_action_server_t*) is stored at:
+  pimpl_->action_server_.get()
+
+It is initialized in the constructor (line 158):
+  rcl_action_server_init(
+    pimpl_->action_server_.get(), rcl_node, rcl_clock,
+    type_support, name.c_str(), &options);
+
+
+4. Solution: 4 New Tracepoints
+------------------------------
+We add 4 tracepoints to complete the dispatch chain:
+
+  A. rclcpp_action_server_init
+     ─────────────────────────
+     When:   ServerBase constructor, after rcl_action_server_init() succeeds
+     Args:   (action_server_handle, action_name,
+              goal_service_handle, cancel_service_handle, result_service_handle)
+     Purpose: One-time structural mapping. Links the action server handle
+              to its name and component service handles. This allows
+              correlating dispatch tracepoints back to the action name
+              and to the rcl_service_init events already in the trace.
+
+     Linking chain this enables:
+       rclcpp_action_server_init.action_server_handle
+         → rclcpp_action_execute_goal.action_server_handle  (same pointer)
+       rclcpp_action_server_init.goal_service_handle
+         → rcl_service_init.service_handle                  (existing event)
+         → service_name (e.g., /Drone1/land_action/_action/send_goal)
+         → action_name  (strip /_action/send_goal suffix)
+
+  B. rclcpp_action_execute_goal
+     ──────────────────────────
+     When:   Entry of execute_goal_request_received()
+     Args:   (action_server_handle)
+     Purpose: Marks the start of goal request processing.
+              Paired with an existing or new end tracepoint for duration.
+
+  C. rclcpp_action_execute_cancel
+     ────────────────────────────
+     When:   Entry of execute_cancel_request_received()
+     Args:   (action_server_handle)
+     Purpose: Marks cancel request processing.
+
+  D. rclcpp_action_execute_result
+     ────────────────────────────
+     When:   Entry of execute_result_request_received()
+     Args:   (action_server_handle)
+     Purpose: Marks result request processing.
+
+
+5. How This Fixes the FISH Model
+--------------------------------
+Before (current state):
+
+  Entity (act: /Drone1/land_action)
+    → component entity (serv: send_goal)   → Function: EMPTY (no callback)
+    → component entity (serv: cancel_goal) → Function: EMPTY
+    → component entity (serv: get_result)  → Function: EMPTY
+
+  identify_callbacks() looks up:
+    rcl_service_init(service_handle for send_goal)
+      → rclcpp_service_callback_added(service_handle → callback)  ← NOT FOUND
+  Chain breaks. No Function vertex created.
+
+After (with new tracepoints):
+
+  Entity (act: /Drone1/land_action)
+    → component entity (serv: send_goal)   → Function: execute_goal
+    → component entity (serv: cancel_goal) → Function: execute_cancel
+    → component entity (serv: get_result)  → Function: execute_result
+
+  identify_callbacks() new path:
+    rcl_service_init(service_handle for send_goal)
+      → rclcpp_action_server_init(action_handle, ..., goal_service_handle=service_handle, ...)
+      → rclcpp_action_execute_goal(action_handle)  ← FOUND
+  Chain complete. Function vertex created with symbol from action_server_handle mapping.
+
+  At runtime:
+    rclcpp_action_execute_goal(action_handle) fires with timestamp, vpid, vtid.
+    FISH maps action_handle → action_name via rclcpp_action_server_init.
+    FISH maps action_handle → component service entity via goal_service_handle.
+    Result: each action dispatch is attributed to the correct entity and action.
+
+  This also enables:
+    - Action-level timing: duration from execute_goal to response
+    - Action callback workload profiling: how often each dispatch type fires
+    - Complete L3 (Function) layer for action entities
+    - rcl_publish characterization: publishes during action dispatch
+      can be attributed to the specific action callback
+
+
+6. Implementation Files
+-----------------------
+4 files modified, ~60 lines total:
+
+  tracetools/include/tracetools/tp_call.h
+    Add 4 TRACEPOINT_EVENT definitions
+
+  tracetools/include/tracetools/tracetools.h
+    Add 4 DECLARE_TRACEPOINT declarations
+
+  tracetools/src/tracetools.c
+    Add 4 void TRACEPOINT(...) implementations
+
+  rclcpp/rclcpp_action/src/server.cpp
+    Add #include <tracetools/tracetools.h>
+    Add 1 TRACEPOINT call in constructor (after rcl_action_server_init)
+    Add 3 TRACEPOINT calls at entry of execute_goal/cancel/result
+
+Build via overlay workspace:
+  mkdir -p ~/trace_overlay_ws/src
+  # Copy/clone modified tracetools and rclcpp_action
+  colcon build --packages-select tracetools rclcpp_action
+  source ~/trace_overlay_ws/install/setup.bash
+  # Restart nodes — new tracepoints now fire in LTTng session
+
+
+7. Extracting Service Handles for the Init Tracepoint
+-----------------------------------------------------
+The ServerBase constructor calls rcl_action_server_init() which
+internally creates 3 services. To pass their handles to our init
+tracepoint, we need to extract them from the rcl_action_server_t struct.
+
+The rcl_action API provides (from rcl_action/action_server.h):
+
+  rcl_action_server_get_goal_service(action_server)   → rcl_service_t *
+  rcl_action_server_get_cancel_service(action_server) → rcl_service_t *
+  rcl_action_server_get_result_service(action_server) → rcl_service_t *
+
+  Not public API but accessible via the action_server's impl:
+    action_server->impl->goal_service
+    action_server->impl->cancel_service
+    action_server->impl->result_service
+
+  These are rcl_service_t structs. Their handles (void pointers) are
+  what appears in rcl_service_init events. Specifically:
+    &(action_server->impl->goal_service) == the service_handle in rcl_service_init
+
+  We pass these pointers in our init tracepoint to link
+  action_server_handle ↔ component service handles ↔ rcl_service_init events.
+
+  If the getter functions are not available in Humble, we can use the
+  rcl_service_t pointers from the impl struct directly, or add a helper
+  function in rcl_action to expose them.
+
+
+8. Open Questions
+-----------------
+  - Should we also add tracepoints for execute_check_expired_goals()?
+    This is a housekeeping function, not a user callback. Probably not
+    needed for FISH but could be useful for debugging goal lifecycle.
+
+  - Should we add _end tracepoints (rclcpp_action_execute_goal_end)?
+    Currently we only trace entry. For duration measurement, we either
+    need an end tracepoint or we use the next tracepoint as implicit end.
+    Adding _end is cleaner and consistent with callback_start/callback_end.
+
+  - Should we upstream this? These tracepoints would benefit the entire
+    ROS 2 community. The ros2_tracing maintainers (Christophe Bédard)
+    have been receptive to tracepoint additions. We should prepare a PR
+    after validating in our system.
