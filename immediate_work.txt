@@ -1,0 +1,166 @@
+Immediate Work Items
+====================
+
+1. Add globalTid to nsys ingest (cuda_runtime table)
+-----------------------------------------------------
+Problem:
+  The nsys sqlite CUPTI_ACTIVITY_KIND_RUNTIME table contains a globalTid
+  column that identifies which CPU thread made each CUDA API call.
+  This column was NOT ingested into InfluxDB's cuda_runtime table.
+
+  Current cuda_runtime columns:
+    api_name, correlationId, duration_ns, eventClass, returnValue, source, time
+
+  Missing: globalTid (thread identifier)
+
+Why it matters:
+  - In multi-threaded GPU nodes, different threads may issue CUDA API calls
+    concurrently. Without globalTid we cannot distinguish which thread
+    initiated which GPU operation.
+  - For the current session (fish_20260322_212915) this is not blocking:
+    yolo_inference_node has only 1 distinct globalTid in RUNTIME events.
+  - For future sessions with multi-threaded CUDA nodes (e.g., TensorRT
+    with multiple inference streams), this will be critical.
+
+Fix:
+  Update ingest.py to include globalTid when writing cuda_runtime points.
+  Resolve globalTid to a local tid via the nsys sqlite StringIds or
+  PROCESSES table if possible, or store the raw globalTid.
+
+  Also consider adding globalPid to gpu_kernels and gpu_memcpy for
+  multi-process nsys sessions (currently inferred from 'source' field).
+
+NOTE: An initial attempt to add globalTid/globalPid was made but contains
+  a bug — the fields are appended BEFORE `fields = []` initialization,
+  so they are either lost or cause NameError. See known_bugs.txt BUG-002.
+  This must be fixed before re-ingesting any session.
+
+Priority: MEDIUM (not blocking current session, needed before next session)
+
+
+2. Fix nsys timestamp offset in ingest.py
+------------------------------------------
+Problem:
+  All nsys-derived timestamps in InfluxDB are shifted ~54 minutes into
+  the past. See known_bugs.txt BUG-003 for full analysis.
+
+  Current code:  abs_ts = start + (utcEpochNs - systemClockNs)
+  Correct:       abs_ts = utcEpochNs + start
+
+  The "start" column in CUPTI activity tables is relative to the nsys
+  session start, not a monotonic system clock value.
+
+Open questions (investigate before fixing):
+  - Is this behavior consistent across nsys versions? (tested: nsys 2024.x)
+  - Does systemClockNs vs start semantics change for different CUPTI
+    activity kinds (KERNEL vs RUNTIME vs MEMCPY)?
+  - Would it be better to have model extraction read nsys sqlite directly
+    instead of going through InfluxDB? (avoids the conversion entirely)
+  - Need to test on a different system to confirm uptime is the offset source.
+
+  If fixing ingest.py: also fix BUG-002 (globalTid/globalPid ordering)
+  in the same change, since both are in _ingest_nsys_table().
+
+  If the fix is confirmed correct, the current session's InfluxDB data
+  should be re-ingested (drop and recreate the measurements).
+
+Priority: HIGH (blocks temporal correlation between ros2_trace and nsys)
+
+
+3. Trace-based edge filtering pre-process
+------------------------------------------
+Problem:
+  Currently, parameter service filtering (SKIP_PARAMSERVICE) uses a static
+  name blocklist. This works for /parameter_events but is not generalizable.
+
+  A trace-based pre-filter would scan rcl_publish events BEFORE graph
+  construction and compute per-(node, topic) publish counts and rates.
+  Topics with negligible runtime activity would be excluded from edge
+  construction, while topics that are actively used would be kept —
+  even /parameter_events if a node genuinely uses it.
+
+  See about_paramservice.txt for full analysis: in session fish_20260322_212915,
+  /parameter_events accounts for 83/21496 publishes (0.4%), with 18 of 23
+  nodes publishing exactly once (startup event only).
+
+Implementation:
+  Add a pre-filter step between model extraction and graph construction:
+    1. Scan rcl_publish events, resolve publisher_handle -> topic
+    2. Compute publish_count per (node, topic) pair
+    3. Apply threshold (e.g., < 10 publishes → exclude)
+    4. Return a filter-decisions dict for add_horizontal_relations()
+
+  This replaces the static blocklist with evidence-based filtering and
+  generalizes to any low-activity topic, not just parameter_events.
+
+Priority: LOW (static filter is sufficient for now, needed when analyzing
+  systems where parameter reconfiguration is part of the mission logic)
+
+
+4. External source/sink detection and representation
+-----------------------------------------------------
+Problem:
+  Some nodes subscribe to topics that no traced node publishes, or publish
+  to topics that no traced node subscribes to. These topics cross the FISH
+  trace boundary — their counterparts live in other containers, other
+  machines, or non-traced processes (e.g., ros_gz_bridge, PX4 SITL).
+
+  Currently these nodes appear "isolated" in the graph even though they
+  are actively communicating — just not with anything inside the trace.
+
+Observed in session fish_20260322_212915:
+
+  state_sharing_node:
+    Subscribes to (no publisher in graph):
+      /Drone1/fmu/out/vehicle_global_position  (px4_msgs/msg/VehicleGlobalPosition)
+      /Drone1/fmu/out/vehicle_local_position   (px4_msgs/msg/VehicleLocalPosition)
+    Publishes to (no subscriber in graph):
+      /state_sharing_drone_1                   (state_sharing/msg/SharedState)
+
+    Sources are PX4 SITL / ros_gz_bridge (different container, not in trace).
+    Destination is likely another drone or ground station (not in trace).
+
+  px4_offboard:
+    Subscribes to (no publisher in graph):
+      /Drone1/fmu/out/airspeed_validated       (px4_msgs/msg/AirspeedValidated)
+      /Drone1/fmu/out/vehicle_global_position  (px4_msgs/msg/VehicleGlobalPosition)
+      /Drone1/fmu/out/vehicle_local_position   (px4_msgs/msg/VehicleLocalPosition)
+      /Drone1/fmu/out/vehicle_odometry         (px4_msgs/msg/VehicleOdometry)
+      /tracks                                  (ground_system_msgs/msg/SwarmObs)
+
+    Same PX4/bridge source. /tracks comes from ground system (external).
+    These are real dataflow inputs that are invisible in the current graph.
+
+  transform_listener_impl_646f641f63a0:
+    Internal tf2_ros node, auto-created when a node uses TransformListener.
+    Most likely belongs to px4_offboard's process. Subscribes to /tf
+    published by kiss_icp_node.
+
+Impact:
+  - Nodes with only external connections appear isolated (state_sharing_node)
+  - Nodes with both internal and external connections (px4_offboard) show
+    only partial connectivity — their real input set is larger
+  - Graph metrics (degree, betweenness, dataflow roles) are skewed because
+    external edges are missing
+
+Implementation:
+  1. After building sub_index and pub_index in add_horizontal_relations(),
+     detect "dangling" topics:
+       - Topics in sub_index with no match in pub_index → external source
+       - Topics in node.A_v['publishers'] with no match in sub_index → external sink
+  2. Create lightweight "external" placeholder vertices for these:
+       - Type: "EXT" or use existing vertex types with an external flag
+       - One vertex per external topic (or group by source system)
+       - Add comm edges from/to these placeholders
+  3. In visualization, render external vertices distinctly:
+       - Gray dashed border (already done in detail views for "ext" references)
+       - Labeled with topic name and direction (source/sink)
+  4. Report a summary: which topics cross the trace boundary, which nodes
+     are affected, and what percentage of a node's communication is external.
+
+  The detail view (export_fish_detail) already creates gray "ext" reference
+  nodes for cross-executor edges. Extend this pattern to true external
+  sources/sinks at the graph construction level.
+
+Priority: MEDIUM (affects graph completeness and metric accuracy, needed
+  before publishing any dataflow analysis results)

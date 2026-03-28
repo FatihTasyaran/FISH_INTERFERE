@@ -1,0 +1,111 @@
+About /parameter_events and ROS 2 Parameter Service Infrastructure
+==================================================================
+
+1. What It Is
+-------------
+Every ROS 2 node automatically creates:
+  - A publisher on /parameter_events (rcl_interfaces/msg/ParameterEvent)
+  - Six service servers:
+      /<node>/describe_parameters
+      /<node>/get_parameter_types
+      /<node>/get_parameters
+      /<node>/list_parameters
+      /<node>/set_parameters
+      /<node>/set_parameters_atomically
+
+These are created by the rcl layer at node initialization, not by the
+application developer. Their purpose is parameter introspection and
+runtime reconfiguration (e.g., via `ros2 param set`).
+
+
+2. Why We Filter Them
+---------------------
+In the FISH graph, these create noise:
+  - Every node publishes to /parameter_events, creating N*(N-1) edges
+    between all node pairs. This makes the graph appear fully connected,
+    masking the real dataflow topology.
+  - The 6 parameter services per node add 6 entity vertices + up to 6
+    function vertices per node, inflating the graph without adding
+    computational insight.
+
+In session fish_20260322_212915:
+  - Before filtering: 156 vertices, 85 entities, 25 L2 comm edges
+  - After filtering:   92 vertices, 49 entities,  4 L2 comm edges
+  - The 4 remaining edges are the real dataflow:
+      px4_interface  --/offboard_flag-->  px4_offboard
+      kiss_icp       --/odometry------->  px4_offboard
+      kiss_icp       --/tf------------->  transform_listener
+      yolo           --/detections----->  px4_offboard
+
+
+3. Runtime Evidence
+-------------------
+Checked rcl_publish events in the trace to verify this is not lossy:
+
+  Total rcl_publish events:          21496
+  /parameter_events publishes:          83   (0.4%)
+  Real dataflow publishes:           21413   (99.6%)
+
+Of the 23 nodes that have a /parameter_events publisher:
+  - 18 nodes published exactly 1 time (initial parameter event at startup)
+  - Most active: 30 publishes (one node, likely during param loading)
+  - No node used /parameter_events for sustained communication
+
+Compare with real publishers:
+  - kiss_icp odometry:     6902 publishes
+  - px4_interface topics:  2657 publishes each (5 topics)
+  - yolo detections:        690 publishes
+
+Conclusion: /parameter_events carries zero computational workload.
+
+
+4. Current Implementation
+-------------------------
+model.py has SKIP_PARAMSERVICE = True (alongside SKIP_DEBUG, SKIP_RVIZ).
+
+When enabled, _is_param_service(name) filters:
+  - Subscriptions to /parameter_events  (entity creation skipped)
+  - Publishers of /parameter_events     (not stored in node.A_v['publishers'])
+  - Service servers matching _PARAM_SRV_SUFFIXES  (entity creation skipped)
+  - Service clients matching same suffixes  (edge construction skipped)
+  - Publisher entries from node_info for /parameter_events  (edge construction skipped)
+
+This is a structural filter at model extraction time, before graph
+construction. Filtered entities never become vertices, so no edges
+are created for them either.
+
+
+5. Future: Trace-Based Filtering with Runtime Evidence
+------------------------------------------------------
+The current approach is a static blocklist: if the name matches known
+parameter service patterns, it is excluded. This works well because
+/parameter_events is universally uninteresting.
+
+However, a more general approach would be to use trace data to make
+filter decisions BEFORE graph construction:
+
+  (a) Pre-scan rcl_publish events per publisher_handle
+  (b) Resolve publisher_handle -> topic via rcl_publisher_init
+  (c) For each (node, topic) pair, compute:
+        - publish count
+        - publish rate (events / session duration)
+        - subscriber count (from sub_index)
+  (d) Apply a threshold: if a topic has < N publishes or < M Hz rate,
+      mark it as "inactive" for that node
+
+This would allow us to:
+  - Keep /parameter_events for a node that genuinely uses it for
+    runtime reconfiguration (high publish rate, active subscribers)
+  - Filter out ANY low-activity topic, not just /parameter_events
+  - Make filter decisions per (publisher_node, topic) pair rather
+    than per topic globally
+
+Example policy:
+  - If publish_count < 10 for the entire session, exclude
+  - If no subscriber entity exists for the topic, exclude
+  - If the topic is /parameter_events but a node publishes > 100
+    times, keep it (something is actively reconfiguring that node)
+
+This trace-based pre-filter would run after trace ingestion but before
+graph construction, producing a "filter decisions" dict that
+add_horizontal_relations() consults when creating edges.

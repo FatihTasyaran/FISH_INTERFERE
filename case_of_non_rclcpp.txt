@@ -1,0 +1,262 @@
+Case of Non-rclcpp Entities: rclpy Nodes and the GPU Function Path
+===================================================================
+
+Session: fish_20260322_212915
+
+
+1. The Problem
+--------------
+16 subscriptions in ros2_trace have rcl_subscription_init events but
+NO corresponding rclcpp_subscription_init. This means the standard
+callback association chain (see mapping.txt section 3a) is broken
+at step 2 — there is no C++ subscription object to follow.
+
+These 16 subscriptions belong to two categories:
+
+  Category A: ros2cli tooling (14 subscriptions)
+    PIDs: 1428, 2265, 2308, 2351, 2394, 2436, 2479, 2522, 2565,
+          2607, 2650, 2693, 2736, 2778
+    Node names: _ros2cli_XXXX
+    Topics: PX4 fmu/in/*, fmu/out/*, /clock, /clicked_point, /detections
+    Cause: short-lived `ros2 topic echo` / `ros2 node info` processes
+           created during snapshot collection. They register rcl
+           subscriptions but exit before rclcpp initialization completes.
+    Impact: NONE — already filtered by SKIP_DEBUG flag.
+
+  Category B: rclpy (Python) nodes (2 subscriptions)
+    PID 710: yolo_inference_node (procname=yolo_py) — KILLED by FISH
+    PID 938: yolo_inference_node (procname=python3) — RESURRECTED by FISH
+    Topics: /clock (use_sim_time mechanism)
+    Cause: rclpy uses the rcl C library directly via Python bindings.
+           The rclcpp tracepoints (rclcpp_subscription_init,
+           rclcpp_subscription_callback_added, rclcpp_callback_register)
+           are compiled into the C++ rclcpp library and are never
+           executed by rclpy nodes.
+
+
+2. What rclpy Nodes Look Like in ros2_trace
+-------------------------------------------
+Verified for PID 938 (active yolo_inference_node):
+
+  Events present (rcl-level only):
+    ros2:rcl_init
+    ros2:rcl_node_init
+    ros2:rcl_publish
+    ros2:rcl_publisher_init
+    ros2:rcl_service_init
+    ros2:rcl_subscription_init
+    ros2:rcl_take
+    ros2:rcl_timer_init
+    ros2:rmw_publish
+    ros2:rmw_publisher_init
+    ros2:rmw_subscription_init
+    ros2:rmw_take
+
+  Events ABSENT (all rclcpp-level):
+    ros2:rclcpp_subscription_init          — NOT fired
+    ros2:rclcpp_subscription_callback_added — NOT fired
+    ros2:rclcpp_callback_register          — NOT fired
+    ros2:rclcpp_timer_callback_added       — NOT fired
+    ros2:rclcpp_timer_link_node            — NOT fired
+    ros2:rclcpp_service_callback_added     — NOT fired
+    ros2:rclcpp_executor_execute           — NOT fired
+    ros2:rclcpp_executor_get_next_ready    — NOT fired
+    ros2:rclcpp_executor_wait_for_work     — NOT fired
+    ros2:callback_start                    — NOT fired
+    ros2:callback_end                      — NOT fired
+
+This means: for rclpy nodes, ros2_trace provides ZERO callback-level
+visibility. No callback association, no callback timing, no executor
+scheduling events.
+
+
+3. Why This Matters for FISH
+----------------------------
+The yolo_inference_node is the GPU-accelerated perception node — arguably
+the most interesting node from a timing analysis perspective. It runs
+YOLO object detection on camera frames using CUDA. If we cannot trace
+its callbacks, we lose the ability to characterize its execution time
+and build its Function layer.
+
+However: the yolo_inference_node is exactly the node for which we
+collected nsight systems (nsys) profiling data.
+
+
+4. The Kill/Resurrect and nsys Process Chain
+--------------------------------------------
+FISH killed the original yolo_py (PID 710) and resurrected it under
+nsys profiling. The full process chain, verified from process_tree
+(pstree snapshot) and fish_events:
+
+  fish_events timeline:
+    monotonic_ns=3225921939519  detect pid=709  (px4_interface)
+    monotonic_ns=3228925523638  detect pid=710  (yolo_py)
+    monotonic_ns=3231930249202  kill   pid=710  resurrected_pid=917
+    monotonic_ns=3234535921840  resurrect pid=710 resurrected_pid=917
+
+  IMPORTANT: resurrected_pid=917 is NOT yolo_py itself.
+  PID 917 is the nsys profiler process. The actual yolo_py is its
+  grandchild:
+
+  Process tree (from process_tree collection):
+    PID 655  python3 (FISH daemon)
+      └── PID 917  nsys profile --trace=cuda,nvtx ...    ← nsys profiler
+            ├── PID 937  nsys-launcher                    ← nsys launcher
+            │     ├── PID 938  /usr/bin/python3 yolo_py   ← THE ACTUAL YOLO NODE
+            │     └── PID 939  nsys-tee                   ← nsys helper
+            └── threads: [920, 921, 922, 923, 924, 934]
+
+  So the chain is:
+    FISH daemon → nsys profile → nsys-launcher → python3 (yolo_py)
+
+  fish_events records PID 917 as resurrected_pid because that is the
+  direct child of the FISH daemon. The actual ROS node (PID 938) is
+  two levels deeper, spawned by nsys-launcher.
+
+  ros2_trace timeline:
+    PID 710 (yolo_py):   21:29:18 → 21:29:24  (82 events, then KILLED)
+    PID 938 (python3):   21:29:28 → 21:32:05  (388,431 events)
+
+  nsys data timeline:
+    source: nsys_yolo_py_20260322_212927  (nsys started at ~21:29:27)
+    cuda_runtime first event: 21:35:34
+    cuda_runtime last event:  21:38:10  (155.8 seconds of GPU data)
+
+  The ~6 minute gap between PID 938 first ros2_trace event (21:29:28)
+  and first CUDA event (21:35:34) is model loading and warmup time
+  (YOLO model load + TensorRT engine build/cache).
+
+
+5. PID Linkage Proof: nsys → ros2_trace
+----------------------------------------
+The critical question: can we PROVE that nsys GPU data belongs to
+the same process as ros2_trace PID 938?
+
+  Evidence 1: nsys sqlite PROCESSES table
+    globalPid=281490713739264  pid=938  name=/usr/bin/python3
+
+  Evidence 2: nsys sqlite CUPTI_ACTIVITY_KIND_KERNEL
+    All GPU kernel events have globalPid=281490713739264
+    → resolves to pid=938 via PROCESSES table
+
+  Evidence 3: process_tree
+    PID 938 PPID=937 CMD=/usr/bin/python3 .../yolo_py --ros-args -p use_sim_time:=true
+    PID 938 has 92 threads (CUDA runtime threads, Python threads, ROS executor)
+
+  Evidence 4: ros2_trace
+    PID 938 has rcl_node_init with node_name=yolo_inference_node
+
+  CONCLUSION: PID 938 is definitively the same process in all three
+  data sources (ros2_trace, nsys sqlite, process_tree). The linkage
+  is proven through:
+    - ros2_trace.vpid = 938
+    - nsys PROCESSES.pid = 938
+    - nsys CUPTI_KERNEL.globalPid → PROCESSES → pid = 938
+    - process_tree.PID = 938, CMD contains yolo_py
+
+
+6. The nsys Compensation Path
+-----------------------------
+While ros2_trace cannot see inside rclpy callbacks, nsys profiling
+captures the complete CPU-GPU execution:
+
+  InfluxDB tables (source: nsys_yolo_py_20260322_212927):
+    cuda_runtime    — CPU-side CUDA API calls (cudaLaunchKernel,
+                      cudaMemcpy, cudaDeviceSynchronize, etc.)
+                      Fields: api_name, correlationId, duration_ns, time
+    gpu_kernels     — GPU-side kernel executions
+                      Fields: kernel_name, duration_ns, correlationId,
+                              deviceId, streamId, gridX/Y/Z, blockX/Y/Z, time
+    gpu_memcpy      — GPU memory transfer operations
+                      Fields: bytes, copyKind, duration_ns, correlationId,
+                              deviceId, streamId, time
+    gpu_mem_usage   — GPU memory allocation/deallocation
+    nvtx_events     — NVTX annotation markers (if any)
+
+  Linking mechanism:
+    correlationId connects cuda_runtime (CPU) ↔ gpu_kernels/gpu_memcpy (GPU)
+    This gives us the CPU-GPU-CPU execution path per CUDA operation.
+
+  Process identification:
+    InfluxDB 'source' field = 'nsys_yolo_py_20260322_212927'
+    nsys sqlite PROCESSES table: globalPid → pid=938
+    Both point to the same profiled process.
+
+  NOTE: The ingested InfluxDB tables do NOT have globalPid/globalTid
+  columns. The PID linkage must be done via the nsys sqlite PROCESSES
+  table or via the 'source' field convention. For multi-GPU-process
+  sessions, globalPid should be added during ingest (see ingest.py).
+
+
+7. Building Function Vertices for rclpy+GPU Nodes
+--------------------------------------------------
+For the yolo_inference_node, the Function layer (layer 3) can be built
+from nsys data instead of ros2_trace callback events:
+
+  Function vertex types (from FISH paper):
+    ptype = "cpu"   → CPU-side functions (CUDA API calls)
+    ptype = "sm"    → GPU streaming multiprocessor kernels
+    ptype = "ce"    → GPU copy engine operations (memcpy)
+
+  Extraction approach:
+    1. From cuda_runtime: each distinct CUDA API call type becomes a
+       CPU function (ptype="cpu"). Example: cudaLaunchKernel, cudaMemcpy.
+    2. From gpu_kernels: each distinct kernel name becomes a GPU function
+       (ptype="sm"). Example: implicit_gemm_sgemm, void cutlass::*.
+    3. From gpu_memcpy: each distinct copyKind becomes a CE function
+       (ptype="ce"). Example: HtoD (host→device), DtoH (device→host).
+
+  The correlationId links them into execution sequences:
+    CPU function (cudaLaunchKernel) --correlationId--> GPU function (kernel)
+    This sequence IS the Function-layer DAG (H_v^F) for this entity.
+
+  Timing characterization:
+    Each function has start time (from 'time' column) and duration_ns.
+    This gives us per-function BCET/WCET directly.
+
+
+8. Entity-to-Function Association for rclpy Nodes
+--------------------------------------------------
+The open question is: which entity does a GPU function belong to?
+
+For rclcpp nodes, the chain is clear:
+  entity (subscription) → callback_added → callback_register → symbol
+
+For rclpy nodes, we must use temporal correlation:
+  - rcl_take events (which DO fire for rclpy) give us message arrival times
+  - cuda_runtime events give us CUDA API call times
+  - If a cuda_runtime call occurs between two rcl_take events on the same
+    PID, it belongs to the callback processing that rcl_take triggered
+
+  Alternatively, if the node has only ONE subscription that triggers
+  GPU work (as yolo_inference_node does with /lidar_points or camera
+  input), ALL GPU functions belong to that single subscription's
+  callback — the association is trivial.
+
+
+9. Implications for the Paper
+------------------------------
+This case demonstrates a key FISH contribution: combining heterogeneous
+trace sources (ros2_trace + nsys) to build a complete model that neither
+source could provide alone.
+
+  - ros2_trace provides: node structure, entity topology, message flow
+  - nsys provides: GPU kernel execution, CPU-GPU correlation, memory transfers
+  - process_tree provides: PID linkage proof between the two sources
+  - fish_events provides: kill/resurrect timeline, nsys attachment context
+
+The rclpy limitation should be noted in the paper:
+  "rclpy nodes provide rcl-level structural visibility (node init,
+   subscription init, publish) but lack rclcpp-level callback tracing.
+   For GPU-accelerated rclpy nodes, nsight systems profiling compensates
+   by capturing the complete CPU-GPU-CPU execution path, enabling
+   Function-layer extraction through CUDA API correlation."
+
+This is NOT a weakness — it actually showcases FISH's multi-source
+fusion approach. The paper's Table II already lists both ros2_trace
+and nsight sys datapoints precisely because some nodes require both.
+
+The kill/resurrect mechanism with nsys wrapping is itself a FISH
+contribution: by restarting the target process under nsys profiling,
+FISH obtains GPU-level visibility without requiring the original
+application to be launched with nsys from the start.

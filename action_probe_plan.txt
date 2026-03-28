@@ -1,0 +1,96 @@
+Action Callback Probing Plan
+============================
+
+Problem:
+  rclcpp_action::ServerBase creates 3 services (send_goal, cancel_goal,
+  get_result) via rcl_service_init but does NOT fire:
+    - rclcpp_service_callback_added
+    - rclcpp_callback_register
+    - callback_start / callback_end
+  This makes action callbacks invisible to ros2_tracing.
+
+  Verified in fish_20260322_212915:
+    - 12 action service handles exist (rcl_service_init)
+    - ZERO of them appear in any other trace event
+    - 18 registered callbacks on PID 709, all accounted for (sub+serv+tmr)
+    - No unlinked callback_start events
+
+Solution: Active instrumentation via uprobe/eBPF
+  When FISH detects action entities (via node_info / verify_actions),
+  attach low-overhead probes to the rclcpp_action dispatch functions.
+
+Target symbols (in librclcpp_action.so):
+  rclcpp_action::ServerBase::execute_goal_request_received()
+  rclcpp_action::ServerBase::execute_cancel_request_received()
+  rclcpp_action::ServerBase::execute_result_request_received()
+  rclcpp_action::ServerBase::execute_check_expired_goals()
+
+  These are the waitable dispatch functions called by the executor.
+  When a goal/cancel/result request arrives, the executor calls these
+  instead of the normal callback_start → callback_end path.
+
+Implementation options (ordered by preference):
+
+  1. bpftrace uprobe (simplest, lowest friction)
+     - FISH daemon detects action nodes
+     - Launches bpftrace as a child process attached to the target PID
+     - Records: timestamp, PID, TID, function name, action server handle
+     - Writes to fishlog or a dedicated collection
+     - Stopped when trace session ends
+
+     Example:
+       bpftrace -p <PID> -e '
+         uprobe:/opt/ros/humble/lib/librclcpp_action.so:*ServerBase*execute_goal* {
+           printf("action_goal pid=%d tid=%d ts=%lu\n", pid, tid, nsecs);
+         }
+         uprobe:...librclcpp_action.so:*ServerBase*execute_cancel* {
+           printf("action_cancel pid=%d tid=%d ts=%lu\n", pid, tid, nsecs);
+         }
+         uprobe:...librclcpp_action.so:*ServerBase*execute_result* {
+           printf("action_result pid=%d tid=%d ts=%lu\n", pid, tid, nsecs);
+         }
+       '
+
+  2. LTTng uprobe (integrates with existing trace pipeline)
+     - Add uprobe events to the existing LTTng session
+     - Uses lttng-ust or kernel uprobe via lttng
+     - Events appear alongside ros2_trace events in babeltrace output
+     - Requires lttng session modification
+
+  3. LD_PRELOAD shim (no root needed, no bpf)
+     - Create a small .so that wraps the ServerBase functions
+     - LD_PRELOAD it when relaunching the process
+     - Works alongside nsys (nsys already wraps via nsys-launcher)
+     - Most portable, no kernel/bpf dependency
+
+Integration with FISH daemon (gpu.py):
+
+  In relaunch_with_nsys() or _handle_gpu_process():
+    1. After launching process, check if it has actions
+       (query node_info or wait for rcl_node_init + rcl_service_init)
+    2. If actions detected, find librclcpp_action.so path in process
+       (readlink /proc/<PID>/map_files/* or parse /proc/<PID>/maps)
+    3. Launch bpftrace/probe attached to PID
+    4. Store probe process for cleanup
+
+  Alternatively, in daemon_loop after detect phase:
+    - For ALL detected processes (not just GPU), check for actions
+    - Attach probes to any process with action entities
+    - This covers CPU-only nodes with actions too
+
+Data flow:
+  bpftrace output → fishlog/action_probes/ → ingest → MongoDB action_trace collection
+  Model extraction: identify_callbacks checks action_trace for action entity callbacks
+
+Symbols to resolve (need container access):
+  nm -DC /opt/ros/humble/lib/librclcpp_action.so | grep -i "execute.*goal\|execute.*cancel\|execute.*result"
+
+  Or at runtime:
+  cat /proc/<PID>/maps | grep rclcpp_action
+  nm -DC <path_from_maps> | grep ServerBase
+
+Priority: HIGH
+  - Action modeling is a FISH paper contribution
+  - Without this, action callbacks are structurally known but timing-invisible
+  - With this, FISH provides complete action-level timing visibility
+    that no other framework offers

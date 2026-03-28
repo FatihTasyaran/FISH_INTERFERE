@@ -1,0 +1,142 @@
+ROS 2 Action Decomposition for FISH Model
+==========================================
+
+1. Background
+-------------
+ROS 2 Actions are a higher-level communication pattern built on top of
+services and topics. Unlike simple request-response (services) or
+fire-and-forget (pub/sub), actions support long-running tasks with
+feedback and cancellation. This makes them critical for real-time
+autonomous systems (e.g., takeoff, land, orbit maneuvers).
+
+In the real-time systems literature, actions are typically ignored or
+hand-waved because their composite nature makes them difficult to model.
+FISH explicitly decomposes actions into their constituent primitives,
+preserving the scheduling-observable behavior while maintaining
+traceability to the higher-level action semantics.
+
+
+2. Action Decomposition
+-----------------------
+Every ROS 2 action server is implemented as exactly 5 communication
+primitives (this is enforced by the rclcpp framework, not convention):
+
+  Action Server = 3 Services + 2 Publishers
+
+  Services (request-response):
+    /<action_name>/_action/send_goal      — client sends a goal
+    /<action_name>/_action/cancel_goal    — client requests cancellation
+    /<action_name>/_action/get_result     — client retrieves final result
+
+  Publishers (periodic/event-driven):
+    /<action_name>/_action/feedback       — server publishes progress
+    /<action_name>/_action/status         — server publishes goal status
+                                            (GoalStatus: ACCEPTED,
+                                             EXECUTING, CANCELING,
+                                             SUCCEEDED, CANCELED, ABORTED)
+
+The naming pattern /<name>/_action/<component> is hardcoded by the
+ROS 2 action infrastructure and is universally reliable for detection.
+
+
+3. Real Trace Examples (session: fish_20260322_212915)
+-----------------------------------------------------
+Node: /Drone1/px4_interface  (PID 709, node_handle 0x633CE9FE3BB0)
+This node exposes 4 action servers for drone flight control:
+
+  Action: /Drone1/land_action
+    Services:
+      /Drone1/land_action/_action/send_goal      handle=0x633CEA31D0E0
+      /Drone1/land_action/_action/cancel_goal     handle=0x633CEA31D0E8
+      /Drone1/land_action/_action/get_result      handle=0x633CEA31D0F0
+    Publishers:
+      /Drone1/land_action/_action/feedback        handle=0x633CEA31D0F8
+      /Drone1/land_action/_action/status          handle=0x633CEA31D100
+
+  Action: /Drone1/takeoff_action
+    Services:
+      /Drone1/takeoff_action/_action/send_goal    handle=0x633CEA373630
+      /Drone1/takeoff_action/_action/cancel_goal  handle=0x633CEA373638
+      /Drone1/takeoff_action/_action/get_result   handle=0x633CEA373640
+    Publishers:
+      /Drone1/takeoff_action/_action/feedback     handle=0x633CEA373648
+      /Drone1/takeoff_action/_action/status       handle=0x633CEA373650
+
+  Action: /Drone1/offboard_action
+    Services:
+      /Drone1/offboard_action/_action/send_goal   handle=0x633CEA3B0CF0
+      /Drone1/offboard_action/_action/cancel_goal handle=0x633CEA3B0CF8
+      /Drone1/offboard_action/_action/get_result  handle=0x633CEA3B0D00
+    Publishers:
+      /Drone1/offboard_action/_action/feedback    handle=0x633CEA3B0D08
+      /Drone1/offboard_action/_action/status      handle=0x633CEA3B0D10
+
+  Action: /Drone1/orbit_action
+    Services:
+      /Drone1/orbit_action/_action/send_goal      handle=0x633CEA3D7340
+      /Drone1/orbit_action/_action/cancel_goal    handle=0x633CEA3D7348
+      /Drone1/orbit_action/_action/get_result     handle=0x633CEA3D7350
+    Publishers:
+      /Drone1/orbit_action/_action/feedback       handle=0x633CEA3D7358
+      /Drone1/orbit_action/_action/status         handle=0x633CEA3D7360
+
+
+4. FISH Model Representation
+-----------------------------
+In the FISH graph, an action is an Entity vertex (level 2) with:
+
+  Entity type:  "act" (action)
+  A_v:          {label: action_name, etype: "act",
+                 action_components: {
+                   "send_goal":   <service_entity_id>,
+                   "cancel_goal": <service_entity_id>,
+                   "get_result":  <service_entity_id>,
+                   "feedback":    <publisher_entity_id>,
+                   "status":      <publisher_entity_id>
+                 }}
+  Z_v:          [function_ids...]  (callback functions triggered by
+                                    any of the 5 components)
+
+The action is an "abstract entity" — a grouping node whose Z_v
+contains the entity IDs of its 5 components. The 5 component entities
+(3 services + 2 publishers) ALSO exist as individual Entity vertices
+in the graph with their own Function children. They are NOT removed
+from the flat service/publisher lists; the action entity references
+them without replacing them.
+
+This design serves multiple purposes:
+
+  (a) Preserves the semantic meaning of the action (e.g., "land_action"
+      is a coherent operation, not 5 unrelated endpoints)
+  (b) Enables action-level timing analysis (worst-case from send_goal
+      to get_result, feedback periodicity, cancellation latency)
+  (c) Maintains decomposition transparency — expanding the action
+      Entity reveals its constituent services and topics
+  (d) Supports the FISH interactive visualization: clicking an action
+      entity expands it to show its 5 components, exactly like
+      clicking an executor expands to show its nodes
+
+This is consistent with the FISH expansion operator: at the collapsed
+level, the action appears as a single entity; upon expansion, the 5
+primitives and their individual scheduling functions become visible.
+Component entities remain independently addressable in the graph for
+per-primitive analysis.
+
+
+5. Detection Algorithm
+----------------------
+Given a set of services and publishers for a node:
+
+  1. Collect all names containing "/_action/"
+  2. Extract action base names: name.split("/_action/")[0]
+  3. For each unique base name, verify all 5 components exist:
+     - send_goal, cancel_goal, get_result (services)
+     - feedback, status (publishers)
+  4. If all 5 present: create abstract Action entity, keep components
+     in flat service/publisher lists, reference them via action_components
+  5. If partial (< 5): flag as WARNING — incomplete action, keep
+     components as individual entities only
+
+This algorithm works identically on node_info data (where actions may
+already be in Action_Servers) and on trace-derived fallback data (where
+actions appear as flat services and publishers).

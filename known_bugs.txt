@@ -1,0 +1,174 @@
+FISH Known Bugs
+===============
+
+BUG-001: node_info_all.json missing nodes that exist in node_list
+----------------------------------------------------------------------
+Date discovered: 2026-03-23
+Severity: Medium
+Status: Open
+
+Description:
+  During snapshot collection, some nodes that appear in `ros2 node list`
+  output (and are stored in node_list collection) are missing from
+  `node_info_all.json` (and therefore missing from node_info collection).
+
+  Observed case: /Drone1/px4_interface is present in node_list but absent
+  from node_info_all.json in session fish_20260322_212915.
+
+Root cause:
+  The snapshot script collects node_list and node_info in two separate
+  steps. node_list runs `ros2 node list` once, then node_info iterates
+  over discovered nodes and runs `ros2 node info <node>` for each.
+  If `ros2 node info` fails (timeout, node not responding, transient
+  DDS discovery issue) for a specific node, that node is silently
+  skipped and never written to node_info_all.json.
+
+Impact:
+  Model extraction cannot find entity information (subscribers,
+  publishers, services) for the missing node from node_info. Currently
+  requires a fallback to ros2_trace events (rclcpp_subscription_init,
+  rcl_service_init, rcl_publisher_init) which is less clean and may
+  lack topic name / message type information.
+
+Fix needed:
+  1. In the snapshot collection script (install_fish.sh or the snapshot
+     module), add retry logic for `ros2 node info` failures. At minimum
+     retry 2-3 times with a short delay.
+  2. Log a warning when a node from node_list has no corresponding
+     node_info entry, so the gap is visible at collection time.
+  3. In ingest.py, cross-check node_list against node_info and emit a
+     warning for any nodes present in node_list but missing from
+     node_info_all.json.
+
+Workaround:
+  For model extraction, fall back to ros2_trace events to discover
+  entities for nodes missing from node_info. Use:
+    - rclcpp_subscription_init → subscriptions
+    - rcl_publisher_init → publishers
+    - rcl_service_init → services
+    - rclcpp_timer_init → timers
+    - rclcpp_callback_register → callback handles
+  Match by node_handle from rcl_node_init.
+
+
+BUG-002: globalTid/globalPid fields used before definition in _ingest_nsys_table
+---------------------------------------------------------------------------------
+Date discovered: 2026-03-24
+Severity: High
+Status: Open
+
+Description:
+  In ingest.py _ingest_nsys_table(), lines 710-716 attempt to append
+  globalTid/globalPid values to a `fields` list. However, `fields = []`
+  is only defined at line 719, AFTER these appends.
+
+  Code (simplified):
+    # line 710-716
+    gtid = row_dict.get("globalTid")
+    if gtid is not None:
+        fields.append(...)          # ← fields not yet defined
+    gpid = row_dict.get("globalPid")
+    if gpid is not None:
+        fields.append(...)          # ← fields not yet defined
+
+    # line 719
+    fields = []                     # ← actual definition, resets everything
+
+  Behavior:
+    - First iteration: NameError (fields doesn't exist yet), crashes ingest.
+    - If by some path fields exists from a previous iteration: the appended
+      globalTid/globalPid values are immediately wiped by `fields = []`
+      on line 719.
+
+  Result: globalTid and globalPid are NEVER written to InfluxDB, even
+  though the code was added to do so. This is the half-finished
+  implementation of the work item in immediate_work.txt item 1.
+
+Root cause:
+  The globalTid/globalPid block was inserted above the `fields = []`
+  initialization instead of below it. A simple ordering mistake during
+  the edit that added this feature.
+
+Impact:
+  - cuda_runtime table in InfluxDB has no globalTid/tid columns
+  - gpu_kernels and gpu_memcpy have no globalPid columns
+  - Not blocking for fish_20260322_212915 (single-threaded GPU node)
+  - Will cause NameError crash on re-ingest attempts
+
+Fix needed:
+  Move the globalTid/globalPid block (lines 710-716) to AFTER
+  `fields = []` (line 719), so the appends go into a valid list.
+  See immediate_work.txt item 1 for the full scope of this fix.
+
+Workaround:
+  Current ingested data is unaffected (globalTid/globalPid were never
+  written). PID linkage works via the 'source' tag and nsys sqlite
+  PROCESSES table. Do not re-run ingest without fixing this bug first.
+
+
+BUG-003: nsys timestamps in InfluxDB are offset by ~54 minutes
+---------------------------------------------------------------
+Date discovered: 2026-03-24
+Severity: High
+Status: Open
+
+Description:
+  All nsys-derived timestamps stored in InfluxDB (gpu_kernels, gpu_memcpy,
+  cuda_runtime, nvtx_events, gpu_mem_usage) are shifted ~54 minutes into
+  the past compared to their true wall-clock time.
+
+  Example from session fish_20260322_212915:
+    nsys session start (UTC):      21:29:27.954
+    First CUDA runtime event:
+      InfluxDB (wrong):            20:35:34.360 UTC  (54 min early)
+      Correct:                     21:29:29.595 UTC  (1.6s after session start)
+
+  After applying a manual +3233.6s correction, CUDA events and ros2_trace
+  events for PID 938 overlap perfectly in the 21:29:28 - 21:32:05 UTC
+  window, confirming the offset is the sole source of misalignment.
+
+Root cause:
+  ingest.py _ingest_nsys_table() computes absolute timestamps as:
+
+    epoch_offset = utcEpochNs - systemClockNs       # from TARGET_INFO_SESSION_START_TIME
+    abs_ts       = row["start"] + epoch_offset
+
+  This assumes the "start" column contains a monotonic system clock value.
+  In reality, for CUPTI activity records the "start" field is relative to
+  the nsys profiling session start (i.e., nanoseconds elapsed since nsys
+  began recording), NOT a monotonic clock timestamp.
+
+  Correct formula:
+    abs_ts = utcEpochNs + row["start"]
+
+  Verification:
+    utcEpochNs     = 1774214967954128648  (2026-03-22 21:29:27.954 UTC)
+    systemClockNs  = 3235234972212        (3235.2s since boot)
+    CUDA first start = 1640492832         (1.64s — clearly relative, not monotonic)
+
+    Wrong:   1640492832 + (utcEpochNs - systemClockNs) → 20:35:34 UTC
+    Correct: utcEpochNs + 1640492832                    → 21:29:29.595 UTC
+
+  The systemClockNs value (3235s = ~54 min uptime) is subtracted from
+  utcEpochNs, creating an offset that equals the system uptime at session
+  start. This shifts all timestamps backwards by that uptime duration.
+
+Impact:
+  - All InfluxDB GPU timestamps are wrong for the current ingested session
+  - Temporal correlation between ros2_trace and nsys data is broken when
+    using InfluxDB timestamps directly
+  - Model extraction GPU function layer cannot use InfluxDB time columns
+    for entity association without manual correction
+
+Open questions before fixing:
+  - Is "start" always relative to session start across all nsys versions?
+  - Does the same behavior apply on different systems / CUDA driver versions?
+  - Should the fix go into ingest.py or should model extraction query the
+    nsys sqlite directly (bypassing InfluxDB for timestamp-critical work)?
+  See immediate_work.txt item 2.
+
+Workaround:
+  For model extraction, query the nsys sqlite file directly. The "start"
+  values are consistent within the sqlite (all relative to session start),
+  and utcEpochNs from TARGET_INFO_SESSION_START_TIME gives the correct
+  wall-clock anchor. Use: abs_utc_ns = utcEpochNs + start.

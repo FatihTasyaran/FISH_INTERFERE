@@ -1,0 +1,226 @@
+FISH Model Extraction — Entity-to-Callback Mapping Chains
+==========================================================
+
+This document describes the complete data flow from Executor (layer 0)
+down to Function/Callback (layer 3), documenting every trace event
+and linking datapoint used at each step.
+
+Verified against session: fish_20260322_212915
+
+
+1. Executor → Node Mapping (Layer 0 → Layer 1)
+-----------------------------------------------
+Already implemented in model.py: identify_executors()
+
+Source event:  ros2:rcl_node_init
+Linking key:  vpid (process ID groups nodes into executors)
+
+Chain:
+  ros2:rcl_node_init
+    payload:
+      node_handle     → stored in N.A_v['node_handle'] (used for all downstream lookups)
+      node_name       → stored in N.A_v['label']
+      namespace       → combined with node_name to form N.A_v['full_name']
+    vpid              → groups nodes by process → each unique vpid = one Executor
+
+  EX vertex:
+    A_v = {label: procname, pid: vpid, mode: ST|MT}
+    Z_v = [node_ids...]
+
+  N vertex:
+    A_v = {label: node_name, full_name: ns/node_name, node_handle: ..., publishers: {}}
+    Z_v = [entity_ids...]
+
+Filters applied:
+  - confirmed_kills(mongo)    → skip PIDs killed by FISH (fish_events.action='kill')
+  - SKIP_DEBUG                → skip processes where ALL nodes start with '_ros2cli'
+  - SKIP_RVIZ                 → skip processes where ANY node has procname='rviz2'
+
+
+2. Node → Entity Mapping (Layer 1 → Layer 2)
+---------------------------------------------
+Already implemented in model.py: identify_entities()
+
+Two data sources tried in order:
+  (a) node_info collection (from `ros2 node info`) — has msg types, srv types
+  (b) ros2_trace fallback (from trace events) — used when node_info missing (BUG-001)
+
+Timers: ALWAYS from trace fallback (ros2 node info doesn't report timers)
+Actions: detected by verify_actions() scanning for /_action/ pattern
+
+Entity types created:
+  - sub  (subscription)   → from Subscribers dict
+  - serv (service server) → from Service_Servers dict
+  - tmr  (timer)          → from Timers dict (trace-only)
+  - act  (action)         → from Action_Servers dict (abstract entity, see action_decomposition.txt)
+
+Publishers are NOT entities — stored as N.A_v['publishers'] for edge construction.
+
+
+3. Entity → Function/Callback Mapping (Layer 2 → Layer 3)
+----------------------------------------------------------
+TO BE IMPLEMENTED in model.py: identify_functions()
+
+Each entity type has a distinct trace event chain to reach its callback.
+All chains end at rclcpp_callback_register which provides the callback
+pointer and demangled symbol name.
+
+Verified: 83 total rclcpp_callback_register events, ALL accounted for
+(45 subscription + 5 timer + 33 service = 83, 0 unaccounted).
+
+
+3a. Subscription → Callback Chain
+...................................
+
+  Step 1: rcl_subscription_init
+    Match by: payload.node_handle = N.A_v['node_handle']
+    Extract:  payload.subscription_handle  (linking key to step 2)
+              payload.topic_name           (already known from entity)
+
+  Step 2: rclcpp_subscription_init
+    Match by: payload.subscription_handle = step 1's subscription_handle
+    Extract:  payload.subscription         (C++ subscription object pointer,
+                                            linking key to step 3)
+
+  Step 3: rclcpp_subscription_callback_added
+    Match by: payload.subscription = step 2's subscription
+    Extract:  payload.callback             (callback pointer, linking key to step 4)
+
+  Step 4: rclcpp_callback_register
+    Match by: payload.callback = step 3's callback
+    Extract:  payload.symbol               (demangled C++ symbol name)
+
+  Result: F vertex
+    A_v = {label: symbol_short, ptype: "cpu"}
+    Added to entity's Z_v
+
+  Verified example (kiss_icp_node):
+    /lidar_points → sub_handle=0x646F64157440 → subscription=0x646F64170A00
+    → callback=0x646F64170B68 → symbol: kiss_icp_ros::OdometryServer::*
+
+  Note: 16 subscriptions are rcl-only (no rclcpp layer). These are rclpy
+  nodes and ros2cli tools. See case_of_non_rclcpp.txt.
+
+
+3b. Timer → Callback Chain
+...........................
+
+  Step 1: rcl_timer_init
+    Match by: payload.timer_handle (known from entity, stored during entity extraction)
+    Extract:  payload.period               (already known from entity)
+
+  Step 2: rclcpp_timer_link_node
+    Match by: payload.timer_handle = step 1's timer_handle
+    Verify:   payload.node_handle matches expected node
+    Extract:  (confirmation only — timer_handle is the linking key)
+
+  Step 3: rclcpp_timer_callback_added
+    Match by: payload.timer_handle = step 1's timer_handle
+    Extract:  payload.callback             (linking key to step 4)
+
+  Step 4: rclcpp_callback_register
+    Match by: payload.callback = step 3's callback
+    Extract:  payload.symbol               (demangled C++ symbol name)
+
+  Result: F vertex
+    A_v = {label: symbol_short, ptype: "cpu"}
+    Added to entity's Z_v
+
+  Verified: all 5 timers successfully traced to callbacks.
+    px4_offboard:      2 timers (3s, 20ms periods)
+    px4_interface:     2 timers (3s, 100ms periods)
+    state_sharing_node: 1 timer (1s period)
+
+  Note: rcl_timer_init fires 166,890 times (periodic re-init on each tick).
+  For callback association, only the FIRST occurrence per timer_handle matters.
+  The rclcpp_timer_link_node and rclcpp_timer_callback_added events fire
+  exactly once per timer (5 events each).
+
+
+3c. Service → Callback Chain
+.............................
+
+  Step 1: rcl_service_init
+    Match by: payload.node_handle = N.A_v['node_handle']
+    Extract:  payload.service_handle       (linking key to step 2)
+              payload.service_name         (already known from entity)
+
+  Step 2: rclcpp_service_callback_added
+    Match by: payload.service_handle = step 1's service_handle
+    Extract:  payload.callback             (linking key to step 3)
+
+  Step 3: rclcpp_callback_register
+    Match by: payload.callback = step 2's callback
+    Extract:  payload.symbol               (demangled C++ symbol name)
+
+  Result: F vertex
+    A_v = {label: symbol_short, ptype: "cpu"}
+    Added to entity's Z_v
+
+  Verified example (kiss_icp_node, 7 services):
+    /kiss/reset → srv_handle=0x646F6422FE30 → callback=0x646F6419D670
+    → symbol: kiss_icp_ros::OdometryServer::*
+    (remaining 6 are ParameterService standard services)
+
+
+3d. Action → Callbacks
+.......................
+
+  Actions are abstract entities (etype="act") that reference 5 component
+  entities (3 services + 2 publishers). The action entity itself has no
+  direct callback. Its constituent service entities each have their own
+  callback chain (via 3c above). Publisher components have no callbacks.
+
+  The action's Z_v should contain the function IDs from its service
+  components' callbacks — effectively inheriting them via the component
+  reference in A_v['action_components'].
+
+
+4. Summary of Linking Keys
+--------------------------
+
+  Layer 0→1: vpid (process ID)
+  Layer 1→2: node_handle (from rcl_node_init payload)
+  Layer 2→3: depends on entity type:
+    sub:  subscription_handle → subscription → callback
+    tmr:  timer_handle → callback
+    serv: service_handle → callback
+    act:  (inherits from component service entities)
+
+  Final callback resolution: callback pointer → rclcpp_callback_register → symbol
+
+
+5. Datapoints Summary (from FISH paper Table II)
+-------------------------------------------------
+
+  Used for structure extraction (layers 0-3):
+    ros2:rcl_node_init                        → EX/N identification
+    ros2:rcl_subscription_init                → sub entity + chain start
+    ros2:rclcpp_subscription_init             → sub chain step 2
+    ros2:rclcpp_subscription_callback_added   → sub chain step 3
+    ros2:rcl_service_init                     → serv entity + chain start
+    ros2:rclcpp_service_callback_added        → serv chain step 2
+    ros2:rcl_timer_init                       → tmr entity (period)
+    ros2:rclcpp_timer_link_node               → tmr→node link
+    ros2:rclcpp_timer_callback_added          → tmr chain step 2
+    ros2:rclcpp_callback_register             → all chains final step (symbol)
+    node info (ros2_cli)                      → entity discovery (primary)
+
+  Used for timing characterization (after structure extraction):
+    ros2:callback_start                       → callback execution begin
+    ros2:callback_end                         → callback execution end
+    ros2:rclcpp_executor_execute              → executor dispatch timing
+    ros2:rclcpp_executor_get_next_ready       → executor scheduling
+    ros2:rclcpp_executor_wait_for_work        → executor idle time
+    ros2:rcl_publish / rclcpp_publish         → message send timing
+    ros2:rcl_take / rclcpp_take               → message receive timing
+
+  Used for GPU function layer (ptype="sm", "ce"):
+    gpu_kernels (nsys)                        → GPU kernel executions
+    cuda_runtime (nsys)                       → CPU-side CUDA API calls
+    gpu_memcpy (nsys)                         → GPU memory transfers
+    Linked by: correlationId (cuda_runtime ↔ gpu_kernels/gpu_memcpy)
+
+  Not present in this session:
+    ros2:rcl_client_init                      → 0 events (no service clients used)
+    cpu_function (utrace)                     → not collected in this session

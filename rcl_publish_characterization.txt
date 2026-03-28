@@ -1,0 +1,108 @@
+Why rcl_publish Can Be Used for Per-Callback Publish Characterization
+=====================================================================
+
+Purpose:
+  This document explains how rcl_publish events can be used to determine
+  WHICH entity's callback publishes to WHICH topic — information not
+  available from node_info alone.
+
+  This is NOT needed for edge construction (node_info topic matching
+  is sufficient). It enables finer-grained analysis: attributing
+  each publish to the specific callback that triggered it.
+
+
+1. The Structural Gap
+---------------------
+node_info tells us that Node A publishes on topic T, but not WHICH
+callback within Node A does the publishing. A node may have multiple
+entities (subscriptions, timers, services), each with its own callback,
+and different callbacks may publish to different topics.
+
+Example: kiss_icp_node has:
+  - SUB /lidar_points   → callback processes pointcloud
+  - SUB /clock           → callback updates sim time
+  - TMR timer_3000ms     → callback does periodic work
+  - Publishers: /odom, /frame, /keypoints, /map, /local_map, ...
+
+Which callback publishes /odom? Probably the /lidar_points subscription
+callback, but structurally we cannot tell.
+
+
+2. The rcl_publish Event
+------------------------
+ros2:rcl_publish fires every time a message is published.
+
+  Payload:
+    publisher_handle    → links to rcl_publisher_init → topic_name, node_handle
+    message             → opaque pointer (not useful for us)
+
+  Context fields (from LTTng):
+    vpid                → process ID
+    vtid                → thread ID
+    ts + ts_nanos       → nanosecond-precise timestamp
+
+
+3. The callback_start / callback_end Window
+-------------------------------------------
+ros2:callback_start and ros2:callback_end bracket each callback execution.
+
+  callback_start payload:
+    callback            → pointer, links to rclcpp_callback_register → symbol
+    is_intra_process    → 0 or 1
+
+  callback_end payload:
+    callback            → same pointer
+
+These events share the same vpid/vtid as the callback's thread.
+
+
+4. The Characterization Technique
+---------------------------------
+For each rcl_publish event, find the enclosing callback_start/end window:
+
+  callback_start  (vpid=V, vtid=T, callback=C, ts=T1)
+    ...
+    rcl_publish   (vpid=V, vtid=T, publisher_handle=P, ts=T2)   where T1 < T2 < T3
+    ...
+  callback_end    (vpid=V, vtid=T, callback=C, ts=T3)
+
+Since rcl_publish carries publisher_handle, and rcl_publisher_init maps
+publisher_handle → topic_name, we get:
+
+  callback C (→ entity via rclcpp_callback_register) published to topic T
+
+This gives us per-entity, per-topic publish attribution.
+
+
+5. Implementation Notes
+-----------------------
+  - Match by (vpid, vtid, timestamp window) — same process, same thread,
+    within the callback's time bounds.
+  - callback_start/end only fire for rclcpp nodes (not rclpy).
+    For rclpy nodes, rcl_publish still fires but cannot be attributed
+    to a specific callback without the start/end brackets.
+  - publisher_handle → topic resolution via rcl_publisher_init is a
+    one-time structural lookup (same as entity chain construction).
+  - This is a runtime characterization step, not a structural extraction.
+    It answers "what did this callback do at runtime" rather than
+    "what can this callback do structurally."
+
+
+6. Use Cases
+------------
+  (a) Entity-level edge refinement:
+      Instead of "Node A → topic T → Node B", we get
+      "Entity E1 on Node A → topic T → Entity E2 on Node B"
+      This decomposes node-level edges to entity-level edges.
+
+  (b) Callback workload profiling:
+      Count and time-distribute publishes per callback.
+      Identify which callbacks are the heaviest publishers.
+
+  (c) Dataflow path analysis:
+      Trace message chains: callback receives on topic T1 → processes
+      → publishes to topic T2. Reconstructs the node-internal dataflow.
+
+  (d) FISH paper contribution:
+      Demonstrates that FISH captures not just structural topology
+      but also runtime communication attribution at callback granularity.
