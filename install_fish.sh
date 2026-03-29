@@ -110,6 +110,7 @@ stop_session() {
     [[ -n "\$TPID" ]] && kill \$TPID 2>/dev/null
     rm -f \$FISH_COUNTER \$FISH_SESSION_NAME_FILE \$FISH_SESSION_DIR_FILE /tmp/fish_trace_pid
     if [[ -n "\$SESSION_DIR" ]]; then
+        chmod -R a+rX "\$SESSION_DIR" 2>/dev/null
         echo "[FISH] Session stopped. Output: \$SESSION_DIR/"
     else
         echo "[FISH] Session stopped."
@@ -230,9 +231,10 @@ echo "[FISH] Setup complete ($EVENT_COUNT events, settings loaded)"
 echo "ros2 -> $(which ros2)"
 echo ""
 echo "Commands:"
-echo "  export FISH_ENABLED=1         # enable tracing"
-echo "  ros2 run <pkg> <node>         # auto-traced"
-echo "  ros2 launch <pkg> <file>      # auto-traced"
+echo "  export FISH_ENABLED=1         # enable auto-tracing"
+echo "  export FISH_ENABLED=0         # disable auto-tracing (ros2 works normally)"
+echo "  ros2 run <pkg> <node>         # auto-traced when FISH_ENABLED=1"
+echo "  ros2 launch <pkg> <file>      # auto-traced when FISH_ENABLED=1"
 echo "  ros2 run fish                 # wrapper test"
 echo "  ros2 run fish status          # session + daemon info"
 echo "  ros2 run fish stop            # stop (snapshot + flush + save)"

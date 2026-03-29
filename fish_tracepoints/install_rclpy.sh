@@ -702,6 +702,34 @@ else
     warn "  ctypes bridge: import failed (will work after sourcing overlay)"
 fi
 
+# ─── Step 6: Ensure overlay is sourced at startup ────────────────────────────
+log "[+] Ensuring overlay is sourced in .bashrc and tmuxinator ..."
+
+BASHRC="/root/.bashrc"
+SETUP_LINE="source $OVERLAY_WS/install/setup.bash"
+
+# Remove any stale tracetools overlay source lines, add the correct one
+if [ -f "$BASHRC" ]; then
+    # Remove old/wrong overlay paths
+    sed -i '\|source.*/tracetools_ws/install/setup.bash|d' "$BASHRC"
+    sed -i '\|source.*/trace_overlay_ws/install/setup.bash|d' "$BASHRC"
+    # Add correct one at the end
+    echo "$SETUP_LINE" >> "$BASHRC"
+    log "  .bashrc updated: $SETUP_LINE"
+fi
+
+# Patch tmuxinator config to add pre_window hook
+TMUX_CFG="/aas/aircraft.yml.erb"
+if [ -f "$TMUX_CFG" ]; then
+    if grep -q "trace_overlay_ws" "$TMUX_CFG"; then
+        log "  tmuxinator config already has overlay source"
+    else
+        # Add pre_window after "name: drone" line
+        sed -i '/^name: drone$/a\pre_window: source /root/trace_overlay_ws/install/setup.bash' "$TMUX_CFG"
+        log "  tmuxinator config patched: pre_window added"
+    fi
+fi
+
 log ""
-log "To activate, source the overlay:"
+log "To activate NOW (without restart), source the overlay:"
 log "  source $OVERLAY_WS/install/setup.bash"

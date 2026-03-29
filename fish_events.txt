@@ -30,3 +30,14 @@ ros2:rcl_lifecycle_transition
 ros2:rclcpp_executor_get_next_ready
 ros2:rclcpp_executor_wait_for_work
 ros2:rclcpp_executor_execute
+# Action server dispatch (FISH custom)
+ros2:rclcpp_action_server_init
+ros2:rclcpp_action_execute_goal
+ros2:rclcpp_action_execute_cancel
+ros2:rclcpp_action_execute_result
+# rclpy callback chain (FISH custom)
+ros2:rclpy_subscription_callback_added
+ros2:rclpy_service_callback_added
+ros2:rclpy_timer_callback_added
+ros2:rclpy_timer_link_node
+ros2:rclpy_callback_register

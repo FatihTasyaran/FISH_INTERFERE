@@ -1,0 +1,1202 @@
+#!/bin/bash
+# =============================================================================
+# FISH Tracepoint Installer
+# =============================================================================
+# Installs custom LTTng tracepoints for ROS 2 into an overlay workspace.
+#
+# Features:
+#   --action  4 action server dispatch tracepoints (rclcpp_action C++ patches)
+#   --rclpy   5 rclpy callback chain tracepoints (ctypes bridge + Python patches)
+#   --all     Both (default if no flag given)
+#
+# Target: ROS 2 Humble
+# Packages: tracetools 4.1.2, rclcpp 16.0.19, rcl 5.3.12
+#
+# Usage:
+#   ./install_fish_tracepoints [--action] [--rclpy] [--all] [--help]
+#
+# After installation, source the overlay before launching ROS nodes:
+#   source /root/trace_overlay_ws/install/setup.bash
+# =============================================================================
+set -euo pipefail
+
+# ─── Argument parsing ────────────────────────────────────────────────────────
+DO_ACTION=false
+DO_RCLPY=false
+
+if [ $# -eq 0 ]; then
+    DO_ACTION=true
+    DO_RCLPY=true
+fi
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --action) DO_ACTION=true ;;
+        --rclpy)  DO_RCLPY=true ;;
+        --all)    DO_ACTION=true; DO_RCLPY=true ;;
+        --help|-h)
+            echo "Usage: $0 [--action] [--rclpy] [--all] [--help]"
+            echo ""
+            echo "  --action  Install 4 action server dispatch tracepoints"
+            echo "  --rclpy   Install 5 rclpy callback chain tracepoints"
+            echo "  --all     Install both (default if no flag given)"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            echo "Run $0 --help for usage" >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+# ─── Configuration ───────────────────────────────────────────────────────────
+OVERLAY_WS="${OVERLAY_WS:-/root/trace_overlay_ws}"
+TRACETOOLS_TAG="${TRACETOOLS_TAG:-4.1.2}"
+RCLCPP_TAG="${RCLCPP_TAG:-16.0.19}"
+RCL_TAG="${RCL_TAG:-5.3.12}"
+CLONE_DIR="/tmp/fish_tracepoint_src"
+RCLPY_DIR="/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy"
+
+# ─── Utility functions ───────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+STEP=0
+log()  { echo -e "${GREEN}[FISH]${NC} $*"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+err()  { echo -e "${RED}[ERR]${NC} $*" >&2; }
+step() { STEP=$((STEP + 1)); log "[$STEP] $*"; }
+
+clone_if_needed() {
+    local repo=$1 tag=$2 dir=$3
+    if [ -d "$dir" ]; then
+        log "  $dir already exists, skipping clone"
+    else
+        log "  Cloning $repo @ $tag ..."
+        git clone --depth 1 --branch "$tag" "$repo" "$dir" 2>&1 | tail -1
+    fi
+}
+
+# ─── Pre-flight checks ──────────────────────────────────────────────────────
+preflight_checks() {
+    if [ ! -f /opt/ros/humble/setup.bash ]; then
+        err "ROS 2 Humble not found at /opt/ros/humble. Aborting."
+        exit 1
+    fi
+    set +u && source /opt/ros/humble/setup.bash && set -u
+
+    command -v colcon >/dev/null 2>&1 || {
+        err "colcon not found. Install: apt install python3-colcon-common-extensions"
+        exit 1
+    }
+    command -v git >/dev/null 2>&1 || {
+        err "git not found. Install: apt install git"
+        exit 1
+    }
+    if $DO_RCLPY && [ ! -d "$RCLPY_DIR" ]; then
+        err "rclpy not found at $RCLPY_DIR. Aborting."
+        exit 1
+    fi
+
+    if ! python3 -c "import tracetools_trace" 2>/dev/null; then
+        err "tracetools_trace not found. FISH requires it for ros2 trace."
+        err "Install: apt install -y ros-humble-tracetools-trace ros-humble-ros2trace"
+        exit 1
+    fi
+}
+
+# ─── Workspace + clone functions ────────────────────────────────────────────
+create_workspace() {
+    step "Creating overlay workspace at $OVERLAY_WS ..."
+    mkdir -p "$OVERLAY_WS/src"
+}
+
+clone_repos() {
+    step "Cloning source repositories ..."
+    mkdir -p "$CLONE_DIR"
+
+    clone_if_needed \
+        "https://github.com/ros2/ros2_tracing.git" \
+        "$TRACETOOLS_TAG" "$CLONE_DIR/ros2_tracing"
+
+    if $DO_ACTION; then
+        clone_if_needed \
+            "https://github.com/ros2/rclcpp.git" \
+            "$RCLCPP_TAG" "$CLONE_DIR/rclcpp"
+        clone_if_needed \
+            "https://github.com/ros2/rcl.git" \
+            "$RCL_TAG" "$CLONE_DIR/rcl"
+    fi
+}
+
+copy_sources() {
+    step "Copying packages into workspace ..."
+
+    # Always need tracetools (fresh copy for clean patching)
+    if [ -d "$OVERLAY_WS/src/tracetools" ]; then
+        warn "  $OVERLAY_WS/src/tracetools exists, removing for clean state"
+        rm -rf "$OVERLAY_WS/src/tracetools"
+    fi
+    cp -r "$CLONE_DIR/ros2_tracing/tracetools" "$OVERLAY_WS/src/tracetools"
+
+    if $DO_ACTION; then
+        if [ -d "$OVERLAY_WS/src/rclcpp_action" ]; then
+            warn "  $OVERLAY_WS/src/rclcpp_action exists, removing for clean state"
+            rm -rf "$OVERLAY_WS/src/rclcpp_action"
+        fi
+        cp -r "$CLONE_DIR/rclcpp/rclcpp_action" "$OVERLAY_WS/src/rclcpp_action"
+        cp "$CLONE_DIR/rcl/rcl_action/src/rcl_action/action_server_impl.h" \
+           "$OVERLAY_WS/src/rclcpp_action/src/action_server_impl.h"
+        log "  Copied action_server_impl.h from rcl source"
+    fi
+}
+
+# ─── Tracetools C patches ───────────────────────────────────────────────────
+patch_tracetools_action() {
+    log "  Patching tracetools for action server tracepoints ..."
+    cd "$OVERLAY_WS/src/tracetools"
+
+    # --- tp_call.h ---
+    patch -p1 --forward --no-backup-if-mismatch <<'PATCH_TP_CALL' || true
+--- a/include/tracetools/tp_call.h
++++ b/include/tracetools/tp_call.h
+@@ -408,6 +408,58 @@
+   )
+ )
+
++TRACEPOINT_EVENT(
++  TRACEPOINT_PROVIDER,
++  rclcpp_action_server_init,
++  TP_ARGS(
++    const void *, action_server_handle_arg,
++    const char *, action_name_arg,
++    const void *, goal_service_handle_arg,
++    const void *, cancel_service_handle_arg,
++    const void *, result_service_handle_arg
++  ),
++  TP_FIELDS(
++    ctf_integer_hex(const void *, action_server_handle, action_server_handle_arg)
++    ctf_string(action_name, action_name_arg)
++    ctf_integer_hex(const void *, goal_service_handle, goal_service_handle_arg)
++    ctf_integer_hex(const void *, cancel_service_handle, cancel_service_handle_arg)
++    ctf_integer_hex(const void *, result_service_handle, result_service_handle_arg)
++  )
++)
++
++TRACEPOINT_EVENT(
++  TRACEPOINT_PROVIDER,
++  rclcpp_action_execute_goal,
++  TP_ARGS(
++    const void *, action_server_handle_arg
++  ),
++  TP_FIELDS(
++    ctf_integer_hex(const void *, action_server_handle, action_server_handle_arg)
++  )
++)
++
++TRACEPOINT_EVENT(
++  TRACEPOINT_PROVIDER,
++  rclcpp_action_execute_cancel,
++  TP_ARGS(
++    const void *, action_server_handle_arg
++  ),
++  TP_FIELDS(
++    ctf_integer_hex(const void *, action_server_handle, action_server_handle_arg)
++  )
++)
++
++TRACEPOINT_EVENT(
++  TRACEPOINT_PROVIDER,
++  rclcpp_action_execute_result,
++  TP_ARGS(
++    const void *, action_server_handle_arg
++  ),
++  TP_FIELDS(
++    ctf_integer_hex(const void *, action_server_handle, action_server_handle_arg)
++  )
++)
++
+ #endif  // _TRACETOOLS__TP_CALL_H_
+
+ #include <lttng/tracepoint-event.h>
+PATCH_TP_CALL
+    log "    tp_call.h patched"
+
+    # --- tracetools.h ---
+    patch -p1 --forward --no-backup-if-mismatch <<'PATCH_TT_H' || true
+--- a/include/tracetools/tracetools.h
++++ b/include/tracetools/tracetools.h
+@@ -482,6 +482,55 @@
+   rclcpp_executor_execute,
+   const void * handle)
+
++/// `rclcpp_action_server_init`
++/**
++ * Initialization of an action server.
++ * Links the action server handle to its name and component service handles.
++ *
++ * \param[in] action_server_handle pointer to the rcl_action_server_t
++ * \param[in] action_name the name of the action
++ * \param[in] goal_service_handle pointer to the goal service
++ * \param[in] cancel_service_handle pointer to the cancel service
++ * \param[in] result_service_handle pointer to the result service
++ */
++DECLARE_TRACEPOINT(
++  rclcpp_action_server_init,
++  const void * action_server_handle,
++  const char * action_name,
++  const void * goal_service_handle,
++  const void * cancel_service_handle,
++  const void * result_service_handle)
++
++/// `rclcpp_action_execute_goal`
++/**
++ * Start of action goal request dispatch.
++ *
++ * \param[in] action_server_handle pointer to the rcl_action_server_t
++ */
++DECLARE_TRACEPOINT(
++  rclcpp_action_execute_goal,
++  const void * action_server_handle)
++
++/// `rclcpp_action_execute_cancel`
++/**
++ * Start of action cancel request dispatch.
++ *
++ * \param[in] action_server_handle pointer to the rcl_action_server_t
++ */
++DECLARE_TRACEPOINT(
++  rclcpp_action_execute_cancel,
++  const void * action_server_handle)
++
++/// `rclcpp_action_execute_result`
++/**
++ * Start of action result request dispatch.
++ *
++ * \param[in] action_server_handle pointer to the rcl_action_server_t
++ */
++DECLARE_TRACEPOINT(
++  rclcpp_action_execute_result,
++  const void * action_server_handle)
++
+ #ifdef __cplusplus
+ }
+ #endif
+PATCH_TT_H
+    log "    tracetools.h patched"
+
+    # --- tracetools.c ---
+    patch -p1 --forward --no-backup-if-mismatch <<'PATCH_TT_C' || true
+--- a/src/tracetools.c
++++ b/src/tracetools.c
+@@ -362,6 +362,50 @@
+     handle);
+ }
+
++void TRACEPOINT(
++  rclcpp_action_server_init,
++  const void * action_server_handle,
++  const char * action_name,
++  const void * goal_service_handle,
++  const void * cancel_service_handle,
++  const void * result_service_handle)
++{
++  CONDITIONAL_TP(
++    rclcpp_action_server_init,
++    action_server_handle,
++    action_name,
++    goal_service_handle,
++    cancel_service_handle,
++    result_service_handle);
++}
++
++void TRACEPOINT(
++  rclcpp_action_execute_goal,
++  const void * action_server_handle)
++{
++  CONDITIONAL_TP(
++    rclcpp_action_execute_goal,
++    action_server_handle);
++}
++
++void TRACEPOINT(
++  rclcpp_action_execute_cancel,
++  const void * action_server_handle)
++{
++  CONDITIONAL_TP(
++    rclcpp_action_execute_cancel,
++    action_server_handle);
++}
++
++void TRACEPOINT(
++  rclcpp_action_execute_result,
++  const void * action_server_handle)
++{
++  CONDITIONAL_TP(
++    rclcpp_action_execute_result,
++    action_server_handle);
++}
++
+ #ifndef _WIN32
+ # pragma GCC diagnostic pop
+ #else
+PATCH_TT_C
+    log "    tracetools.c patched"
+}
+
+patch_tracetools_rclpy() {
+    log "  Patching tracetools for rclpy tracepoints ..."
+
+    python3 <<'PATCH_RCLPY_C'
+OVERLAY = "/root/trace_overlay_ws/src/tracetools"
+
+# ── tp_call.h ──
+path = f"{OVERLAY}/include/tracetools/tp_call.h"
+with open(path) as f:
+    content = f.read()
+
+if "rclpy_subscription_callback_added" in content:
+    print("    tp_call.h already has rclpy events, skipping")
+else:
+    INSERT_BEFORE = "#endif  // _TRACETOOLS__TP_CALL_H_"
+    new_events = """
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  rclpy_subscription_callback_added,
+  TP_ARGS(
+    const void *, subscription_handle_arg,
+    const void *, callback_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, subscription_handle, subscription_handle_arg)
+    ctf_integer_hex(const void *, callback, callback_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  rclpy_service_callback_added,
+  TP_ARGS(
+    const void *, service_handle_arg,
+    const void *, callback_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, service_handle, service_handle_arg)
+    ctf_integer_hex(const void *, callback, callback_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  rclpy_timer_callback_added,
+  TP_ARGS(
+    const void *, timer_handle_arg,
+    const void *, callback_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, timer_handle, timer_handle_arg)
+    ctf_integer_hex(const void *, callback, callback_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  rclpy_timer_link_node,
+  TP_ARGS(
+    const void *, timer_handle_arg,
+    const void *, node_handle_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, timer_handle, timer_handle_arg)
+    ctf_integer_hex(const void *, node_handle, node_handle_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  rclpy_callback_register,
+  TP_ARGS(
+    const void *, callback_arg,
+    const char *, symbol_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, callback, callback_arg)
+    ctf_string(symbol, symbol_arg)
+  )
+)
+
+"""
+    content = content.replace(INSERT_BEFORE, new_events + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tp_call.h patched")
+
+# ── tracetools.h ──
+path = f"{OVERLAY}/include/tracetools/tracetools.h"
+with open(path) as f:
+    content = f.read()
+
+if "rclpy_subscription_callback_added" in content:
+    print("    tracetools.h already has rclpy events, skipping")
+else:
+    INSERT_BEFORE = "#ifdef __cplusplus\n}\n#endif\n\n#endif  // TRACETOOLS__TRACETOOLS_H_"
+    new_decls = """/// `rclpy_subscription_callback_added`
+/**
+ * Link a rclpy subscription to its Python callback.
+ *
+ * \\param[in] subscription_handle pointer to the rcl_subscription_t handle
+ * \\param[in] callback Python callback id (id(callable))
+ */
+DECLARE_TRACEPOINT(
+  rclpy_subscription_callback_added,
+  const void * subscription_handle,
+  const void * callback)
+
+/// `rclpy_service_callback_added`
+/**
+ * Link a rclpy service to its Python callback.
+ *
+ * \\param[in] service_handle pointer to the rcl_service_t handle
+ * \\param[in] callback Python callback id
+ */
+DECLARE_TRACEPOINT(
+  rclpy_service_callback_added,
+  const void * service_handle,
+  const void * callback)
+
+/// `rclpy_timer_callback_added`
+/**
+ * Link a rclpy timer to its Python callback.
+ *
+ * \\param[in] timer_handle pointer to the rcl_timer_t handle
+ * \\param[in] callback Python callback id
+ */
+DECLARE_TRACEPOINT(
+  rclpy_timer_callback_added,
+  const void * timer_handle,
+  const void * callback)
+
+/// `rclpy_timer_link_node`
+/**
+ * Link a rclpy timer to its parent node.
+ *
+ * \\param[in] timer_handle pointer to the rcl_timer_t handle
+ * \\param[in] node_handle pointer to the rcl_node_t handle
+ */
+DECLARE_TRACEPOINT(
+  rclpy_timer_link_node,
+  const void * timer_handle,
+  const void * node_handle)
+
+/// `rclpy_callback_register`
+/**
+ * Register a Python callback symbol.
+ *
+ * \\param[in] callback Python callback id
+ * \\param[in] symbol Python qualname of the callback
+ */
+DECLARE_TRACEPOINT(
+  rclpy_callback_register,
+  const void * callback,
+  const char * symbol)
+
+"""
+    content = content.replace(INSERT_BEFORE, new_decls + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tracetools.h patched")
+
+# ── tracetools.c ──
+path = f"{OVERLAY}/src/tracetools.c"
+with open(path) as f:
+    content = f.read()
+
+if "rclpy_subscription_callback_added" in content:
+    print("    tracetools.c already has rclpy events, skipping")
+else:
+    INSERT_BEFORE = "#ifndef _WIN32\n# pragma GCC diagnostic pop"
+    new_impls = """void TRACEPOINT(
+  rclpy_subscription_callback_added,
+  const void * subscription_handle,
+  const void * callback)
+{
+  CONDITIONAL_TP(
+    rclpy_subscription_callback_added,
+    subscription_handle,
+    callback);
+}
+
+void TRACEPOINT(
+  rclpy_service_callback_added,
+  const void * service_handle,
+  const void * callback)
+{
+  CONDITIONAL_TP(
+    rclpy_service_callback_added,
+    service_handle,
+    callback);
+}
+
+void TRACEPOINT(
+  rclpy_timer_callback_added,
+  const void * timer_handle,
+  const void * callback)
+{
+  CONDITIONAL_TP(
+    rclpy_timer_callback_added,
+    timer_handle,
+    callback);
+}
+
+void TRACEPOINT(
+  rclpy_timer_link_node,
+  const void * timer_handle,
+  const void * node_handle)
+{
+  CONDITIONAL_TP(
+    rclpy_timer_link_node,
+    timer_handle,
+    node_handle);
+}
+
+void TRACEPOINT(
+  rclpy_callback_register,
+  const void * callback,
+  const char * symbol)
+{
+  CONDITIONAL_TP(
+    rclpy_callback_register,
+    callback,
+    symbol);
+}
+
+"""
+    content = content.replace(INSERT_BEFORE, new_impls + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tracetools.c patched")
+
+print("  Done.")
+PATCH_RCLPY_C
+}
+
+# ─── Build tracetools ───────────────────────────────────────────────────────
+build_tracetools() {
+    step "Building tracetools ..."
+    cd "$OVERLAY_WS"
+
+    colcon build \
+        --packages-select tracetools \
+        --cmake-args -DBUILD_TESTING=OFF \
+        2>&1 | tail -5
+
+    # Verify symbols
+    local so="$OVERLAY_WS/install/tracetools/lib/libtracetools.so"
+    if $DO_ACTION; then
+        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_rclcpp_action_server_init"; then
+            log "  Action symbols: OK"
+        else
+            err "  Action symbols: FAILED"
+            exit 1
+        fi
+    fi
+    if $DO_RCLPY; then
+        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_rclpy_subscription_callback_added"; then
+            log "  rclpy symbols: OK"
+        else
+            err "  rclpy symbols: FAILED"
+            exit 1
+        fi
+    fi
+}
+
+# ─── Action: patch + build rclcpp_action ─────────────────────────────────────
+patch_and_build_rclcpp_action() {
+    step "Patching and building rclcpp_action ..."
+
+    cd "$OVERLAY_WS/src/rclcpp_action"
+
+    # --- CMakeLists.txt ---
+    patch -p1 --forward --no-backup-if-mismatch <<'PATCH_CMAKE' || true
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -8,6 +8,7 @@
+ find_package(rcl_action REQUIRED)
+ find_package(rcpputils REQUIRED)
+ find_package(rosidl_runtime_c REQUIRED)
++find_package(tracetools REQUIRED)
+
+ # Default to C++14
+ if(NOT CMAKE_CXX_STANDARD)
+@@ -42,6 +43,7 @@
+   "rclcpp"
+   "rcpputils"
+   "rosidl_runtime_c"
++  "tracetools"
+ )
+
+ # Causes the visibility macros to use dllexport rather than dllimport,
+PATCH_CMAKE
+    log "    CMakeLists.txt patched"
+
+    # --- server.cpp ---
+    patch -p1 --forward --no-backup-if-mismatch <<'PATCH_SERVER' || true
+--- a/src/server.cpp
++++ b/src/server.cpp
+@@ -30,6 +30,8 @@
+ #include "action_msgs/srv/cancel_goal.hpp"
+ #include "rclcpp/exceptions.hpp"
+ #include "rclcpp_action/server.hpp"
++#include <tracetools/tracetools.h>
++#include "action_server_impl.h"
+
+ using rclcpp_action::ServerBase;
+ using rclcpp_action::GoalUUID;
+@@ -162,6 +164,18 @@
+     rclcpp::exceptions::throw_from_rcl_error(ret);
+   }
+
++  // FISH: Trace action server initialization
++  {
++    rcl_action_server_t * as = pimpl_->action_server_.get();
++    TRACEPOINT(
++      rclcpp_action_server_init,
++      static_cast<const void *>(as),
++      as->impl->action_name,
++      static_cast<const void *>(&as->impl->goal_service),
++      static_cast<const void *>(&as->impl->cancel_service),
++      static_cast<const void *>(&as->impl->result_service));
++  }
++
+   ret = rcl_action_server_wait_set_get_num_entities(
+     pimpl_->action_server_.get(),
+     &pimpl_->num_subscriptions_,
+@@ -391,6 +405,7 @@
+ void
+ ServerBase::execute_goal_request_received(std::shared_ptr<void> & data)
+ {
++  TRACEPOINT(rclcpp_action_execute_goal, static_cast<const void *>(pimpl_->action_server_.get()));
+   std::shared_ptr<ServerBaseData> data_ptr = std::static_pointer_cast<ServerBaseData>(data);
+   const ServerBaseData::GoalRequestData & gData(
+     std::get<ServerBaseData::GoalRequestData>(data_ptr->data));
+@@ -491,6 +506,7 @@
+ void
+ ServerBase::execute_cancel_request_received(std::shared_ptr<void> & data)
+ {
++  TRACEPOINT(rclcpp_action_execute_cancel, static_cast<const void *>(pimpl_->action_server_.get()));
+   std::shared_ptr<ServerBaseData> data_ptr = std::static_pointer_cast<ServerBaseData>(data);
+   const ServerBaseData::CancelRequestData & gData(
+     std::get<ServerBaseData::CancelRequestData>(data_ptr->data));
+@@ -592,6 +608,7 @@
+ void
+ ServerBase::execute_result_request_received(std::shared_ptr<void> & data)
+ {
++  TRACEPOINT(rclcpp_action_execute_result, static_cast<const void *>(pimpl_->action_server_.get()));
+   std::shared_ptr<ServerBaseData> data_ptr = std::static_pointer_cast<ServerBaseData>(data);
+   const ServerBaseData::ResultRequestData & gData(
+     std::get<ServerBaseData::ResultRequestData>(data_ptr->data));
+PATCH_SERVER
+    log "    server.cpp patched"
+
+    # Build
+    set +u && source "$OVERLAY_WS/install/setup.bash" && set -u
+
+    cd "$OVERLAY_WS"
+    colcon build \
+        --packages-select rclcpp_action \
+        --cmake-args \
+            -DBUILD_TESTING=OFF \
+            "-Dtracetools_DIR=$OVERLAY_WS/install/tracetools/share/tracetools/cmake" \
+        2>&1 | tail -5
+
+    log "  rclcpp_action built"
+}
+
+# ─── rclpy: ctypes bridge + Python patches ───────────────────────────────────
+create_ctypes_bridge() {
+    log "  Creating fish_rclpy_trace.py ctypes bridge ..."
+
+    cat > "$RCLPY_DIR/fish_rclpy_trace.py" <<'PYBRIDGE'
+"""
+FISH rclpy tracepoint bridge.
+
+Calls LTTng tracepoint functions in libtracetools.so via ctypes.
+Provides the rclpy callback chain events that rclcpp fires natively
+but rclpy does not.
+
+Usage (from rclpy internals):
+    from rclpy.fish_rclpy_trace import trace_sub_cb, trace_cb_start, ...
+"""
+import ctypes
+import os
+
+_lib = None
+_enabled = False
+
+def _init():
+    global _lib, _enabled
+    try:
+        for path in [
+            os.environ.get("FISH_TRACETOOLS_LIB", ""),
+            "libtracetools.so",
+        ]:
+            if path and (os.path.isfile(path) or "/" not in path):
+                try:
+                    _lib = ctypes.CDLL(path)
+                    break
+                except OSError:
+                    continue
+        if _lib is None:
+            return
+
+        _lib.ros_trace_compile_status.restype = ctypes.c_bool
+        if not _lib.ros_trace_compile_status():
+            return
+
+        for name in [
+            "ros_trace_rclpy_subscription_callback_added",
+            "ros_trace_rclpy_service_callback_added",
+            "ros_trace_rclpy_timer_callback_added",
+            "ros_trace_rclpy_timer_link_node",
+        ]:
+            fn = getattr(_lib, name)
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            fn.restype = None
+
+        _lib.ros_trace_rclpy_callback_register.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p]
+        _lib.ros_trace_rclpy_callback_register.restype = None
+
+        _lib.ros_trace_callback_start.argtypes = [
+            ctypes.c_void_p, ctypes.c_bool]
+        _lib.ros_trace_callback_start.restype = None
+
+        _lib.ros_trace_callback_end.argtypes = [ctypes.c_void_p]
+        _lib.ros_trace_callback_end.restype = None
+
+        _enabled = True
+    except (OSError, AttributeError):
+        _enabled = False
+
+_init()
+
+
+def _get_symbol(callback):
+    sym = getattr(callback, '__qualname__', None)
+    mod = getattr(callback, '__module__', None)
+    if sym and mod:
+        return f"{mod}.{sym}"
+    elif sym:
+        return sym
+    return repr(callback)
+
+
+def _register(callback):
+    if not _enabled:
+        return
+    cb_id = id(callback)
+    symbol = _get_symbol(callback)
+    _lib.ros_trace_rclpy_callback_register(
+        ctypes.c_void_p(cb_id), symbol.encode('utf-8'))
+
+
+def trace_sub_cb(sub_handle_ptr, callback):
+    if not _enabled:
+        return
+    cb_id = ctypes.c_void_p(id(callback))
+    _lib.ros_trace_rclpy_subscription_callback_added(
+        ctypes.c_void_p(sub_handle_ptr), cb_id)
+    _register(callback)
+
+
+def trace_srv_cb(srv_handle_ptr, callback):
+    if not _enabled:
+        return
+    cb_id = ctypes.c_void_p(id(callback))
+    _lib.ros_trace_rclpy_service_callback_added(
+        ctypes.c_void_p(srv_handle_ptr), cb_id)
+    _register(callback)
+
+
+def trace_tmr_cb(tmr_handle_ptr, callback):
+    if not _enabled:
+        return
+    cb_id = ctypes.c_void_p(id(callback))
+    _lib.ros_trace_rclpy_timer_callback_added(
+        ctypes.c_void_p(tmr_handle_ptr), cb_id)
+    _register(callback)
+
+
+def trace_tmr_node(tmr_handle_ptr, node_handle_ptr):
+    if not _enabled:
+        return
+    _lib.ros_trace_rclpy_timer_link_node(
+        ctypes.c_void_p(tmr_handle_ptr),
+        ctypes.c_void_p(node_handle_ptr))
+
+
+def trace_cb_start(callback):
+    if not _enabled:
+        return
+    _lib.ros_trace_callback_start(ctypes.c_void_p(id(callback)), False)
+
+
+def trace_cb_end(callback):
+    if not _enabled:
+        return
+    _lib.ros_trace_callback_end(ctypes.c_void_p(id(callback)))
+PYBRIDGE
+
+    log "    Created $RCLPY_DIR/fish_rclpy_trace.py"
+}
+
+patch_rclpy_sources() {
+    log "  Patching rclpy source files ..."
+
+    python3 <<PATCH_RCLPY
+import re
+
+RCLPY = "$RCLPY_DIR"
+
+# ── subscription.py ──
+path = f"{RCLPY}/subscription.py"
+with open(path) as f:
+    content = f.read()
+
+if "fish_rclpy_trace" in content:
+    print("    subscription.py already patched")
+else:
+    old = "        self.event_handlers: QoSEventHandler = event_callbacks.create_event_handlers(\n            callback_group, subscription_impl, topic)"
+    new = old + """
+
+        # FISH: trace rclpy subscription callback chain
+        try:
+            from rclpy.fish_rclpy_trace import trace_sub_cb
+            trace_sub_cb(self.handle.pointer, self.callback)
+        except Exception:
+            pass"""
+    content = content.replace(old, new)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    subscription.py patched")
+
+# ── service.py ──
+path = f"{RCLPY}/service.py"
+with open(path) as f:
+    content = f.read()
+
+if "fish_rclpy_trace" in content:
+    print("    service.py already patched")
+else:
+    old = "        self.qos_profile = qos_profile"
+    new = old + """
+
+        # FISH: trace rclpy service callback chain
+        try:
+            from rclpy.fish_rclpy_trace import trace_srv_cb
+            trace_srv_cb(self.handle.pointer, self.callback)
+        except Exception:
+            pass"""
+    content = content.replace(old, new)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    service.py patched")
+
+# ── timer.py ──
+path = f"{RCLPY}/timer.py"
+with open(path) as f:
+    content = f.read()
+
+if "fish_rclpy_trace" in content:
+    print("    timer.py already patched")
+else:
+    old = "        self._executor_event = False"
+    idx = content.find(old)
+    if idx >= 0:
+        content = content[:idx] + old + """
+
+        # FISH: trace rclpy timer callback chain
+        try:
+            from rclpy.fish_rclpy_trace import trace_tmr_cb
+            trace_tmr_cb(self.handle.pointer, self.callback)
+        except Exception:
+            pass""" + content[idx + len(old):]
+    with open(path, "w") as f:
+        f.write(content)
+    print("    timer.py patched")
+
+# ── node.py ──
+path = f"{RCLPY}/node.py"
+with open(path) as f:
+    content = f.read()
+
+if "fish_rclpy_trace" in content:
+    print("    node.py already patched")
+else:
+    old = "        timer = Timer(callback, callback_group, timer_period_nsec, clock, context=self.context)\n\n        callback_group.add_entity(timer)"
+    new = """        timer = Timer(callback, callback_group, timer_period_nsec, clock, context=self.context)
+
+        # FISH: trace rclpy timer -> node link
+        try:
+            from rclpy.fish_rclpy_trace import trace_tmr_node
+            trace_tmr_node(timer.handle.pointer, self.handle.pointer)
+        except Exception:
+            pass
+
+        callback_group.add_entity(timer)"""
+    content = content.replace(old, new)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    node.py patched")
+
+# ── executors.py ──
+path = f"{RCLPY}/executors.py"
+with open(path) as f:
+    content = f.read()
+
+if "fish_rclpy_trace" in content:
+    print("    executors.py already patched")
+else:
+    old_sub = """    async def _execute_subscription(self, sub, msg):
+        if msg:
+            await await_or_execute(sub.callback, msg)"""
+    new_sub = """    async def _execute_subscription(self, sub, msg):
+        if msg:
+            from rclpy.fish_rclpy_trace import trace_cb_start, trace_cb_end
+            trace_cb_start(sub.callback)
+            try:
+                await await_or_execute(sub.callback, msg)
+            finally:
+                trace_cb_end(sub.callback)"""
+
+    old_tmr = """    async def _execute_timer(self, tmr, ready):
+        if ready:
+            await await_or_execute(tmr.callback)"""
+    new_tmr = """    async def _execute_timer(self, tmr, ready):
+        if ready:
+            from rclpy.fish_rclpy_trace import trace_cb_start, trace_cb_end
+            trace_cb_start(tmr.callback)
+            try:
+                await await_or_execute(tmr.callback)
+            finally:
+                trace_cb_end(tmr.callback)"""
+
+    old_srv = """    async def _execute_service(self, srv, request_and_header):
+        if request_and_header is None:
+            return
+        (request, header) = request_and_header
+        if request:
+            response = await await_or_execute(srv.callback, request, srv.srv_type.Response())
+            srv.send_response(response, header)"""
+    new_srv = """    async def _execute_service(self, srv, request_and_header):
+        if request_and_header is None:
+            return
+        (request, header) = request_and_header
+        if request:
+            from rclpy.fish_rclpy_trace import trace_cb_start, trace_cb_end
+            trace_cb_start(srv.callback)
+            try:
+                response = await await_or_execute(srv.callback, request, srv.srv_type.Response())
+            finally:
+                trace_cb_end(srv.callback)
+            srv.send_response(response, header)"""
+
+    content = content.replace(old_sub, new_sub)
+    content = content.replace(old_tmr, new_tmr)
+    content = content.replace(old_srv, new_srv)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    executors.py patched")
+
+# Clear __pycache__
+import shutil, os
+cache = f"{RCLPY}/__pycache__"
+if os.path.isdir(cache):
+    shutil.rmtree(cache)
+    print("    __pycache__ cleared")
+
+print("  Done.")
+PATCH_RCLPY
+}
+
+install_rclpy_tracepoints() {
+    step "Installing rclpy tracepoints ..."
+    create_ctypes_bridge
+    patch_rclpy_sources
+}
+
+# ─── Patch names.py ──────────────────────────────────────────────────────────
+patch_names_py() {
+    step "Patching tracetools_trace event list (names.py) ..."
+
+    NAMES_PY=$(python3 -c "
+import tracetools_trace.tools.names as m
+import os
+print(os.path.abspath(m.__file__))
+")
+
+    if [ ! -f "$NAMES_PY" ]; then
+        err "Could not find tracetools_trace names.py at $NAMES_PY"
+        exit 1
+    fi
+
+    python3 <<PATCHNAMES
+do_action = $( $DO_ACTION && echo "True" || echo "False" )
+do_rclpy  = $( $DO_RCLPY  && echo "True" || echo "False" )
+
+with open("$NAMES_PY") as f:
+    content = f.read()
+
+changed = False
+
+# Action events
+if do_action and "rclcpp_action_server_init" not in content:
+    action_entries = '''    "ros2:rclcpp_action_server_init",
+    "ros2:rclcpp_action_execute_goal",
+    "ros2:rclcpp_action_execute_cancel",
+    "ros2:rclcpp_action_execute_result",'''
+    content = content.replace(
+        "    tracepoints.rclcpp_executor_execute,\n]",
+        "    tracepoints.rclcpp_executor_execute,\n" + action_entries + "\n]"
+    )
+    changed = True
+    print("  Added 4 action events")
+elif do_action:
+    print("  Action events already present")
+
+# rclpy events
+if do_rclpy and "rclpy_subscription_callback_added" not in content:
+    rclpy_entries = '''    "ros2:rclpy_subscription_callback_added",
+    "ros2:rclpy_service_callback_added",
+    "ros2:rclpy_timer_callback_added",
+    "ros2:rclpy_timer_link_node",
+    "ros2:rclpy_callback_register",'''
+
+    # Find the right anchor: after action events if present, else after stock events
+    if '"ros2:rclcpp_action_execute_result",' in content:
+        anchor = '    "ros2:rclcpp_action_execute_result",\n]'
+        content = content.replace(anchor,
+            '    "ros2:rclcpp_action_execute_result",\n' + rclpy_entries + '\n]')
+    else:
+        anchor = "    tracepoints.rclcpp_executor_execute,\n]"
+        content = content.replace(anchor,
+            "    tracepoints.rclcpp_executor_execute,\n" + rclpy_entries + "\n]")
+    changed = True
+    print("  Added 5 rclpy events")
+elif do_rclpy:
+    print("  rclpy events already present")
+
+if changed:
+    with open("$NAMES_PY", "w") as f:
+        f.write(content)
+
+PATCHNAMES
+}
+
+# ─── Verification ────────────────────────────────────────────────────────────
+verify() {
+    log ""
+    log "=========================================="
+    log " FISH Tracepoints Installed"
+    log "=========================================="
+    log ""
+    log "Overlay workspace: $OVERLAY_WS"
+    log ""
+
+    local so="$OVERLAY_WS/install/tracetools/lib/libtracetools.so"
+
+    if $DO_ACTION; then
+        local action_syms
+        action_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_rclcpp_action_" || true)
+        log "Action symbols in libtracetools.so: $action_syms (expected: 4)"
+    fi
+
+    if $DO_RCLPY; then
+        local rclpy_syms
+        rclpy_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_rclpy_" || true)
+        log "rclpy symbols in libtracetools.so: $rclpy_syms (expected: 5)"
+
+        if python3 -c "from rclpy.fish_rclpy_trace import trace_sub_cb; print('  ctypes bridge: OK')" 2>/dev/null; then
+            :
+        else
+            warn "  ctypes bridge: import failed (will work after sourcing overlay)"
+        fi
+    fi
+
+    # Event count
+    set +u && source "$OVERLAY_WS/install/setup.bash" && set -u
+    local event_count
+    event_count=$(python3 -c "
+from tracetools_trace.tools.names import DEFAULT_EVENTS_ROS
+print(len(DEFAULT_EVENTS_ROS))
+" 2>/dev/null || echo "0")
+
+    local expected=28
+    $DO_ACTION && expected=$((expected + 4))
+    $DO_RCLPY  && expected=$((expected + 5))
+    log "Events in DEFAULT_EVENTS_ROS: $event_count (expected: $expected)"
+
+    if [ "${FISH_SETUP_PARENT:-}" != "1" ]; then
+        log ""
+        log "Done. Commit this container to bake FISH tracepoints into your image."
+    fi
+}
+
+# ─── Setup .bashrc ───────────────────────────────────────────────────────────
+setup_bashrc() {
+    step "Updating .bashrc with overlay source ..."
+
+    local BASHRC="$HOME/.bashrc"
+    local MARKER="# FISH_TRACEPOINTS_OVERLAY"
+    local SETUP_LINE="source $OVERLAY_WS/install/setup.bash  $MARKER"
+
+    if [ ! -f "$BASHRC" ]; then
+        warn "  $BASHRC not found, creating it"
+        touch "$BASHRC"
+    fi
+
+    # Remove only FISH's own line (identified by marker), leave user's overlays alone
+    sed -i "/$MARKER/d" "$BASHRC"
+
+    # Append fresh
+    echo "$SETUP_LINE" >> "$BASHRC"
+    log "  Added to .bashrc: $SETUP_LINE"
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Main
+# ═════════════════════════════════════════════════════════════════════════════
+main() {
+    log "FISH Tracepoint Installer"
+    log "  action: $DO_ACTION"
+    log "  rclpy:  $DO_RCLPY"
+    log ""
+
+    preflight_checks
+    create_workspace
+    clone_repos
+    copy_sources
+
+    # Patch tracetools C source (action first, then rclpy)
+    step "Patching tracetools C source ..."
+    $DO_ACTION && patch_tracetools_action
+    $DO_RCLPY  && patch_tracetools_rclpy
+
+    build_tracetools
+
+    # Feature-specific post-build work
+    $DO_ACTION && patch_and_build_rclcpp_action
+    if $DO_RCLPY; then
+        install_rclpy_tracepoints
+    fi
+
+    patch_names_py
+    setup_bashrc
+    verify
+}
+
+main "$@"
