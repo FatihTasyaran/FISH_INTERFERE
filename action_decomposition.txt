@@ -140,3 +140,57 @@ Given a set of services and publishers for a node:
 This algorithm works identically on node_info data (where actions may
 already be in Action_Servers) and on trace-derived fallback data (where
 actions appear as flat services and publishers).
+
+
+6. Implementation (verified, session fish_20260329_182842)
+----------------------------------------------------------
+identify_entities() creates the following structure per action:
+
+  Action entity (etype="act", level 2):
+    A_v:
+      label:             "/Drone1/land_action"
+      action_type:       "autopilot_interface_msgs/action/Land"
+      action_handle:     0x61EA75ED11B0  (from rclcpp_action_server_init)
+      action_components: {
+        send_goal:    <entity_id>,       # service component entity
+        cancel_goal:  <entity_id>,       # service component entity
+        get_result:   <entity_id>,       # service component entity
+        feedback:     <publisher_handle>,
+        status:       <publisher_handle>
+      }
+    Z_v: []  (empty — abstract entity, functions live on components)
+
+  3 service component entities (etype="serv", level 2):
+    Each has: label, service_handle (from rclcpp_action_server_init),
+              action_role ("send_goal"/"cancel_goal"/"get_result")
+    Added to parent node's Z_v as independent entities.
+
+  2 publisher components stored as handles in action_components
+    (not separate entities — publishers have no callbacks).
+
+identify_callbacks() creates function vertices on the component
+service entities (NOT on the action entity):
+
+  Component entity: /Drone1/land_action/_action/send_goal
+    Z_v: [function_id]
+    Function: land_action::goal (ptype="cpu")
+
+  Component entity: /Drone1/land_action/_action/cancel_goal
+    Z_v: [function_id]
+    Function: land_action::cancel (ptype="cpu")
+
+  Component entity: /Drone1/land_action/_action/get_result
+    Z_v: [function_id]
+    Function: land_action::result (ptype="cpu")
+
+Key insight: action component services do NOT fire
+rclcpp_service_callback_added. They use internal dispatch via
+ServerBase::execute_goal_request_received() etc. The function
+vertices are created structurally from the action_role attribute.
+Runtime timing will come from rclcpp_action_execute_goal/cancel/result
+custom tracepoints (FISH) which carry action_server_handle.
+
+Verified counts for px4_interface node (4 actions):
+  Entities: +12 component services, +4 action abstracts = +16
+  Functions: +12 (4 actions × 3 handlers)
+  Total model: 5 executors, 6 nodes, 49 entities, 45 functions

@@ -1,0 +1,292 @@
+FISH Communication Patterns — Atomic Definitions
+===================================================
+
+Terminology
+-----------
+  Entity:   A node's callback implementation. Entity type = callback type.
+            Types: sub, serv, tmr, cli
+            An entity may have publisher or subscriber aspects — these
+            determine edge direction, not entity type.
+
+  Aspect:   A feature of an entity within a communication pattern.
+            An entity whose callback publishes has a "publisher aspect".
+            An entity whose callback receives has a "subscriber aspect".
+            Aspects are not entity types — they describe participation
+            in a specific communication instance.
+
+  Aspect list:  Each entity carries a list of (aspect, topic, msg_type)
+                tuples describing all communications it participates in.
+
+
+==========================================================================
+1. Publisher-Subscriber (via Topics)
+==========================================================================
+
+Elements:
+  - Publisher:   an entity whose callback publishes a message on a topic
+  - Subscriber:  an entity whose callback receives a message from a topic
+  - Topic:       named channel with a message type
+  - Message:     the data transferred
+
+Any entity type (sub, serv, tmr, cli) can have a publisher aspect.
+The subscriber side is always an entity with etype="sub".
+
+Edge:
+  publishing_entity ════> subscribing_entity
+  nature = "msg"
+
+Aspect examples:
+  Entity: [SUB] /lidar_points on kiss_icp_node
+    aspects:
+      - aspect: sub,  topic: /lidar_points,  msg: PointCloud2
+      - aspect: pub,  topic: /kiss/odometry, msg: Odometry
+      - aspect: pub,  topic: /tf,            msg: TFMessage
+      - aspect: pub,  topic: /kiss/frame,    msg: PointCloud2
+      - aspect: pub,  topic: /kiss/keypoints,msg: PointCloud2
+      - aspect: pub,  topic: /kiss/local_map,msg: PointCloud2
+
+  Entity: [TMR] timer_20ms on px4_offboard
+    aspects:
+      - aspect: pub,  topic: /Drone1/fmu/in/trajectory_setpoint, msg: ...
+
+ASCII representation:
+
+              Node A                              Node B
+           ┌──────────┐                       ┌──────────┐
+           │          │                       │          │
+           │  [SUB]   │     /topic_X          │          │
+           │  cb_A    │ <...................   │  (pub    │
+           │          │  (triggers cb_A)       │  from    │
+           │  aspects:│                       │  some    │
+           │   sub: /topic_X                  │  entity) │
+           │   pub: /topic_Y                  │          │
+           │          │                       └──────────┘
+           │          │     /topic_Y
+           │          │ ═══════════════════>   Node C
+           │          │  nature="msg"         ┌──────────┐
+           │          │                       │  [SUB]   │
+           └──────────┘                       │  cb_C    │
+                                              │  aspects:│
+                                              │   sub: /topic_Y
+                                              └──────────┘
+
+Trace verification (session fish_20260330_184541, kiss_icp_node pid=969):
+
+  Callback /lidar_points (cb=0x5C46FF31FCD8) publishes /kiss/odometry:
+
+    [20:45:53.423730895] callback_start  vtid=969  cb=0x5C46FF31FCD8
+    [20:45:53.425230827] rcl_publish     vtid=969  pub_handle=0x5C46FF304E10 (/kiss/odometry)
+    [20:45:53.425510627] callback_end    vtid=969  cb=0x5C46FF31FCD8
+
+  All three events share the same vtid. The publish occurs INSIDE the
+  callback window. This pattern repeats consistently across all
+  invocations of this callback.
+
+Attribution method:
+  For each rcl_publish event, find the enclosing callback_start/end
+  window on the same (vpid, vtid). The callback's entity gains a
+  publisher aspect for that topic.
+
+  Match: (vpid, vtid, callback_start.ts < rcl_publish.ts < callback_end.ts)
+  Resolve: rcl_publish.publisher_handle → rcl_publisher_init → topic_name
+
+Thread behavior (verified, session fish_20260330_184541):
+
+  Per-node rcl_publish thread distribution:
+
+    PID  Node              main_pub  worker_pub  main_take  worker_take
+    969  kiss_icp_node       6925          0       1411     180957
+    841  px4_interface        176       3522       5265     190875
+    874  px4_offboard          18         81       5328     195428
+    842  state_sharing         26        348       3504     156803
+   2093  yolo (rclpy)          43          0          0      57362
+
+  "worker_pub" means vtid != vpid. This does NOT break attribution
+  because the callback itself runs on that worker thread — the
+  callback_start/end events share the same vtid as the rcl_publish.
+
+  What happens: executor dispatches callback to a worker thread (vtid
+  != vpid). The callback runs entirely on that thread, including any
+  publish calls. callback_start, rcl_publish, and callback_end all
+  have the same vtid.
+
+  Verified attribution accuracy:
+
+    kiss_icp_node (pid=969):
+      same_thread attribution: 6925/6925 (100%)
+      cross_thread ambiguous:  0
+      orphan (no active cb):   0
+
+      Entity: [SUB] /lidar_points
+        sub: /lidar_points
+        pub: /kiss/odometry       ←
+        pub: /kiss/frame          ← all discovered via
+        pub: /kiss/keypoints      ← same-vtid matching
+        pub: /kiss/local_map      ← inside callback window
+        pub: /tf                  ←
+
+    px4_interface (pid=841):
+      same_thread attribution: 3649/3698 (98.7%)
+      cross_thread ambiguous:  0
+      orphan (no active cb):   49 (init time, negligible)
+
+      3 callbacks publish:
+        [TMR] timer_100ms  → 1 topic,  3605 publishes
+        [TMR] timer_3s     → 18 topics, 43 publishes
+        [SUB] /vehicle_status → 1 topic, 1 publish
+
+  Conclusion: same-vtid matching within callback_start/end windows
+  provides reliable entity→publish attribution. Zero ambiguity observed
+  across all nodes in this session. No cross-thread or multi-callback
+  conflicts.
+
+Runtime trace sequence (from presentation 16/12/2025, verified):
+
+  E1 (publisher entity)                    E2 (subscriber entity)
+  on Node A                                on Node B
+
+  ROS  callback_start(N1, cb1)
+  UFT  F1 executed
+  UFT  F2 executed
+  UFT  F3 executed
+  UFT  F4 executed
+  ROS  rmw_publish(N1, m1)         ──>
+  ROS  callback_end(N1, cb1)              ROS  rmw_take(N2, m1)
+                                          ROS  callback_start(N2, cb2)
+                                          UFT  F5 executed
+                                          UFT  F6 executed
+                                          UFT  F7 executed
+                                          ROS  callback_end(N2, cb2)
+
+  ROS = ros2_trace event (LTTng)
+  UFT = user function trace (nsys/utrace, future)
+
+  The publish happens INSIDE the callback window. The take triggers
+  the subscriber's callback on the receiving node.
+
+Current code status:
+  Edge construction uses node-level publisher info (node.A_v['publishers']).
+  Entity-level publish attribution (aspect list) is NOT YET implemented
+  in model.py — requires runtime trace analysis per callback window.
+  Implementation plan: scan callback_start/end windows, collect
+  rcl_publish events per (vpid, vtid), resolve publisher_handle →
+  topic, build aspect list per entity.
+  See rcl_publish_characterization.txt for full technique description.
+
+
+==========================================================================
+2. Service (Client-Server)
+==========================================================================
+
+Elements:
+  - Client:    an entity that sends a request (etype="cli")
+  - Server:    an entity that receives a request and sends a response (etype="serv")
+  - Service:   named endpoint with request/response types
+  - Request:   data sent client → server
+  - Response:  data sent server → client
+
+Edge:
+  client_entity ────> server_entity
+  nature = "dep" (dependency — client depends on server's response)
+
+Aspect mapping:
+  Client entity aspects:
+    - aspect: req_pub,  service: /srv_name  (sends request)
+    - aspect: res_sub,  service: /srv_name  (receives response)
+
+  Server entity aspects:
+    - aspect: req_sub,  service: /srv_name  (receives request)
+    - aspect: res_pub,  service: /srv_name  (sends response)
+
+  Unlike pub/sub, service aspects are always paired — a client always
+  has both req_pub + res_sub, a server always has req_sub + res_pub.
+
+ASCII representation:
+
+              Node A                              Node B
+           ┌──────────┐                       ┌──────────┐
+           │          │                       │          │
+           │  [CLI]   │     /service_name     │  [SRV]   │
+           │  etype=  │ ─────────────────>    │  etype=  │
+           │  "cli"   │   request (req)       │  "serv"  │
+           │          │                       │    │     │
+           │          │                       │    v     │
+           │          │                       │  [F] cb  │
+           │          │                       │    │     │
+           │          │     /service_name     │    v     │
+           │          │ <─ ─ ─ ─ ─ ─ ─ ─ ─   │ response │
+           │          │   response (res)      │          │
+           └──────────┘                       └──────────┘
+
+  Edge direction is client → server (dependency direction).
+  The response flows back implicitly — not a separate edge.
+
+Structural discovery:
+  - Client: rcl_client_init → client_handle, node_handle, service_name
+  - Server: rcl_service_init → service_handle, node_handle, service_name
+  - Match key: service_name (must be identical)
+
+  No runtime service-call event exists in ros2_tracing. The DDS layer
+  handles request/response as rmw_publish/rmw_take but the service
+  name is lost at that level. Only structural init events available.
+
+Trace verification (session fish_20260330_184541):
+
+  Action client (pid=2441) _ros2cli_send_goal_Takeoff:
+    rcl_client_init  service=/Drone1/takeoff_action/_action/send_goal
+    rcl_client_init  service=/Drone1/takeoff_action/_action/cancel_goal
+    rcl_client_init  service=/Drone1/takeoff_action/_action/get_result
+
+  Action server (pid=841) px4_interface:
+    rcl_service_init service=/Drone1/takeoff_action/_action/send_goal
+    rcl_service_init service=/Drone1/takeoff_action/_action/cancel_goal
+    rcl_service_init service=/Drone1/takeoff_action/_action/get_result
+
+  Match: 3 service edges from client → server via service_name.
+
+Runtime timing limitation:
+  No service-specific trace events (no rmw_send_request, rmw_take_response).
+  Service call timing can only be inferred from:
+    - Client side: callback_start/end window that contains the call
+    - Server side: rclcpp_action_execute_* (for action services only)
+    - General: rmw_publish/rmw_take events (but service_name lost)
+
+  Future work: add custom tracepoints for service call start/end
+  if runtime service timing becomes needed.
+
+Current code status:
+  - Server entities (etype="serv") created in identify_entities ✓
+  - Client entities (etype="cli") created in identify_entities ✓
+  - Service edge construction in add_horizontal_relations via
+    client_index matching srv_index by service_name ✓
+  - Verified: 9 service edges in latest session (3 action clients × 3)
+
+Trace verification (session fish_20260330_184541):
+
+  Server (pid=841, px4_interface):
+    rcl_service_init  service_name="/Drone1/takeoff_action/_action/send_goal"
+                      service_handle=0x6069B5...  rmw_service_handle=0x6069B5...
+
+  Client (pid=2441, _ros2cli_send_goal_Takeoff):
+    rcl_client_init   service_name="/Drone1/takeoff_action/_action/send_goal"
+                      client_handle=0x580D67...   rmw_client_handle=0x580D67...
+
+  Match: service_name identical → structural edge created.
+
+  rmw_service_handle and rmw_client_handle are present in trace but
+  do NOT appear in runtime rmw_take/rmw_publish events — these handles
+  are DDS-internal. rmw_take uses rmw_subscription_handle which is a
+  different object. Cross-process message pointer matching also does not
+  work (DDS serialize/deserialize creates new pointers per process).
+
+  Consequence: service call runtime timing (request sent → response
+  received) cannot be directly measured from current trace events.
+  Only structural connectivity is available. For runtime timing,
+  custom tracepoints (rmw_send_request/rmw_take_response) would be
+  needed — this is a potential future FISH tracepoint extension.
+
+  Note on rclpy action clients (e.g. ros2 action send_goal CLI):
+    - callback_start/end does NOT fire for these nodes. The CLI tool
+      uses its own event loop, not the patched rclpy executor.
+    - This does not affect structural edge construction (rcl_client_init
+      is sufficient) but means no runtime callback timing for CLI clients.

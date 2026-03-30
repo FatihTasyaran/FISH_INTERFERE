@@ -1,0 +1,213 @@
+ROS 2 Service Client Implementation Analysis
+===============================================
+
+Verified against: rclcpp rolling (2026-03-30) and humble (16.0.19)
+Source: /home/tue037807/ros2/src/ros2/rclcpp
+Note: rolling was initially analyzed, humble verified via git diff —
+      client mechanism is structurally identical in both.
+
+
+1. Client as Executor Entity
+-----------------------------
+Client IS a first-class executor entity, alongside subscription, timer,
+service, and waitable.
+
+  Source: rclcpp/include/rclcpp/any_executable.hpp:42-46
+    struct AnyExecutable {
+      rclcpp::SubscriptionBase::SharedPtr subscription;
+      rclcpp::TimerBase::SharedPtr timer;
+      rclcpp::ServiceBase::SharedPtr service;
+      rclcpp::ClientBase::SharedPtr client;       // ← client slot
+      rclcpp::Waitable::SharedPtr waitable;
+    };
+
+Client is added to the executor's wait set and polled by rcl_wait().
+When a response arrives, the executor dispatches it.
+
+  Source: rclcpp/src/rclcpp/executor.cpp:868-880
+    while (auto client = wait_result_->next_ready_client()) {
+      auto entity_iter = current_collection_.clients.find(...);
+      ...
+      any_executable.client = client;
+      valid_executable = true;
+      break;
+    }
+
+
+2. execute_client — Executor Dispatch
+--------------------------------------
+When a response arrives, the executor calls execute_client():
+
+  Source: rclcpp/src/rclcpp/executor.cpp:480-511
+    void Executor::execute_any_executable(AnyExecutable & any_exec) {
+      if (any_exec.timer) {
+        TRACETOOLS_TRACEPOINT(rclcpp_executor_execute, ...);   // ← TRACED
+        execute_timer(any_exec.timer, any_exec.data);
+      }
+      if (any_exec.subscription) {
+        TRACETOOLS_TRACEPOINT(rclcpp_executor_execute, ...);   // ← TRACED
+        execute_subscription(any_exec.subscription);
+      }
+      if (any_exec.service) {
+        execute_service(any_exec.service);                     // ← NO TRACEPOINT
+      }
+      if (any_exec.client) {
+        execute_client(any_exec.client);                       // ← NO TRACEPOINT
+      }
+      if (any_exec.waitable) {
+        any_exec.waitable->execute(const_data);                // ← NO TRACEPOINT
+      }
+    }
+
+  Note: rclcpp_executor_execute tracepoint only fires for timer and
+  subscription. Service, client, and waitable have NO tracepoint.
+
+  Source: rclcpp/src/rclcpp/executor.cpp (execute_client):
+    void Executor::execute_client(const ClientBase::SharedPtr & client) {
+      auto request_header = client->create_request_header();
+      std::shared_ptr<void> response = client->create_response();
+      take_and_do_error_handling(
+        "taking a service client response from service",
+        client->get_service_name(),
+        [&]() {return client->take_type_erased_response(
+                  response.get(), *request_header);},
+        [&]() {client->handle_response(request_header, response);});
+    }
+
+
+3. handle_response — Callback Resolution
+------------------------------------------
+handle_response uses a std::variant to dispatch:
+
+  Source: rclcpp/include/rclcpp/client.hpp:823-826
+    using CallbackInfoVariant = std::variant<
+      std::promise<SharedResponse>,              // future-only (no callback)
+      CallbackTypeValueVariant,                  // callback(future)
+      CallbackWithRequestTypeValueVariant>;      // callback(future_with_request)
+
+  Source: rclcpp/include/rclcpp/client.hpp:559-590
+    void handle_response(...) {
+      ...
+      if (std::holds_alternative<Promise>(value)) {
+        promise.set_value(typed_response);         // ← FUTURE ONLY, no callback
+      } else if (std::holds_alternative<CallbackTypeValueVariant>(value)) {
+        promise.set_value(typed_response);
+        callback(std::move(future));               // ← REAL CALLBACK INVOKED
+      } else if (std::holds_alternative<CallbackWithRequestTypeValueVariant>(value)) {
+        promise.set_value(...);
+        callback(std::move(future));               // ← REAL CALLBACK INVOKED
+      }
+    }
+
+  Two modes:
+    1. async_send_request(request)           → future-only, NO callback
+    2. async_send_request(request, callback) → future + REAL callback
+
+
+4. Tracing Gaps
+----------------
+Client has ZERO tracepoints in rclcpp:
+
+  | Entity type  | executor_execute | callback_start/end | callback_register |
+  |-------------|------------------|-------------------|-------------------|
+  | subscription | YES              | YES               | YES               |
+  | timer        | YES              | YES               | YES               |
+  | service      | NO               | YES               | YES               |
+  | client       | NO               | NO                | NO                |
+  | waitable     | NO               | NO                | NO                |
+
+  callback_start/end locations (client NOT present):
+    rclcpp/include/rclcpp/any_subscription_callback.hpp:569,660  ← subscription
+    rclcpp/include/rclcpp/any_service_callback.hpp:159,168       ← service
+    rclcpp/include/rclcpp/timer.hpp:291,293                      ← timer
+    rclcpp/include/rclcpp/client.hpp                             ← NOTHING
+
+
+5. spin_until_future_complete — Future-Executor Binding
+--------------------------------------------------------
+  Source: rclcpp/include/rclcpp/executor.hpp:378-380
+    "If this future is unrelated to an executor's entity, this method
+     will not correctly detect when it's completed and therefore may
+     wait forever and never time out."
+
+  "An executor's entity" means: the client that created the future must
+  be registered with a node, and that node must be added to the executor.
+
+  Mechanism:
+    Source: rclcpp/src/rclcpp/executor.cpp:264-315
+      spin_until_future_complete_impl():
+        while (ok && spinning):
+          spin_once_impl(timeout)     // polls ALL entities including client
+          if future.ready():          // checks after each spin cycle
+            return SUCCESS
+
+  spin_once_impl → wait_for_work → rcl_wait (blocks on wait set)
+  Client IS in the wait set → response arrives → rcl_wait returns
+  → get_next_ready_executable finds client → execute_client
+  → handle_response → promise.set_value → future becomes ready
+  → spin_until_future_complete returns SUCCESS
+
+  If client NOT in wait set: rcl_wait never wakes for the response,
+  future.wait_for() inside the loop may still catch it (via timeout
+  polling), but the comment warns this is unreliable.
+
+
+6. rclpy Differences
+---------------------
+  rclpy (executors.py) has _take_client but NO callback invocation:
+
+    Source: rclpy/rclpy/rclpy/executors.py:563-591
+      def _take_client(self, client):
+        header_and_response = client.handle.take_response(...)
+        async def _execute():
+          header, response = header_and_response
+          sequence = header.request_id.sequence_number
+          future = client.get_pending_request(sequence)
+          future.set_result(response)           // ← FUTURE ONLY, never callback
+        return _execute
+
+  rclpy also has both sync and async:
+    Source: rclpy/rclpy/rclpy/client.py:158-199
+      def call(self, request, timeout_sec=None):     // ← SYNC (blocking)
+        future = self.call_async(request)
+        event = threading.Event()
+        future.add_done_callback(lambda x: event.set())
+        executor.spin_once_until_future_complete(future)
+        event.wait(timeout_sec)
+        return future.result()
+
+      def call_async(self, request):                 // ← ASYNC (future)
+        ...
+        return future
+
+  rclcpp has only async: async_send_request() (two overloads)
+  rclpy has both: call() (sync, blocking) and call_async() (async, future)
+
+
+7. FISH Implications
+---------------------
+  Entity type definition: entity type = callback type
+  Client is NOT an entity type because:
+    - callback is OPTIONAL (depends on overload used)
+    - NO tracepoints exist (callback_start/end, callback_register)
+    - rclpy has NO callback at all (future-only)
+
+  Client is an ASPECT of another entity:
+    - A subscription callback may call async_send_request() inside
+      its callback_start/end window
+    - A timer callback may call a service periodically
+    - The client call is an aspect of the calling entity
+
+  For structural edge construction: rcl_client_init.service_name
+  matches rcl_service_init.service_name — sufficient for graph edges.
+
+  For runtime attribution: the service call happens inside an entity's
+  callback window, attributable via (vpid, vtid, timestamp) matching,
+  same as publisher attribution.
+
+  Potential FISH tracepoint additions:
+    - rclcpp_client_response_received(client_handle, sequence_number)
+      → in handle_response, before callback/future dispatch
+    - rclcpp_client_callback_start/end(callback)
+      → around the callback invocation in handle_response (when present)
+    - These would make client response timing visible in trace

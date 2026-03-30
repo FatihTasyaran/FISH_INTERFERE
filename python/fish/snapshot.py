@@ -21,6 +21,7 @@ Output: <session>/snapshot/
 
 import json
 import os
+import queue
 import signal
 import subprocess
 import threading
@@ -128,6 +129,69 @@ def capture_component_list(snapshot_dir: str) -> str:
     return output_path
 
 
+def _refresh_node_info(snapshot_dir: str) -> None:
+    """
+    Re-capture node_list and node_info at shutdown, merge with Phase 1 data.
+
+    Phase 1 (live) may have missed nodes that weren't ready yet.
+    Phase 2 (shutdown) may miss nodes that already exited.
+    Merging both gives the most complete picture.
+    """
+    print("[FISH] Refreshing node info...")
+
+    # Get current node list
+    data = _ros2_cmd("ros2 node list")
+    if not data:
+        print("[FISH]   No nodes found at shutdown, keeping Phase 1 data")
+        return
+
+    shutdown_nodes = set(n.strip() for n in data.splitlines() if n.strip())
+
+    # Load Phase 1 node list (if exists)
+    node_list_path = os.path.join(snapshot_dir, "node_list.txt")
+    phase1_nodes = set()
+    try:
+        with open(node_list_path) as f:
+            phase1_nodes = set(n.strip() for n in f if n.strip())
+    except FileNotFoundError:
+        pass
+
+    # Union of both
+    all_nodes = phase1_nodes | shutdown_nodes
+    with open(node_list_path, "w") as f:
+        f.write("\n".join(sorted(all_nodes)) + "\n")
+
+    # Collect info for any nodes missing from Phase 1
+    node_dir = os.path.join(snapshot_dir, "node_info")
+    os.makedirs(node_dir, exist_ok=True)
+
+    json_path = os.path.join(snapshot_dir, "node_info_all.json")
+    all_info = {}
+    try:
+        with open(json_path) as f:
+            all_info = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    new_count = 0
+    for node in shutdown_nodes:
+        if node not in all_info:
+            info = _ros2_cmd(f"ros2 node info {node}")
+            if info:
+                safe_name = node.strip("/").replace("/", "_")
+                output_path = os.path.join(node_dir, f"{safe_name}_info.txt")
+                with open(output_path, "w") as f:
+                    f.write(info + "\n")
+                all_info[node] = info
+                new_count += 1
+
+    if new_count > 0:
+        with open(json_path, "w") as f:
+            json.dump(all_info, f, indent=2)
+
+    print(f"[FISH]   Node list: {len(all_nodes)} total ({len(phase1_nodes)} phase1 + {len(shutdown_nodes)} shutdown, {new_count} new)")
+
+
 def shutdown_snapshot() -> str:
     """
     Phase 2: Capture instant system state at shutdown time.
@@ -140,6 +204,7 @@ def shutdown_snapshot() -> str:
 
     capture_process_tree(snapshot_dir)
     capture_component_list(snapshot_dir)
+    _refresh_node_info(snapshot_dir)
 
     print("[FISH] Shutdown snapshot complete")
     return snapshot_dir
@@ -213,45 +278,130 @@ class LiveCollector:
         print("[FISH] Live collectors stopped")
 
     def _collect_node_info(self) -> None:
-        """Collect node list and detailed info for each node (one-shot)."""
-        print("[FISH] Collecting node info (background)...")
+        """
+        Periodic node list polling + parallel node info collection.
 
-        # Get node list
-        data = _ros2_cmd("ros2 node list")
-        if not data:
-            print("[FISH]   No nodes found")
-            return
+        - Polls ros2 node list every 10s, union into cumulative set
+        - After 2nd poll (t≈20s), starts 4 worker threads to collect
+          ros2 node info in parallel for all discovered nodes
+        - If session ends before all node info is collected, logs a
+          warning to fishlog
+        """
+        print("[FISH] Collecting node info (periodic, background)...")
 
-        nodes = [n.strip() for n in data.splitlines() if n.strip()]
-
-        # Save node list
         node_list_path = os.path.join(self.snapshot_dir, "node_list.txt")
-        with open(node_list_path, "w") as f:
-            f.write("\n".join(nodes) + "\n")
-
-        # Collect info per node
         node_dir = os.path.join(self.snapshot_dir, "node_info")
+        json_path = os.path.join(self.snapshot_dir, "node_info_all.json")
         os.makedirs(node_dir, exist_ok=True)
 
-        all_info = {}
-        for node in nodes:
-            if self._stop_event.is_set():
+        all_nodes: set = set()
+        all_info: dict = {}
+        info_lock = threading.Lock()
+        poll_count = 0
+
+        # ── Periodic node list polling ──
+        while not self._stop_event.is_set():
+            data = _ros2_cmd("ros2 node list")
+            if data:
+                new_nodes = set(n.strip() for n in data.splitlines() if n.strip())
+                added = new_nodes - all_nodes
+                all_nodes |= new_nodes
+
+                # Save cumulative node list
+                with open(node_list_path, "w") as f:
+                    f.write("\n".join(sorted(all_nodes)) + "\n")
+
+                if added:
+                    print(f"[FISH]   Node list poll #{poll_count + 1}: {len(all_nodes)} total (+{len(added)} new)")
+
+            poll_count += 1
+
+            # After 2nd poll, start collecting node info
+            if poll_count == 2:
+                self._collect_all_node_info(all_nodes, all_info, info_lock,
+                                            node_dir, json_path)
+
+            # Wait 10s between polls
+            if self._stop_event.wait(timeout=10):
                 break
 
-            safe_name = node.strip("/").replace("/", "_")
-            info = _ros2_cmd(f"ros2 node info {node}")
-            if info:
-                output_path = os.path.join(node_dir, f"{safe_name}_info.txt")
-                with open(output_path, "w") as f:
-                    f.write(info + "\n")
-                all_info[node] = info
+        # ── Final info collection for any nodes discovered after initial batch ──
+        with info_lock:
+            missing = all_nodes - set(all_info.keys())
+        if missing:
+            self._collect_all_node_info(all_nodes, all_info, info_lock,
+                                        node_dir, json_path)
 
-        # Structured JSON
-        json_path = os.path.join(self.snapshot_dir, "node_info_all.json")
-        with open(json_path, "w") as f:
-            json.dump(all_info, f, indent=2)
+        # ── Check for incomplete collection ──
+        with info_lock:
+            still_missing = all_nodes - set(all_info.keys())
+        if still_missing:
+            # Filter out ros2cli nodes — those are expected to be transient
+            real_missing = {n for n in still_missing if "_ros2cli" not in n}
+            if real_missing:
+                print(f"[FISH]   WARNING: {len(real_missing)} nodes missing info: {real_missing}")
+                self._log_warning(f"node_info incomplete: {sorted(real_missing)}")
 
-        print(f"[FISH]   Node info collected: {len(all_info)} nodes")
+        print(f"[FISH]   Node info final: {len(all_info)}/{len(all_nodes)} nodes")
+
+    def _collect_all_node_info(self, all_nodes, all_info, info_lock,
+                               node_dir, json_path, num_workers=4):
+        """Collect ros2 node info in parallel using worker threads."""
+        # Build work queue: nodes that don't have info yet
+        with info_lock:
+            work = [n for n in all_nodes if n not in all_info]
+        if not work:
+            return
+
+        work_queue = queue.Queue()
+        for node in work:
+            work_queue.put(node)
+
+        def worker():
+            while True:
+                try:
+                    node = work_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if self._stop_event.is_set():
+                    break
+
+                info = _ros2_cmd(f"ros2 node info {node}")
+                if info:
+                    safe_name = node.strip("/").replace("/", "_")
+                    output_path = os.path.join(node_dir, f"{safe_name}_info.txt")
+                    with open(output_path, "w") as f:
+                        f.write(info + "\n")
+                    with info_lock:
+                        all_info[node] = info
+
+                work_queue.task_done()
+
+        threads = []
+        for _ in range(min(num_workers, len(work))):
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            threads.append(t)
+
+        for t in threads:
+            t.join(timeout=30)
+
+        # Save JSON
+        with info_lock:
+            with open(json_path, "w") as f:
+                json.dump(all_info, f, indent=2)
+
+        print(f"[FISH]   Node info batch: {len(all_info)} nodes collected")
+
+    def _log_warning(self, message):
+        """Write a warning to fishlog."""
+        session_dir = get_session_dir()
+        fishlog_dir = os.path.join(session_dir, "fishlog")
+        os.makedirs(fishlog_dir, exist_ok=True)
+        log_path = os.path.join(fishlog_dir, "snapshot_warnings.log")
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        with open(log_path, "a") as f:
+            f.write(f"{ts}  WARNING  {message}\n")
 
     def _collect_topic_info(self) -> None:
         """Collect topic list, types, and pub/sub counts (one-shot)."""

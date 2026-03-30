@@ -1,0 +1,100 @@
+QGC Mission Capture — MAVLink Commands from Manual Session
+============================================================
+
+Source: PX4 ULog file 21_44_46.ulg
+Session: 2026-03-29, simulation-container-inst0
+World: swiss_town
+Autopilot: PX4 SITL
+
+ULog path in sim container:
+  /aas/github_apps/PX4-Autopilot/build/px4_sitl_default/rootfs/0/log/2026-03-29/21_44_46.ulg
+
+
+1. QGC MAVLink Command Timeline
+---------------------------------
+
+  t=0.0s      CMD 521  REQUEST_AUTOPILOT_CAPABILITIES          src=255/190 (QGC)
+  t=0.0s      CMD 521  REQUEST_AUTOPILOT_CAPABILITIES          src=255/190
+  t=38.5s     CMD 521  REQUEST_AUTOPILOT_CAPABILITIES          src=255/190
+  t=69.9s     CMD 521  REQUEST_AUTOPILOT_CAPABILITIES          src=255/190
+  t=124.1s    CMD 521  REQUEST_AUTOPILOT_CAPABILITIES          src=255/190
+
+  t=262.8s    CMD 22   NAV_TAKEOFF                             src=255/190 (QGC)
+                param1=-1.00 (pitch)
+                param7=391.34 (altitude AMSL, meters)
+
+  t=262.8s    CMD 400  COMPONENT_ARM_DISARM                    src=255/190 (QGC)
+                param1=1.00 (arm=1)
+
+  t=286.2s    CMD 34   NAV_LOITER_TURNS (orbit)                src=255/190 (QGC)
+                param1=30.00 (radius, meters)
+                param3=5.00 (turns)
+                param5=46.474313 (latitude)
+                param6=6.778796 (longitude)
+                param7=391.25 (altitude AMSL)
+
+  t=338.3s    CMD 176  DO_SET_MODE                             src=255/190 (QGC)
+                param1=145.00 (custom mode — likely auto/land)
+                param2=4.00
+                param3=5.00
+
+  t=338.3s    CMD 1001 PREFLIGHT_CALIBRATION                   src=1/1 (PX4 internal)
+  t=338.3s    CMD 1000 DO_SET_ACTUATOR                         src=1/1 (PX4 internal)
+  t=338.3s    CMD 1001 PREFLIGHT_CALIBRATION                   src=1/1 (PX4 internal)
+
+  t=383.4s    CMD 0    NAV_WAYPOINT                            src=1/1 (PX4 internal)
+                param2=2.00 (acceptance radius)
+                param3=80.00
+                param7=388.35 (altitude AMSL)
+
+
+2. Key Parameters Extracted
+-----------------------------
+  Location:     lat=46.474313, lon=6.778796 (swiss_town)
+  Takeoff alt:  391.34m AMSL
+  Orbit:        radius=30m, 5 turns, alt=391.25m AMSL, same lat/lon
+  Land:         via DO_SET_MODE (mode change, not explicit land coordinates)
+
+
+3. Equivalent ROS 2 Action Commands (verified working)
+-------------------------------------------------------
+
+  # Takeoff
+  ros2 action send_goal /Drone1/takeoff_action \
+    autopilot_interface_msgs/action/Takeoff \
+    '{takeoff_altitude: 40.0}' --feedback
+
+  # Orbit
+  ros2 action send_goal /Drone1/orbit_action \
+    autopilot_interface_msgs/action/Orbit \
+    '{east: 500.0, north: 0.0, altitude: 150.0, radius: 200.0}' --feedback
+
+  # Land
+  ros2 action send_goal /Drone1/land_action \
+    autopilot_interface_msgs/action/Land \
+    '{landing_altitude: 60.0}' --feedback
+
+  # Offboard (rate control, 5 seconds)
+  ros2 action send_goal /Drone1/offboard_action \
+    autopilot_interface_msgs/action/Offboard \
+    '{offboard_setpoint_type: 1, max_duration_sec: 5.0}' --feedback
+
+  Note: ROS 2 action parameters are relative (altitude AGL, east/north
+  offsets), not absolute (lat/lon/AMSL). The px4_interface node converts
+  between the two coordinate systems internally.
+
+
+4. Observation: QGC vs ROS 2 Action Path
+------------------------------------------
+  QGC communicates with PX4 SITL directly via MAVLink UDP.
+  It does NOT use the ROS 2 action servers on px4_interface.
+
+  - QGC → MAVLink → PX4 SITL (bypasses ROS 2 entirely)
+  - CLI → ROS 2 action → px4_interface → PX4 SITL (goes through action servers)
+
+  Only the ROS 2 action path triggers our custom tracepoints
+  (rclcpp_action_execute_goal/cancel/result). For FISH tracing,
+  actions must be sent via ROS 2 CLI or programmatic action client.
+
+  vehicle_command (fmu/in) ROS 2 topic shows 0 messages during QGC
+  operation — confirmed by rosbag capture (session fish_20260329_211752).

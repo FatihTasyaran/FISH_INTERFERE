@@ -1,0 +1,96 @@
+FISH Design Decisions
+======================
+
+DD-001: External vs autonomous action client detection
+-------------------------------------------------------
+Date: 2026-03-30
+
+Context:
+  ROS 2 action clients can originate from two sources:
+
+  1. Autonomous (on-robot) — a planner or mission node inside the robot
+     system sends action goals to other nodes. These are persistent nodes
+     that appear in node_info snapshots. Their service clients and
+     subscriptions (feedback/status) are discoverable from node_info's
+     Service_Clients field.
+
+  2. External (operator-injected) — an operator or test script sends
+     action goals via CLI (ros2 action send_goal) or docker exec. These
+     create short-lived _ros2cli_send_goal_* nodes that:
+     - Exist only for the duration of the action (seconds to minutes)
+     - Do NOT appear in node_info (snapshot taken before/after they exist)
+     - DO appear in ros2_trace (rcl_node_init, rcl_client_init,
+       rcl_subscription_init events)
+     - Create 5 entity components: 3 service clients + 2 subscriptions
+       (feedback, status)
+
+  Both are legitimate action communication patterns. In a fully
+  autonomous system, only type 1 exists. In a human-supervised or
+  test scenario, both may coexist.
+
+Decision:
+  FISH supports both modes via the INCLUDE_EXTERNAL_ACTIONS flag
+  (default: True).
+
+  When True:
+  - _ros2cli_send_goal_* nodes are NOT filtered by SKIP_DEBUG
+  - Their entities (service clients, subscriptions) are created from
+    trace fallback (rcl_client_init, rcl_subscription_init)
+  - Service client → server edges are generated
+  - The full action communication path is visible in the graph
+
+  When False (--no-external-actions CLI flag):
+  - All _ros2cli nodes are filtered, including action clients
+  - Only on-robot action servers and autonomous clients appear
+  - Cleaner graph for analyzing the robot's internal architecture
+
+  Usage:
+    python3 model.py                        # include external actions (default)
+    python3 model.py --no-external-actions  # autonomous only
+
+Rationale:
+  For paper results, both views are useful:
+  - External actions demonstrate FISH's ability to capture operator
+    commands and trace them through the system
+  - Autonomous-only view shows the robot's inherent scheduling structure
+    without operator interference
+
+  The flag is a model extraction option, not a data collection option —
+  trace data always captures everything. The choice is made at analysis
+  time, not at recording time.
+
+Related:
+  - Action server decomposition: action_decomposition.txt
+  - Service client entity type (etype="cli"): model.py identify_entities()
+  - entity_fallback_from_trace: utils.py (rcl_client_init support added)
+  - SKIP_DEBUG filter exception: model.py identify_executors()
+
+
+DD-002: Service client as entity type
+--------------------------------------
+Date: 2026-03-30
+
+Context:
+  Original FISH model had 4 entity types: sub, serv, tmr, act.
+  Service clients were not entities — they were only tracked in
+  node_info's Service_Clients for horizontal edge construction.
+
+  This broke for short-lived nodes (DD-001) because they have no
+  node_info entry. It also meant the client side of a service call
+  had no graph representation.
+
+Decision:
+  Added etype="cli" (service client) as a new entity type.
+  - Created in identify_entities from info["Service_Clients"]
+  - Discovered from trace via rcl_client_init in entity_fallback_from_trace
+  - Participates in horizontal edge construction (client_index)
+  - No callback (client calls are synchronous from the caller's perspective)
+
+  A full action decomposition now has up to 10 components:
+    Server side (5): 3 service servers + 2 publishers
+    Client side (5): 3 service clients + 2 subscriptions
+
+Impact:
+  Entity count increased from 49 to 73 for the test session (action
+  clients added 24 new entities: 3 action client nodes × 5 components
+  + existing paramservice clients that were previously invisible).

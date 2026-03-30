@@ -146,6 +146,11 @@ def entity_fallback_from_trace(mongo, node_handle):
         name = doc["payload"].get("service_name", "?")
         result["Service_Servers"][name] = "?"
 
+    # Service clients
+    for doc in coll.find({"event": "ros2:rcl_client_init", "payload.node_handle": node_handle}):
+        name = doc["payload"].get("service_name", "?")
+        result["Service_Clients"][name] = "?"
+
     # Timers — linked via rclcpp_timer_link_node → timer_handle → rcl_timer_init
     for doc in coll.find({"event": "ros2:rclcpp_timer_link_node", "payload.node_handle": node_handle}):
         timer_handle = doc["payload"]["timer_handle"]

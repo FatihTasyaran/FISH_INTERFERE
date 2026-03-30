@@ -1,0 +1,5 @@
+Dogru cok guzel simdi entity'nin tanimini kesinlestirelim. Entity, bir node'un bir callback'ini implement eder ve gerektigi zaman bu 3   
+  communication pattern'in bir tanesine uygun sekilde invoke eder. Entity-callback mapping'i 1-1 oldugu icin entity type-callback type da   
+  1-1 mapping'dir entity type = callback type'dir tamam mi? publisher diye bir entity turu yok cunku publisher diye bir callback turu yok.  
+  Bir entity publisher veya subscriber olmasi onun bir *feature* veya *aspect'idir* ve pub veya sub olarak tanimlandigi communication da    
+  bu entity'e girecek cikacak okun yonunu belirler.

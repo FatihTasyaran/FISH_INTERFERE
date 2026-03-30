@@ -30,10 +30,12 @@ Usage:
 import argparse
 import json
 import os
+import queue
 import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -583,11 +585,6 @@ def ingest_nsys(session_dir: str, session_name: str):
     token = load_influx_token()
     db_name = session_name
 
-    client = InfluxDBClient3(
-        host=INFLUX_HOST, token=token, database=db_name,
-        write_options={"precision": WritePrecision.NS},
-    )
-
     for sqlite_file in sqlite_files:
         sqlite_path = os.path.join(nsys_dir, sqlite_file)
         source_tag = os.path.splitext(sqlite_file)[0]
@@ -601,7 +598,10 @@ def ingest_nsys(session_dir: str, session_name: str):
             "SELECT utcEpochNs, systemClockNs FROM TARGET_INFO_SESSION_START_TIME"
         ).fetchone()
         if session_start:
-            epoch_offset = session_start["utcEpochNs"] - session_start["systemClockNs"]
+            # nsys "start" fields are relative to session start (ns elapsed),
+            # NOT monotonic clock values. Correct conversion:
+            #   abs_ts = utcEpochNs + start
+            epoch_offset = session_start["utcEpochNs"]
         else:
             epoch_offset = 0
             log("    WARNING: no session start time, timestamps will be relative")
@@ -617,68 +617,96 @@ def ingest_nsys(session_dir: str, session_name: str):
                 return strings[val]
             return val
 
-        # --- GPU Kernels ---
-        _ingest_nsys_table(
-            client, conn, source_tag, epoch_offset, resolve,
-            table="CUPTI_ACTIVITY_KIND_KERNEL",
-            measurement="gpu_kernels",
-            tag_cols=["deviceId", "contextId", "streamId"],
-            field_cols=["correlationId", "registersPerThread",
-                        "gridX", "gridY", "gridZ",
-                        "blockX", "blockY", "blockZ",
-                        "staticSharedMemory", "dynamicSharedMemory"],
-            string_cols={"demangledName": "kernel_name",
-                         "shortName": "kernel_short_name"},
-            has_duration=True,
-        )
+        # --- Parallel table ingest ---
+        # Each table gets its own sqlite connection (sqlite is not thread-safe)
+        # and its own InfluxDB client. Tables are independent measurements.
+        import threading
 
-        # --- Memory copies ---
-        _ingest_nsys_table(
-            client, conn, source_tag, epoch_offset, resolve,
-            table="CUPTI_ACTIVITY_KIND_MEMCPY",
-            measurement="gpu_memcpy",
-            tag_cols=["deviceId", "contextId", "streamId", "copyKind"],
-            field_cols=["correlationId", "bytes"],
-            string_cols={},
-            has_duration=True,
-        )
+        table_specs = [
+            dict(table="CUPTI_ACTIVITY_KIND_KERNEL", measurement="gpu_kernels",
+                 tag_cols=["deviceId", "contextId", "streamId"],
+                 field_cols=["correlationId", "registersPerThread",
+                             "gridX", "gridY", "gridZ",
+                             "blockX", "blockY", "blockZ",
+                             "staticSharedMemory", "dynamicSharedMemory"],
+                 string_cols={"demangledName": "kernel_name",
+                              "shortName": "kernel_short_name"},
+                 has_duration=True),
+            dict(table="CUPTI_ACTIVITY_KIND_MEMCPY", measurement="gpu_memcpy",
+                 tag_cols=["deviceId", "contextId", "streamId", "copyKind"],
+                 field_cols=["correlationId", "bytes"],
+                 string_cols={}, has_duration=True),
+            dict(table="CUPTI_ACTIVITY_KIND_RUNTIME", measurement="cuda_runtime",
+                 tag_cols=["eventClass"],
+                 field_cols=["correlationId", "returnValue"],
+                 string_cols={"nameId": "api_name"},
+                 has_duration=True),
+            dict(table="CUDA_GPU_MEMORY_USAGE_EVENTS", measurement="gpu_mem_usage",
+                 tag_cols=["deviceId", "contextId", "memKind",
+                            "memoryOperationType"],
+                 field_cols=["bytes", "correlationId"],
+                 string_cols={}, has_duration=False),
+        ]
 
-        # --- CUDA runtime API ---
-        _ingest_nsys_table(
-            client, conn, source_tag, epoch_offset, resolve,
-            table="CUPTI_ACTIVITY_KIND_RUNTIME",
-            measurement="cuda_runtime",
-            tag_cols=["eventClass"],
-            field_cols=["correlationId", "returnValue"],
-            string_cols={"nameId": "api_name"},
-            has_duration=True,
-        )
+        errors = []
 
-        # --- NVTX events ---
-        _ingest_nvtx(client, conn, source_tag, epoch_offset)
+        def ingest_table_worker(spec):
+            try:
+                t_conn = sqlite3.connect(sqlite_path)
+                t_conn.row_factory = sqlite3.Row
+                t_client = InfluxDBClient3(
+                    host=INFLUX_HOST, token=token, database=db_name,
+                    write_options={"precision": WritePrecision.NS},
+                )
+                _ingest_nsys_table(
+                    t_client, t_conn, source_tag, epoch_offset, resolve, **spec)
+                t_conn.close()
+                t_client.close()
+            except Exception as e:
+                errors.append((spec["measurement"], e))
+                log(f"    ERROR in {spec['measurement']}: {e}")
 
-        # --- GPU memory usage ---
-        _ingest_nsys_table(
-            client, conn, source_tag, epoch_offset, resolve,
-            table="CUDA_GPU_MEMORY_USAGE_EVENTS",
-            measurement="gpu_mem_usage",
-            tag_cols=["deviceId", "contextId", "memKind",
-                       "memoryOperationType"],
-            field_cols=["bytes", "correlationId"],
-            string_cols={},
-            has_duration=False,
-        )
+        def ingest_nvtx_worker():
+            try:
+                t_conn = sqlite3.connect(sqlite_path)
+                t_conn.row_factory = sqlite3.Row
+                t_client = InfluxDBClient3(
+                    host=INFLUX_HOST, token=token, database=db_name,
+                    write_options={"precision": WritePrecision.NS},
+                )
+                _ingest_nvtx(t_client, t_conn, source_tag, epoch_offset)
+                t_conn.close()
+                t_client.close()
+            except Exception as e:
+                errors.append(("nvtx_events", e))
+                log(f"    ERROR in nvtx_events: {e}")
+
+        threads = []
+        for spec in table_specs:
+            t = threading.Thread(target=ingest_table_worker, args=(spec,),
+                                 name=f"nsys-{spec['measurement']}")
+            threads.append(t)
+        t_nvtx = threading.Thread(target=ingest_nvtx_worker, name="nsys-nvtx")
+        threads.append(t_nvtx)
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         conn.close()
 
-    client.close()
+        if errors:
+            for meas, e in errors:
+                log(f"    FAILED: {meas}: {e}")
+
     log(f"  nsys ingest complete → InfluxDB database: {db_name}")
 
 
 def _ingest_nsys_table(client, conn, source_tag, epoch_offset, resolve,
                        table, measurement, tag_cols, field_cols,
-                       string_cols, has_duration):
-    """Generic nsys table → InfluxDB line protocol."""
+                       string_cols, has_duration, num_writers=2):
+    """Generic nsys table → InfluxDB line protocol with parallel writers."""
     try:
         count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     except Exception:
@@ -687,7 +715,28 @@ def _ingest_nsys_table(client, conn, source_tag, epoch_offset, resolve,
     if count == 0:
         return
 
-    log(f"    {table}: {count} rows → {measurement}")
+    log(f"    {table}: {count} rows → {measurement} ({num_writers} writers)")
+
+    write_queue = queue.Queue(maxsize=num_writers * 2)
+    writer_errors = []
+
+    def writer_worker():
+        while True:
+            batch = write_queue.get()
+            if batch is None:
+                break
+            try:
+                client.write(batch)
+            except Exception as e:
+                writer_errors.append(e)
+            write_queue.task_done()
+
+    writers = []
+    for _ in range(num_writers):
+        t = threading.Thread(target=writer_worker, daemon=True)
+        t.start()
+        writers.append(t)
+
     lp_lines = []
 
     for row in conn.execute(f"SELECT * FROM {table}"):
@@ -704,17 +753,6 @@ def _ingest_nsys_table(client, conn, source_tag, epoch_offset, resolve,
             if val is not None:
                 tags.append(f"{tc}={val}")
 
-        # Store globalTid / globalPid as fields for later resolution
-        # nsys encoding: PROCESSES table maps globalPid → real pid,
-        # globalTid lower 24 bits = tid
-        gtid = row_dict.get("globalTid")
-        if gtid is not None:
-            fields.append(f"globalTid={gtid}i")
-            fields.append(f"tid={gtid & 0xFFFFFF}i")
-        gpid = row_dict.get("globalPid")
-        if gpid is not None:
-            fields.append(f"globalPid={gpid}i")
-
         # Fields
         fields = []
         if has_duration:
@@ -726,6 +764,16 @@ def _ingest_nsys_table(client, conn, source_tag, epoch_offset, resolve,
             val = row_dict.get(fc)
             if val is not None:
                 fields.append(f"{fc}={val}i")
+
+        # globalTid / globalPid — nsys PROCESSES table maps globalPid → real pid,
+        # globalTid lower 24 bits = tid
+        gtid = row_dict.get("globalTid")
+        if gtid is not None:
+            fields.append(f"globalTid={gtid}i")
+            fields.append(f"tid={gtid & 0xFFFFFF}i")
+        gpid = row_dict.get("globalPid")
+        if gpid is not None:
+            fields.append(f"globalPid={gpid}i")
 
         for src_col, dst_name in string_cols.items():
             val = row_dict.get(src_col)
@@ -745,11 +793,20 @@ def _ingest_nsys_table(client, conn, source_tag, epoch_offset, resolve,
         lp_lines.append(f"{measurement},{tag_str} {field_str} {abs_ts}")
 
         if len(lp_lines) >= BATCH_SIZE:
-            client.write(lp_lines)
-            lp_lines.clear()
+            write_queue.put(lp_lines)
+            lp_lines = []
 
     if lp_lines:
-        client.write(lp_lines)
+        write_queue.put(lp_lines)
+
+    # Signal writers to stop
+    for _ in writers:
+        write_queue.put(None)
+    for t in writers:
+        t.join()
+
+    if writer_errors:
+        log(f"    {measurement}: {len(writer_errors)} write errors")
 
     log(f"    {measurement}: done")
 
@@ -819,12 +876,12 @@ def ingest_session(session_dir: str, tz_name: str = "Europe/Amsterdam"):
     log(f"Session: {session_name}")
     log(f"Path:    {session_dir}")
 
-    # --- MongoDB ---
+    t0 = time.time()
+
+    # --- Small MongoDB collections (fast, sequential) ---
     log(f"MongoDB database: {session_name}")
     mongo = MongoClient(MONGO_URI)
     db = mongo[session_name]
-
-    t0 = time.time()
 
     ingest_process_tree(db, session_dir)
     ingest_node_info(db, session_dir)
@@ -833,13 +890,28 @@ def ingest_session(session_dir: str, tz_name: str = "Europe/Amsterdam"):
     ingest_component_list(db, session_dir)
     ingest_node_list(db, session_dir)
     ingest_fish_events(db, session_dir)
-    ingest_ros2_trace(db, session_dir, tz_name=tz_name)
 
+    # --- Heavy ingest: ros2_trace (MongoDB) + nsys (InfluxDB) in parallel ---
+
+    nsys_error = [None]
+
+    def nsys_worker():
+        try:
+            log(f"InfluxDB database: {session_name}")
+            ingest_nsys(session_dir, session_name)
+        except Exception as e:
+            nsys_error[0] = e
+            log(f"ERROR in nsys ingest: {e}")
+
+    nsys_thread = threading.Thread(target=nsys_worker, name="nsys-ingest")
+    nsys_thread.start()
+
+    ingest_ros2_trace(db, session_dir, tz_name=tz_name)
     mongo.close()
 
-    # --- InfluxDB3 ---
-    log(f"InfluxDB database: {session_name}")
-    ingest_nsys(session_dir, session_name)
+    nsys_thread.join()
+    if nsys_error[0]:
+        raise nsys_error[0]
 
     elapsed = time.time() - t0
     log(f"Done in {elapsed:.1f}s")

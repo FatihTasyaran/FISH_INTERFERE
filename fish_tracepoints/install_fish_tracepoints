@@ -919,12 +919,13 @@ else:
     if idx >= 0:
         content = content[:idx] + old + """
 
-        # FISH: trace rclpy timer callback chain
-        try:
-            from rclpy.fish_rclpy_trace import trace_tmr_cb
-            trace_tmr_cb(self.handle.pointer, self.callback)
-        except Exception:
-            pass""" + content[idx + len(old):]
+        # FISH: trace rclpy timer callback chain (skip executor internal timeout timers)
+        if self.callback is not None:
+            try:
+                from rclpy.fish_rclpy_trace import trace_tmr_cb
+                trace_tmr_cb(self.handle.pointer, self.callback)
+            except Exception:
+                pass""" + content[idx + len(old):]
     with open(path, "w") as f:
         f.write(content)
     print("    timer.py patched")

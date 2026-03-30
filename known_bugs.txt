@@ -55,7 +55,7 @@ BUG-002: globalTid/globalPid fields used before definition in _ingest_nsys_table
 ---------------------------------------------------------------------------------
 Date discovered: 2026-03-24
 Severity: High
-Status: Open
+Status: Fixed (2026-03-29)
 
 Description:
   In ingest.py _ingest_nsys_table(), lines 710-716 attempt to append
@@ -110,7 +110,7 @@ BUG-003: nsys timestamps in InfluxDB are offset by ~54 minutes
 ---------------------------------------------------------------
 Date discovered: 2026-03-24
 Severity: High
-Status: Open
+Status: Fixed (2026-03-29)
 
 Description:
   All nsys-derived timestamps stored in InfluxDB (gpu_kernels, gpu_memcpy,

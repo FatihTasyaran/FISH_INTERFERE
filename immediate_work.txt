@@ -1,8 +1,8 @@
 Immediate Work Items
 ====================
 
-1. Add globalTid to nsys ingest (cuda_runtime table)
------------------------------------------------------
+1. [FIXED 2026-03-29] Add globalTid to nsys ingest (cuda_runtime table)
+-----------------------------------------------------------------------
 Problem:
   The nsys sqlite CUPTI_ACTIVITY_KIND_RUNTIME table contains a globalTid
   column that identifies which CPU thread made each CUDA API call.
@@ -38,8 +38,8 @@ NOTE: An initial attempt to add globalTid/globalPid was made but contains
 Priority: MEDIUM (not blocking current session, needed before next session)
 
 
-2. Fix nsys timestamp offset in ingest.py
-------------------------------------------
+2. [FIXED 2026-03-29] Fix nsys timestamp offset in ingest.py
+-------------------------------------------------------------
 Problem:
   All nsys-derived timestamps in InfluxDB are shifted ~54 minutes into
   the past. See known_bugs.txt BUG-003 for full analysis.
@@ -164,3 +164,103 @@ Implementation:
 
 Priority: MEDIUM (affects graph completeness and metric accuracy, needed
   before publishing any dataflow analysis results)
+
+
+5. Trace data volume vs accuracy tradeoff model
+-------------------------------------------------
+Problem:
+  Current trace data volume is extremely large. A ~30 second simulation
+  session produced:
+    - ros2_trace: 8,628,771 events
+    - gpu_kernels: 817,320 rows
+    - cuda_runtime: 984,338 rows
+    - nvtx_events: 214,208 rows
+    - gpu_memcpy: 75,145 rows
+    - Total ingest time: ~12 minutes
+
+  This does not scale to longer sessions (minutes to hours). Both nsys
+  and ros2_trace need an optimal data volume vs accuracy tradeoff.
+
+  nsys side:
+    nsys supports sampling frequency configuration. Lower frequency
+    reduces data volume but may miss short-lived GPU kernels or bursty
+    CUDA API patterns. We need a statistical model that, given a chosen
+    sampling frequency, provides a confidence interval for the accuracy
+    of derived metrics (kernel duration distributions, API call rates,
+    memory bandwidth utilization).
+
+    Approach:
+      1. Use current full-rate trace as ground truth
+      2. Subsample at various frequencies (1/2, 1/5, 1/10, 1/50, 1/100)
+      3. For each subsample, compute key metrics (mean/p50/p99 kernel
+         duration, API call rate, memory throughput)
+      4. Compare against ground truth, derive error bounds
+      5. Fit a model: f(sampling_frequency) → confidence_interval(metric)
+      6. Recommend a default frequency that keeps error < X% at 95% CI
+
+  ros2_trace side:
+    LTTng captures every single event (publish, take, callback_start/end).
+    For systems with high-frequency topics (e.g., IMU at 200Hz), this
+    generates massive volumes. Options:
+      - Filter by topic/event type at capture time (lttng enable-event)
+      - Post-capture downsampling for rate-based analysis
+      - Windowed capture (trace 5s every 30s) for steady-state profiling
+    Need to quantify: how many seconds of full-rate trace are needed to
+    accurately characterize callback latency distributions, scheduling
+    jitter, and message flow rates?
+
+  Deliverable:
+    A script or notebook that takes a full-rate trace, performs the
+    subsampling analysis, and outputs a recommendation table:
+      | Sampling config | Data reduction | Metric accuracy (95% CI) |
+
+Priority: HIGH (blocks scaling to real mission durations and multi-drone
+  sessions — current 30s trace already takes 12min to ingest)
+
+
+6. Automated simulation session with scripted actions
+------------------------------------------------------
+Problem:
+  Current workflow is fully manual: start sim_run.sh, wait for nodes to
+  come up, manually type action commands in the aircraft container's tmux
+  pane, wait for completion, then stop FISH. This makes trace content
+  unpredictable — we don't know exactly which actions were sent, when,
+  or whether they completed.
+
+  In session fish_20260329_182842, action execute events were lost due
+  to LTTng buffer overflow (404 events discarded). We cannot tell if
+  the actions would have been captured otherwise.
+
+Why it matters:
+  - Model validation requires known ground truth: which actions were
+    sent, their expected service calls, and timing bounds
+  - Reproducibility: re-running the same scenario should produce
+    comparable trace data
+  - CI/testing: automated trace capture enables regression testing of
+    the FISH pipeline itself
+
+Requirements:
+  1. A mission script that sends a defined sequence of actions:
+       - takeoff (wait for completion)
+       - orbit or reposition (wait for completion)
+       - land (wait for completion)
+     Using the AAS CLI primitives:
+       cancellable_action "ros2 action send_goal /Drone1/takeoff_action ..."
+       cancellable_action "ros2 action send_goal /Drone1/orbit_action ..."
+       cancellable_action "ros2 action send_goal /Drone1/land_action ..."
+
+  2. The script should run INSIDE the aircraft container after nodes
+     are up, either via docker exec or as a tmux pane command.
+
+  3. Timing: wait for node initialization (e.g., 10s after container
+     start), then execute the action sequence, then signal FISH stop.
+
+  4. Output: a manifest file listing what was sent and when, so model
+     extraction can cross-check against trace events.
+
+  5. LTTng buffer size must be increased to avoid event loss. Add
+     --subbuf-size-ust parameter to the ros2 trace invocation in
+     install_fish.sh's trace_session.sh.
+
+Priority: HIGH (blocks action tracepoint validation and reproducible
+  trace sessions for paper results)

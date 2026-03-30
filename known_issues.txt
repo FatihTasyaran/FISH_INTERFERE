@@ -1,0 +1,76 @@
+FISH Known Issues (non-bug observations)
+=========================================
+
+ISSUE-001: rclpy use_sim_time timer recreation causes massive event inflation
+-----------------------------------------------------------------------------
+Date discovered: 2026-03-29
+Session: fish_20260329_182842
+
+Observation:
+  rclpy_timer_callback_added fires 88,789 times in a ~30 second session
+  for yolo_inference_node (PID 952). There are hundreds of distinct
+  timer_handle values, many repeating ~3000 times each (memory reuse).
+
+  This matches the rcl_timer_init pattern from the previous session
+  (fish_20260322_212915): 166,890 rcl_timer_init events for 5 actual
+  timers. The periodic re-init is a known rclpy/rcl behavior when
+  use_sim_time is enabled.
+
+Root cause (verified in rclpy source):
+  rclpy/executors.py _wait_for_ready_callbacks() (line 510) creates a
+  NEW Timer object on EVERY call when timeout_sec > 0:
+
+    timeout_timer = Timer(None, None, timeout_nsec, self._clock, ...)
+
+  This is called from spin_once() → _spin_once_impl() → wait_for_ready_callbacks()
+  on every executor spin cycle. A node with a 1ms timer spins ~3000/s,
+  creating ~3000 Timer objects per second. In 30 seconds: ~88K Timers.
+
+  Each Timer.__init__() calls _rclpy.Timer() which calls rcl_timer_init()
+  in the C layer, firing the rcl_timer_init LTTng tracepoint. Our
+  rclpy_timer_callback_added tracepoint fires from the same __init__.
+
+  The 348 distinct timer_handle values with high repeat counts (top handle:
+  3376 times) confirm memory reuse after free — the rcl_timer_t is
+  allocated, used for one WaitSet cycle, then destroyed, and a new one
+  is allocated at the same address.
+
+  Note: rclpy_timer_link_node count is 0 for PID 952, confirming these
+  are NOT user-created timers (Node.create_timer). They are executor-
+  internal timeout timers with callback=None.
+
+  time_source.py was also checked — it does NOT recreate timers. It only
+  calls clock.set_ros_time_override() on each /clock message.
+
+Impact:
+  - Data volume: 88K unnecessary timer events in a 30s session. Scales
+    linearly with session duration and sim clock rate.
+  - Cache/TLB pollution: each Timer.__init__() allocates a new rcl_timer_t,
+    causing memory churn. The ctypes bridge call adds a small overhead per
+    recreation but the dominant cost is rclpy's own allocation pattern.
+  - Ingest time: contributes to the 8.6M event total and 12min ingest.
+  - Model extraction: not affected — find_one() returns first match, which
+    is the initial creation. Subsequent recreations are ignored.
+
+Upstream concern:
+  The executor creates and destroys a Timer object on every spin cycle
+  just to implement a wait timeout. This is wasteful:
+    - Unnecessary malloc/free cycles (~3000/s per node)
+    - Cache line invalidation from repeated allocation
+    - LTTng tracepoint overhead (rcl_timer_init fires on each creation)
+    - Potential scheduling jitter from allocation latency
+  A reusable timeout timer (create once, reset period as needed) would
+  eliminate this overhead entirely. rclcpp does not have this issue.
+
+FISH mitigation options:
+  1. Filter in tracepoint: check if timer_handle was already seen for this
+     node before firing rclpy_timer_callback_added. Adds complexity to the
+     ctypes bridge but eliminates 99.9% of redundant events.
+  2. Filter at ingest: deduplicate timer events by (vpid, timer_handle)
+     keeping only the first occurrence. Simple but doesn't reduce trace
+     data volume on disk.
+  3. Accept and document: model extraction already handles it correctly.
+     The extra events are noise but don't cause incorrect results. Address
+     as part of data volume optimization (immediate_work.txt item 5).
+
+Current status: option 3 (accepted, documented).

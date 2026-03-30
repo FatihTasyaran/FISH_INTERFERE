@@ -29,11 +29,12 @@ MONGO_URI = "mongodb://localhost:27017"
 INFLUX_HOST = "http://127.0.0.1:8181"
 INFLUX_TOKEN_FILE = os.path.expanduser("~/inf.tok")
 
-TRACE_SESSION = "fish_20260322_212915"
+TRACE_SESSION = "fish_20260330_184541"
 vertex_counter = count(1)
 SKIP_DEBUG = True
 SKIP_RVIZ = True
 SKIP_PARAMSERVICE = True  # Filter /parameter_events topic and parameter service entities
+INCLUDE_EXTERNAL_ACTIONS = True  # Include short-lived action clients from trace (ros2cli send_goal etc.)
 
 # ROS 2 parameter service infrastructure: auto-created topics and services
 _PARAM_TOPICS = {"/parameter_events"}
@@ -152,7 +153,13 @@ def identify_executors(mongo):
 
         # Skip ros2cli tooling processes
         if SKIP_DEBUG and all(nie['payload']['node_name'].startswith("_ros2cli") for nie in node_init_events):
-            continue
+            if INCLUDE_EXTERNAL_ACTIONS:
+                # Keep action clients (send_goal) — they are real robot commands
+                has_action_client = any("send_goal" in nie['payload']['node_name'] for nie in node_init_events)
+                if not has_action_client:
+                    continue
+            else:
+                continue
 
         # Skip rviz
         if SKIP_RVIZ and any(nie['procname'] == "rviz2" for nie in node_init_events):
@@ -230,6 +237,16 @@ def identify_entities(mongo, nodes):
             node.Z_v.append(e.id_v)
             entities[e.id_v] = e
 
+        # Service clients → entity
+        for cli_name, cli_type in info.get("Service_Clients", {}).items():
+            if SKIP_PARAMSERVICE and _is_param_service(cli_name):
+                continue
+            e_A = ret_A_dict("E", label=cli_name, etype="cli")
+            e_A["srv_type"] = cli_type
+            e = FishVertex("E", next(vertex_counter), e_A, [], 2)
+            node.Z_v.append(e.id_v)
+            entities[e.id_v] = e
+
         # Timers → entity
         for timer_handle, period_ns in info.get("Timers", {}).items():
             e_A = ret_A_dict("E", label=f"timer_{period_ns}ns", etype="tmr")
@@ -239,10 +256,44 @@ def identify_entities(mongo, nodes):
             node.Z_v.append(e.id_v)
             entities[e.id_v] = e
 
-        # Actions → abstract entity referencing components
+        # Actions → abstract entity with 5 component entities (3 services + 2 publishers)
+        coll = mongo["ros2_trace"]
         for action_name, action_info in info.get("Action_Servers", {}).items():
             e_A = ret_A_dict("E", label=action_name, etype="act")
-            e_A["action_components"] = action_info["components"]
+            e_A["action_type"] = action_info if isinstance(action_info, str) else action_info.get("type", "")
+
+            short_name = action_name.rsplit('/', 1)[-1]
+            act_init = coll.find_one({"event": "ros2:rclcpp_action_server_init",
+                                      "payload.action_name": short_name})
+
+            component_ids = {}
+            if act_init:
+                p = act_init["payload"]
+                e_A["action_handle"] = p["action_server_handle"]
+
+                # Create 3 service component entities
+                for role, handle_key in [("send_goal", "goal_service_handle"),
+                                         ("cancel_goal", "cancel_service_handle"),
+                                         ("get_result", "result_service_handle")]:
+                    svc_name = f"{action_name}/_action/{role}"
+                    ce_A = ret_A_dict("E", label=svc_name, etype="serv")
+                    ce_A["service_handle"] = p[handle_key]
+                    ce_A["action_role"] = role
+                    ce = FishVertex("E", next(vertex_counter), ce_A, [], 2)
+                    node.Z_v.append(ce.id_v)
+                    entities[ce.id_v] = ce
+                    component_ids[role] = ce.id_v
+
+                # Create 2 publisher component entries (look up handles from trace)
+                for pub_role in ["feedback", "status"]:
+                    pub_topic = f"{action_name}/_action/{pub_role}"
+                    pub_init = coll.find_one({"event": "ros2:rcl_publisher_init",
+                                              "payload.node_handle": node_handle,
+                                              "payload.topic_name": pub_topic})
+                    if pub_init:
+                        component_ids[pub_role] = pub_init["payload"]["publisher_handle"]
+
+            e_A["action_components"] = component_ids
             e = FishVertex("E", next(vertex_counter), e_A, [], 2)
             node.Z_v.append(e.id_v)
             entities[e.id_v] = e
@@ -254,11 +305,19 @@ def identify_callbacks(mongo, nodes, entities, executors):
     """
     Layer 2→3: Trace callback chains for each entity and create Function vertices.
     Chains (verified in mapping.txt):
-      sub:  rcl_subscription_init → rclcpp_subscription_init → rclcpp_subscription_callback_added → rclcpp_callback_register
-      serv: rcl_service_init → rclcpp_service_callback_added → rclcpp_callback_register
-      tmr:  rclcpp_timer_callback_added → rclcpp_callback_register  (timer_handle from entity A_v)
+      rclcpp (C++ nodes):
+        sub:  rcl_subscription_init → rclcpp_subscription_init → rclcpp_subscription_callback_added → rclcpp_callback_register
+        serv: rcl_service_init → rclcpp_service_callback_added → rclcpp_callback_register
+        tmr:  rclcpp_timer_callback_added → rclcpp_callback_register
+      rclpy (Python nodes, fallback):
+        sub:  rcl_subscription_init → rclpy_subscription_callback_added → rclpy_callback_register
+        serv: rcl_service_init → rclpy_service_callback_added → rclpy_callback_register
+        tmr:  rclpy_timer_callback_added → rclpy_callback_register
       act:  abstract entity — component services already get their own callbacks
-    Skips nodes belonging to nsys-profiled executors (GPU function layer handled separately).
+    Tries rclcpp path first, falls back to rclpy if not found.
+    nsys-profiled nodes are NOT skipped — their CPU-side callbacks (rclpy) are
+    extracted and marked with gpu_node=True. GPU function vertices (sm, ce) are
+    added separately by the GPU function layer extractor.
     Returns dict {id_v: FishVertex} of Function vertices.
     """
     functions = {}
@@ -274,10 +333,7 @@ def identify_callbacks(mongo, nodes, entities, executors):
             node_to_pid[n_id] = ex.A_v['pid']
 
     for node_id, node in nodes.items():
-        # Skip nsys-profiled nodes — their functions come from GPU trace
-        if node_to_pid.get(node_id) in gpu_pids:
-            print(f"  [identify_callbacks] Skipping nsys-profiled node: {node.A_v['label']} (pid={node_to_pid[node_id]})")
-            continue
+        is_gpu_node = node_to_pid.get(node_id) in gpu_pids
 
         node_handle = node.A_v['node_handle']
 
@@ -289,24 +345,30 @@ def identify_callbacks(mongo, nodes, entities, executors):
             sub_handle = si["payload"]["subscription_handle"]
             topic = si["payload"]["topic_name"]
 
+            # Try rclcpp path first (C++ nodes)
             csub = coll.find_one({"event": "ros2:rclcpp_subscription_init",
                                   "payload.subscription_handle": sub_handle})
-            if not csub:
-                continue  # rcl-only (rclpy node), no C++ callback chain
-            subscription_obj = csub["payload"]["subscription"]
+            if csub:
+                subscription_obj = csub["payload"]["subscription"]
+                cb_added = coll.find_one({"event": "ros2:rclcpp_subscription_callback_added",
+                                          "payload.subscription": subscription_obj})
+                if cb_added:
+                    callback_ptr = cb_added["payload"]["callback"]
+                    cb_reg = coll.find_one({"event": "ros2:rclcpp_callback_register",
+                                            "payload.callback": callback_ptr})
+                    if cb_reg:
+                        sub_chain[topic] = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
+                        continue
 
-            cb_added = coll.find_one({"event": "ros2:rclcpp_subscription_callback_added",
-                                      "payload.subscription": subscription_obj})
-            if not cb_added:
-                continue
-            callback_ptr = cb_added["payload"]["callback"]
-
-            cb_reg = coll.find_one({"event": "ros2:rclcpp_callback_register",
-                                    "payload.callback": callback_ptr})
-            if not cb_reg:
-                continue
-
-            sub_chain[topic] = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
+            # Fallback: rclpy path (Python nodes)
+            py_cb = coll.find_one({"event": "ros2:rclpy_subscription_callback_added",
+                                   "payload.subscription_handle": sub_handle})
+            if py_cb:
+                callback_ptr = py_cb["payload"]["callback"]
+                cb_reg = coll.find_one({"event": "ros2:rclpy_callback_register",
+                                        "payload.callback": callback_ptr})
+                if cb_reg:
+                    sub_chain[topic] = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
 
         # Service chain: service_name → {callback, symbol}
         srv_chain = {}
@@ -314,18 +376,26 @@ def identify_callbacks(mongo, nodes, entities, executors):
             srv_handle = si["payload"]["service_handle"]
             srv_name = si["payload"]["service_name"]
 
+            # Try rclcpp path first (C++ nodes)
             srv_cb = coll.find_one({"event": "ros2:rclcpp_service_callback_added",
                                     "payload.service_handle": srv_handle})
-            if not srv_cb:
-                continue
-            callback_ptr = srv_cb["payload"]["callback"]
+            if srv_cb:
+                callback_ptr = srv_cb["payload"]["callback"]
+                cb_reg = coll.find_one({"event": "ros2:rclcpp_callback_register",
+                                        "payload.callback": callback_ptr})
+                if cb_reg:
+                    srv_chain[srv_name] = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
+                    continue
 
-            cb_reg = coll.find_one({"event": "ros2:rclcpp_callback_register",
-                                    "payload.callback": callback_ptr})
-            if not cb_reg:
-                continue
-
-            srv_chain[srv_name] = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
+            # Fallback: rclpy path (Python nodes)
+            py_cb = coll.find_one({"event": "ros2:rclpy_service_callback_added",
+                                   "payload.service_handle": srv_handle})
+            if py_cb:
+                callback_ptr = py_cb["payload"]["callback"]
+                cb_reg = coll.find_one({"event": "ros2:rclpy_callback_register",
+                                        "payload.callback": callback_ptr})
+                if cb_reg:
+                    srv_chain[srv_name] = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
 
         # --- Match entities to their callbacks ---
 
@@ -342,10 +412,18 @@ def identify_callbacks(mongo, nodes, entities, executors):
 
             elif etype == "serv":
                 cb_info = srv_chain.get(entity.A_v["label"])
+                # Action component services: rclcpp_service_callback_added doesn't fire,
+                # create function from action role instead
+                if not cb_info and entity.A_v.get("action_role"):
+                    action_role = entity.A_v["action_role"]
+                    action_label = entity.A_v["label"].rsplit("/_action/", 1)[0].rsplit("/", 1)[-1]
+                    role_short = {"send_goal": "goal", "cancel_goal": "cancel", "get_result": "result"}[action_role]
+                    cb_info = {"callback": None, "symbol": f"{action_label}::{role_short}"}
 
             elif etype == "tmr":
                 timer_handle = entity.A_v.get("timer_handle")
                 if timer_handle:
+                    # Try rclcpp path first
                     tmr_cb = coll.find_one({"event": "ros2:rclcpp_timer_callback_added",
                                             "payload.timer_handle": timer_handle})
                     if tmr_cb:
@@ -355,15 +433,27 @@ def identify_callbacks(mongo, nodes, entities, executors):
                         if cb_reg:
                             cb_info = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
 
+                    # Fallback: rclpy path
+                    if not cb_info:
+                        py_cb = coll.find_one({"event": "ros2:rclpy_timer_callback_added",
+                                               "payload.timer_handle": timer_handle})
+                        if py_cb:
+                            callback_ptr = py_cb["payload"]["callback"]
+                            cb_reg = coll.find_one({"event": "ros2:rclpy_callback_register",
+                                                    "payload.callback": callback_ptr})
+                            if cb_reg:
+                                cb_info = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
+
             elif etype == "act":
-                # Abstract entity — component services have their own callbacks.
-                # Action Z_v stays empty at function layer (partition property).
+                # Abstract entity — functions live on component service entities.
                 continue
 
             if cb_info:
                 entity.A_v["cb_addr"] = cb_info["callback"]
                 f_A = ret_A_dict("F", label=cb_info["symbol"], ptype="cpu")
                 f_A["cb_addr"] = cb_info["callback"]
+                if is_gpu_node:
+                    f_A["gpu_node"] = True
                 f = FishVertex("F", next(vertex_counter), f_A, [], 3)
                 entity.Z_v.append(f.id_v)
                 functions[f.id_v] = f
@@ -598,16 +688,14 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
             if n.id_v not in existing:
                 pub_index.setdefault(topic, []).append(n.id_v)
 
-    # Service client index from node_infos
+    # Service client index — from entities (etype="cli")
     client_index = {}  # service_name → [node_id, ...]
-    for full_name, info in node_infos.items():
-        n = name_to_node.get(full_name)
-        if n is None:
-            continue
-        for srv_name in info.get("Service_Clients", {}):
-            if SKIP_PARAMSERVICE and _is_param_service(srv_name):
-                continue
-            client_index.setdefault(srv_name, []).append(n.id_v)
+    for n in nodes.values():
+        for e_id in n.Z_v:
+            e = entities.get(e_id)
+            if e and e.A_v.get("etype") == "cli":
+                cli_name = e.A_v["label"]
+                client_index.setdefault(cli_name, []).append(n.id_v)
 
     # --- L2: Entity-level edges ---
     l2_count = 0
@@ -692,9 +780,19 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
 
 
 if __name__ == "__main__":
-    mongo = connect_mongo(TRACE_SESSION)
-    influx = connect_influx(TRACE_SESSION)
-    session_dir = os.path.expanduser(f"~/fish_traces/{TRACE_SESSION}")
+    import argparse
+    ap = argparse.ArgumentParser(description="FISH model extraction")
+    ap.add_argument("--session", default=TRACE_SESSION, help="Session name")
+    ap.add_argument("--no-external-actions", action="store_true",
+                    help="Exclude short-lived action clients (ros2cli send_goal)")
+    args = ap.parse_args()
+
+    if args.no_external_actions:
+        INCLUDE_EXTERNAL_ACTIONS = False
+
+    mongo = connect_mongo(args.session)
+    influx = connect_influx(args.session)
+    session_dir = os.path.expanduser(f"~/fish_traces/{args.session}")
 
     # Layer extraction
     executors, nodes = identify_executors(mongo)

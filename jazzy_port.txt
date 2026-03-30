@@ -1,0 +1,45 @@
+FISH Jazzy Port Notes
+======================
+
+Motivation:
+  Autoware Foundation has moved entirely to ROS 2 Jazzy.
+  No Humble container images available on ghcr.io/autowarefoundation/autoware.
+  FISH must support Jazzy to be usable with Autoware.
+  Confirmed 2026-03-30: only jazzy-cuda tags on the registry.
+
+What needs to change:
+
+  1. install_fish_tracepoints
+     - Pinned tags: tracetools 4.1.2, rclcpp 16.0.19, rcl 5.3.12
+       → Find Jazzy equivalents (likely different major versions)
+     - patch -p1 context lines will differ → re-generate patches against Jazzy source
+     - rclpy Python patches (subscription.py, timer.py, executors.py, node.py, service.py)
+       → Exact string matches will likely break, need to verify against Jazzy rclpy source
+     - Python path: /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/
+       → Jazzy uses Python 3.12, different path
+
+  2. install_fish_deps.sh
+     - ros-humble-* → ros-jazzy-*
+     - Ubuntu version may differ (Humble=22.04, Jazzy=24.04)
+
+  3. install_fish.sh / setup_fish.sh
+     - /opt/ros/humble/ → /opt/ros/jazzy/ throughout
+     - .bashrc source lines
+
+  4. fish_rclpy_trace.py (ctypes bridge)
+     - Should work as-is if libtracetools.so API unchanged
+     - Verify tracetools C API compatibility
+
+What should work without changes:
+  - FISH framework logic (wrapper, daemon, snapshot)
+  - Ingest pipeline (babeltrace2, MongoDB, InfluxDB)
+  - Model extraction (trace event format is LTTng-UST, ROS-version-independent)
+  - nsys integration (CUDA, not ROS-dependent)
+  - fish_mission.sh, fish_auto_mission.sh (ros2 CLI API is stable)
+
+Approach:
+  - Parameterize ROS_DISTRO in install scripts (detect from /opt/ros/*)
+  - Generate patches dynamically or maintain per-distro patch sets
+  - Test on Autoware Jazzy container image
+
+Priority: HIGH when targeting Autoware, LOW for current AAS work (stays on Humble)
