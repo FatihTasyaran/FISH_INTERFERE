@@ -18,7 +18,7 @@ from utils import create_detection_summary
 from utils import create_graph_summary
 from utils import export_fish_dot, export_fish_overview, export_fish_detail
 from utils import export_fish_radial, export_fish_matrix
-from utils import export_fish_staircase
+from utils import export_fish_staircase, export_fish_l3_chains
 from graph_utils import print_graph_metrics
 
 # ---------------------------------------------------------------------------
@@ -1163,3 +1163,5 @@ if __name__ == "__main__":
     export_fish_radial(G, "fish_radial", fmt="png")
     export_fish_matrix(G, executors, nodes, entities, "fish_matrix", fmt="png")
     export_fish_staircase(G, "fish_staircase", fmt="png")
+    export_fish_l3_chains(G, "fish_l3_chains", fmt="png")
+    export_fish_l3_chains(G, "fish_l3_chains", fmt="pdf")

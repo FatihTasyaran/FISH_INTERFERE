@@ -1580,3 +1580,119 @@ def export_fish_staircase(G, out_path, fmt="png"):
     return out_file
     print(f"[FISH viz] Matrix: {out_file}")
     return out_file
+
+
+def export_fish_l3_chains(G, out_path, fmt="png"):
+    """Export L3 function-level chain graph — only functions and their edges.
+
+    Shows the callback-to-callback dataflow chains. Each node is a function
+    vertex (callback), each edge is a propagated L3 communication or
+    dependency edge. External functions shown in gray dashed.
+    """
+    import subprocess
+
+    lines = [
+        'digraph FISH_L3 {',
+        '  rankdir=LR;',
+        '  splines=true;',
+        '  nodesep=0.6;',
+        '  ranksep=1.0;',
+        '  bgcolor=white;',
+        '  label="FISH L3 — Function Chain Graph";',
+        '  labelloc=t;',
+        '  fontsize=14;',
+        '',
+    ]
+
+    # Collect all function vertices involved in L3 edges
+    l3_nodes = set()
+    l3_edges = []
+    for u, v, data in G.edges(data=True):
+        if data.get("level") == "L3" and data.get("rel") == "comm":
+            l3_nodes.add(u)
+            l3_nodes.add(v)
+            l3_edges.append((u, v, data))
+
+    if not l3_nodes:
+        print("[FISH viz] L3 chains: no L3 edges, skipping")
+        return None
+
+    # Also find parent entity for labeling
+    entity_of_func = {}  # f_id → entity label
+    for nid, data in G.nodes(data=True):
+        v = data.get("v")
+        if v and v.t_v == "E":
+            for f_id in v.Z_v:
+                entity_of_func[f_id] = v.A_v.get("label", "?")
+
+    # Add function nodes
+    for nid in l3_nodes:
+        data = G.nodes.get(nid, {})
+        v = data.get("v")
+        if not v:
+            continue
+
+        is_ext = v.A_v.get("external", False) or v.A_v.get("ptype") == "ext"
+        sym = v.A_v.get("label", str(nid))
+        ptype = v.A_v.get("ptype", "?")
+        entity_label = entity_of_func.get(nid, "")
+
+        # Shorten symbol
+        short_sym = shorten_symbol(sym) if not is_ext else sym.replace("ext:", "")
+        if "/" in short_sym:
+            short_sym = _short_topic(short_sym)
+        if len(short_sym) > 25:
+            short_sym = short_sym[:23] + ".."
+
+        # Shorten entity label
+        short_entity = _short_topic(entity_label) if "/" in entity_label else entity_label
+        if short_entity.startswith("ext:"):
+            short_entity = short_entity.replace("ext:", "")
+
+        label = f"{_dot_escape(short_sym)}\\n[{_dot_escape(short_entity)}]"
+
+        if is_ext:
+            style = ('shape=box, style="rounded,filled,dashed", fillcolor="#D5D8DC", '
+                     'fontsize=8, width=1.5, height=0.5')
+        else:
+            style = ('shape=box, style="rounded,filled", fillcolor="#FFFFCC", '
+                     'fontsize=8, width=1.5, height=0.5')
+
+        lines.append(f'  {nid} [label="{label}", {style}];')
+
+    lines.append('')
+
+    # Add L3 edges
+    for u, v, data in l3_edges:
+        nature = data.get("nature", "msg")
+        topic = data.get("topic", data.get("service", ""))
+        short = _short_topic(topic) if topic else ""
+        ext = data.get("external", False)
+
+        if nature == "dep":
+            edge_style = 'color="#E74C3C", style=solid, arrowsize=0.8'
+        elif ext:
+            edge_style = 'color="#7F8C8D", style=dashed, arrowsize=0.8'
+        else:
+            edge_style = 'color="#2C3E50", style=solid, arrowsize=0.8'
+
+        if short:
+            edge_style += f', label="{_dot_escape(short)}", fontsize=7'
+
+        lines.append(f'  {u} -> {v} [{edge_style}];')
+
+    lines.append('}')
+
+    dot_path = out_path + ".dot"
+    with open(dot_path, "w") as f:
+        f.write("\n".join(lines))
+
+    out_file = out_path + "." + fmt
+    result = subprocess.run(
+        ["dot", f"-T{fmt}", dot_path, "-o", out_file],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[FISH viz] dot error: {result.stderr[:200]}")
+
+    print(f"[FISH viz] L3 chains: {out_file}")
+    return out_file
