@@ -295,6 +295,10 @@ def identify_entities(mongo, nodes):
                     ce_A = ret_A_dict("E", label=svc_name, etype="serv")
                     ce_A["service_handle"] = p[handle_key]
                     ce_A["action_role"] = role
+                    ce_A["aspects"] = [
+                        {"aspect": "req_sub", "service": svc_name},
+                        {"aspect": "res_pub", "service": svc_name},
+                    ]
                     ce = FishVertex("E", next(vertex_counter), ce_A, [], 2)
                     node.Z_v.append(ce.id_v)
                     entities[ce.id_v] = ce
@@ -840,120 +844,158 @@ def _aggregate_l0(G, executors, nodes):
 
 
 def add_horizontal_relations(G, node_infos, executors, nodes, entities, functions):
-    """Add communication edges at entity level, then propagate/aggregate.
+    """Add horizontal edges using entity aspects, then aggregate upward.
 
-    Entity-level edges (L2):
-      - topic matching: publisher node → subscriber entity (nature="msg")
-      - service matching: client node → server entity (nature="dep")
+    Phase 2 edge construction — all vertices and vertical edges must be complete.
 
-    Then:
-      - propagate_l3: entity edges → function edges
-      - aggregate_l1: entity edges → node edges (comm set)
-      - aggregate_l0: node edges → executor edges (process comm)
+    L2 (entity level):
+      - pub aspect on entity A → sub aspect on entity B (nature="msg")
+      - cli aspect on entity A → req_sub aspect on entity B (nature="comm", request)
+      - res_pub aspect on entity B → entity A (nature="dep", response)
+      Fallback: unattributed pub/cli aspects use node-level matching
+
+    L3 (function level): propagate L2 edges down to functions
+    L1 (node level): aggregate L2 edges up to nodes
+    L0 (executor level): aggregate L1 edges up to executors
     """
-    # Build lookup: node full_name → (node_id, FishVertex)
-    name_to_node = {}
-    for n in nodes.values():
-        name_to_node[n.A_v['full_name']] = n
+    # --- Build indexes ---
 
-    # Build lookup: (node_id, topic) → subscriber entity_id
-    # A subscriber entity's label is the topic name
-    sub_index = {}  # topic → [(node_id, entity_id), ...]
-    srv_index = {}  # service_name → [(node_id, entity_id), ...]
+    # sub aspect index: topic → [(entity_id, node_id), ...]
+    sub_index = {}
+    # srv (req_sub) aspect index: service_name → [(entity_id, node_id), ...]
+    srv_index = {}
+    # pub aspect index (entity-level): topic → [(entity_id, node_id), ...]
+    pub_entity_index = {}
+
+    # entity → parent node mapping
+    entity_to_node = {}
+
     for n in nodes.values():
         for e_id in n.Z_v:
             e = entities.get(e_id)
-            if not e:
+            if not e or e.t_v != "E":
                 continue
-            if e.A_v.get("etype") == "sub":
-                topic = e.A_v["label"]
-                sub_index.setdefault(topic, []).append((n.id_v, e_id))
-            elif e.A_v.get("etype") == "serv":
-                srv_name = e.A_v["label"]
-                srv_index.setdefault(srv_name, []).append((n.id_v, e_id))
+            entity_to_node[e_id] = n.id_v
+            for aspect in e.A_v.get("aspects", []):
+                if aspect["aspect"] == "sub":
+                    topic = aspect["topic"]
+                    sub_index.setdefault(topic, []).append((e_id, n.id_v))
+                elif aspect["aspect"] == "req_sub":
+                    srv = aspect["service"]
+                    srv_index.setdefault(srv, []).append((e_id, n.id_v))
+                elif aspect["aspect"] == "pub":
+                    topic = aspect["topic"]
+                    pub_entity_index.setdefault(topic, []).append((e_id, n.id_v))
 
-    # Build lookup: which nodes publish on which topics (from node_infos + node A_v publishers)
-    # Use both node_info (complete) and node.A_v['publishers'] (from model extraction)
-    pub_index = {}  # topic → [node_id, ...]
+    # Fallback: unattributed pub aspects (still on node level)
+    pub_node_index = {}  # topic → [node_id, ...]
     for n in nodes.values():
-        pubs = n.A_v.get("publishers", {})
-        for topic in pubs:
-            pub_index.setdefault(topic, []).append(n.id_v)
-
-    # Also check node_infos for nodes that might have publishers not yet in node.A_v
-    # (e.g., nodes found in node_info but matched to model nodes)
-    for full_name, info in node_infos.items():
-        n = name_to_node.get(full_name)
-        if n is None:
-            continue
-        for topic in info.get("Publishers", {}):
+        for pa in n.A_v.get("pub_aspects", []):
+            topic = pa["topic"]
+            pub_node_index.setdefault(topic, []).append(n.id_v)
+        # Also from node.A_v['publishers'] for backward compat
+        for topic in n.A_v.get("publishers", {}):
             if SKIP_PARAMSERVICE and _is_param_service(topic):
                 continue
-            existing = pub_index.get(topic, [])
+            existing = pub_node_index.get(topic, [])
             if n.id_v not in existing:
-                pub_index.setdefault(topic, []).append(n.id_v)
+                pub_node_index.setdefault(topic, []).append(n.id_v)
 
-    # Service client index — from node attribute (cli is an aspect, not entity)
-    client_index = {}  # service_name → [node_id, ...]
+    # cli aspect index: service → [(entity_id, node_id), ...] from attributed entities
+    cli_entity_index = {}
     for n in nodes.values():
-        for cli_name in n.A_v.get("service_clients", {}).keys():
-            client_index.setdefault(cli_name, []).append(n.id_v)
+        for e_id in n.Z_v:
+            e = entities.get(e_id)
+            if not e or e.t_v != "E":
+                continue
+            for aspect in e.A_v.get("aspects", []):
+                if aspect["aspect"] == "cli":
+                    srv = aspect["service"]
+                    cli_entity_index.setdefault(srv, []).append((e_id, n.id_v))
+
+    # Fallback: unattributed cli aspects (still on node level)
+    cli_node_index = {}  # service → [node_id, ...]
+    for n in nodes.values():
+        for ca in n.A_v.get("cli_aspects", []):
+            srv = ca["service"]
+            cli_node_index.setdefault(srv, []).append(n.id_v)
 
     # --- L2: Entity-level edges ---
     l2_count = 0
 
-    # Topic matching: publisher_node → subscriber_entity
+    # 1. Topic edges: pub aspect entity → sub aspect entity
     for topic, sub_list in sub_index.items():
-        pub_nodes = pub_index.get(topic, [])
-        for pub_node_id in pub_nodes:
-            for sub_node_id, sub_entity_id in sub_list:
-                if pub_node_id == sub_node_id:
-                    continue  # skip self-loops (same node pub→sub on same topic)
-                # Find a "source entity" on the publishing node for this topic.
-                # Publisher is not an entity, so we pick the first entity on that node
-                # as a proxy source. The edge semantically goes node→entity.
-                # We store the publishing node_id on the edge for reference.
-                G.add_edge(pub_node_id, sub_entity_id, rel="comm", level="L2",
-                           nature="msg", topic=topic)
-                l2_count += 1
+        # Try entity-level pub first
+        pub_entities = pub_entity_index.get(topic, [])
+        if pub_entities:
+            for pub_e_id, pub_n_id in pub_entities:
+                for sub_e_id, sub_n_id in sub_list:
+                    if pub_n_id == sub_n_id:
+                        continue
+                    G.add_edge(pub_e_id, sub_e_id, rel="comm", level="L2",
+                               nature="msg", topic=topic)
+                    l2_count += 1
+        else:
+            # Fallback: node-level pub
+            pub_nodes = pub_node_index.get(topic, [])
+            for pub_n_id in pub_nodes:
+                for sub_e_id, sub_n_id in sub_list:
+                    if pub_n_id == sub_n_id:
+                        continue
+                    G.add_edge(pub_n_id, sub_e_id, rel="comm", level="L2",
+                               nature="msg", topic=topic)
+                    l2_count += 1
 
-    # Service matching: bidirectional — request (comm) + response (dep)
+    # 2. Service edges: cli aspect entity → srv entity (request) + srv entity → cli entity (response)
     for srv_name, srv_list in srv_index.items():
-        client_nodes = client_index.get(srv_name, [])
-        for client_node_id in client_nodes:
-            for srv_node_id, srv_entity_id in srv_list:
-                if client_node_id == srv_node_id:
-                    continue
-                # Request: client → server (communication)
-                G.add_edge(client_node_id, srv_entity_id, rel="comm", level="L2",
-                           nature="comm", service=srv_name, direction="request")
-                # Response: server → client (dependency — future fulfillment)
-                G.add_edge(srv_entity_id, client_node_id, rel="comm", level="L2",
-                           nature="dep", service=srv_name, direction="response")
-                l2_count += 2
+        # Try entity-level cli first
+        cli_entities = cli_entity_index.get(srv_name, [])
+        if cli_entities:
+            for cli_e_id, cli_n_id in cli_entities:
+                for srv_e_id, srv_n_id in srv_list:
+                    if cli_n_id == srv_n_id:
+                        continue
+                    G.add_edge(cli_e_id, srv_e_id, rel="comm", level="L2",
+                               nature="comm", service=srv_name, direction="request")
+                    G.add_edge(srv_e_id, cli_e_id, rel="comm", level="L2",
+                               nature="dep", service=srv_name, direction="response")
+                    l2_count += 2
+        else:
+            # Fallback: node-level cli
+            cli_nodes = cli_node_index.get(srv_name, [])
+            for cli_n_id in cli_nodes:
+                for srv_e_id, srv_n_id in srv_list:
+                    if cli_n_id == srv_n_id:
+                        continue
+                    G.add_edge(cli_n_id, srv_e_id, rel="comm", level="L2",
+                               nature="comm", service=srv_name, direction="request")
+                    G.add_edge(srv_e_id, cli_n_id, rel="comm", level="L2",
+                               nature="dep", service=srv_name, direction="response")
+                    l2_count += 2
 
     print(f"[FISH graph] L2 horizontal edges: {l2_count}")
 
     # --- L3: Propagate entity edges to function level ---
-    # Note: since publisher side is a node (not entity), L3 propagation
-    # only applies when both sides are entities. For topic edges, the
-    # source is a node_id so we skip L3 propagation for those.
-    # L3 propagation is primarily for service client→server when both are entities.
-    # (Currently no service clients in this session.)
+    # When both sides of an L2 edge are entities, propagate to their functions.
     l3_count = 0
-    # Future: when rcl_publish_characterization attributes publishes to
-    # specific entities, we can add entity→entity edges and propagate to L3.
+    for u, v, data in list(G.edges(data=True)):
+        if data.get("level") != "L2":
+            continue
+        # Both sides must be entities (not nodes)
+        if u not in entities or v not in entities:
+            continue
+        src_funcs = [f_id for f_id in entities[u].Z_v if f_id in functions]
+        dst_funcs = [f_id for f_id in entities[v].Z_v if f_id in functions]
+        for sf in src_funcs:
+            for df in dst_funcs:
+                G.add_edge(sf, df, rel="comm", level="L3", **{
+                    k: v for k, v in data.items() if k not in ("rel", "level")
+                })
+                l3_count += 1
     print(f"[FISH graph] L3 propagated edges: {l3_count}")
 
     # --- L1: Aggregate entity edges to node level ---
-    # For topic edges, source is already a node_id, dest is entity.
-    # We need to resolve dest entity → its parent node for node-level aggregation.
-    entity_to_node = {}
-    for n in nodes.values():
-        for e_id in n.Z_v:
-            if e_id in entities:
-                entity_to_node[e_id] = n.id_v
-
+    # Resolve both sides of L2 edges to their parent nodes.
     node_pairs = {}
     for u, v, data in G.edges(data=True):
         if data.get("level") != "L2":
