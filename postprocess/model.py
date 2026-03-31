@@ -863,6 +863,20 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
     L1 (node level): aggregate L2 edges up to nodes
     L0 (executor level): aggregate L1 edges up to executors
     """
+    # --- Topic metadata (msg type, hz) for edge attributes ---
+    topic_meta = {}  # topic → {type, hz, ...}
+    for doc in mongo["topic_info"].find():
+        t = doc.get("topic")
+        if t:
+            topic_meta.setdefault(t, {})["msg_type"] = doc.get("type", "")
+            topic_meta[t]["pub_count"] = doc.get("publisher_count", 0)
+            topic_meta[t]["sub_count"] = doc.get("subscription_count", 0)
+    for doc in mongo["topic_hz"].find():
+        t = doc.get("topic")
+        if t:
+            topic_meta.setdefault(t, {})["avg_rate_hz"] = doc.get("average_rate", 0)
+            topic_meta[t]["std_dev"] = doc.get("std_dev", 0)
+
     # --- Build indexes ---
 
     # sub aspect index: topic → [(entity_id, node_id), ...]
@@ -916,6 +930,19 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
         for ca in n.A_v.get("cli_aspects", []):
             cli_node_index.setdefault(ca["service"], []).append(n.id_v)
 
+    def _topic_edge_attrs(topic, **extra):
+        """Build edge attributes for a topic edge, including metadata."""
+        attrs = {"rel": "comm", "level": "L2", "nature": "msg", "topic": topic}
+        meta = topic_meta.get(topic, {})
+        if meta.get("msg_type"):
+            attrs["msg_type"] = meta["msg_type"]
+        if meta.get("avg_rate_hz"):
+            attrs["avg_rate_hz"] = meta["avg_rate_hz"]
+        if meta.get("std_dev"):
+            attrs["std_dev"] = meta["std_dev"]
+        attrs.update(extra)
+        return attrs
+
     # --- L2: Entity-level edges ---
     l2_count = 0
 
@@ -928,8 +955,7 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
                 for sub_e_id, sub_n_id in sub_list:
                     if pub_n_id == sub_n_id:
                         continue
-                    G.add_edge(pub_e_id, sub_e_id, rel="comm", level="L2",
-                               nature="msg", topic=topic)
+                    G.add_edge(pub_e_id, sub_e_id, **_topic_edge_attrs(topic))
                     l2_count += 1
         else:
             # Unattributed pub — no edge (cross-layer edges not allowed)
@@ -986,8 +1012,7 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
         G.add_edge(ext_e.id_v, ext_f.id_v, rel="contains", level="V")
         # Edges to all subscribers
         for sub_e_id, sub_n_id in sub_list:
-            G.add_edge(ext_e.id_v, sub_e_id, rel="comm", level="L2",
-                       nature="msg", topic=topic, external=True)
+            G.add_edge(ext_e.id_v, sub_e_id, **_topic_edge_attrs(topic, external=True))
             l2_count += 1
             ext_count += 1
 
@@ -1010,8 +1035,7 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
         G.add_node(ext_f.id_v, vertex=ext_f)
         G.add_edge(ext_e.id_v, ext_f.id_v, rel="contains", level="V")
         for pub_e_id, pub_n_id in pub_list:
-            G.add_edge(pub_e_id, ext_e.id_v, rel="comm", level="L2",
-                       nature="msg", topic=topic, external=True)
+            G.add_edge(pub_e_id, ext_e.id_v, **_topic_edge_attrs(topic, external=True))
             l2_count += 1
             ext_count += 1
 
