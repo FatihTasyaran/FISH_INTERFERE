@@ -1,0 +1,115 @@
+Client/Server Tracepoint Coverage: rclcpp vs rclpy
+====================================================
+
+Two custom LTTng tracepoints defined in tracetools C:
+  ros2:rclcpp_client_request_sent(client_handle, sequence_number)
+  ros2:rclcpp_client_response_received(client_handle, sequence_number, response_type)
+
+These are fired from 6 code paths across rclcpp and rclpy.
+All paths call the same C functions in libtracetools.so via
+different mechanisms (direct call vs ctypes bridge).
+
+
+1. rclcpp Code Paths (direct C++ TRACEPOINT macro)
+----------------------------------------------------
+
+  A. client.hpp → async_send_request_impl()
+     After: rcl_send_request() succeeds
+     Fires: TRACEPOINT(rclcpp_client_request_sent, client_handle, sequence_number)
+
+  B. client.hpp → handle_response()
+     At entry, before variant dispatch
+     Fires: TRACEPOINT(rclcpp_client_response_received, client_handle, sequence_number, response_type)
+     response_type: 0=future_only, 1=callback, 2=callback_with_request
+
+     When callback variant (type 1 or 2):
+     Fires: TRACEPOINT(callback_start, &callback, false)
+            callback(future)
+            TRACEPOINT(callback_end, &callback)
+
+  Used by: any rclcpp node that calls create_client() + async_send_request()
+
+
+2. rclpy Code Paths (Python ctypes → libtracetools.so)
+-------------------------------------------------------
+
+  C. rclpy/client.py → call_async()
+     After: self.handle.send_request(request)
+     Fires: trace_client_request_sent(self.handle.pointer, sequence_number)
+            → ctypes → _lib.ros_trace_rclcpp_client_request_sent()
+
+  D. rclpy/executors.py → _execute_client()
+     After: client.get_pending_request(sequence)
+     Fires: trace_client_response_received(client.handle.pointer, sequence, 0)
+            → ctypes → _lib.ros_trace_rclcpp_client_response_received()
+     response_type always 0 (rclpy has no callback variant, future-only)
+
+  Used by: any rclpy node that calls create_client() + call_async()
+
+
+3. rclpy ActionClient Code Paths (Python ctypes → libtracetools.so)
+--------------------------------------------------------------------
+
+  E. rclpy/action/client.py → send_goal_async()
+     After: self._client_handle.send_goal_request(request)
+     Fires: trace_client_request_sent(id(self._client_handle), sequence_number)
+            → ctypes → _lib.ros_trace_rclcpp_client_request_sent()
+
+  F. rclpy/action/client.py → execute()
+     In goal response handling, result response handling, cancel response handling
+     Fires: trace_client_response_received(id(self._client_handle), sequence_number, 0)
+            → ctypes → _lib.ros_trace_rclcpp_client_response_received()
+     response_type always 0
+
+  Used by: ros2 action send_goal CLI, any rclpy node using ActionClient
+  Note: ActionClient is a Waitable — does NOT go through client.py or
+        executors._execute_client. Has its own take_data()/execute() path.
+
+
+4. Server Side (NOT client tracepoints — separate mechanism)
+-------------------------------------------------------------
+
+  rclcpp service server:
+    - callback_start/end fires from any_service_callback.hpp
+    - rclcpp_service_callback_added links service_handle → callback
+    - rclcpp_callback_register provides symbol
+    - NO rclcpp_executor_execute tracepoint (only timer/sub have it)
+
+  rclpy service server:
+    - FISH patches executors.py _execute_service with callback_start/end
+    - rclpy_service_callback_added links service_handle → callback (FISH custom)
+    - rclpy_callback_register provides symbol (FISH custom)
+
+  Action server (rclcpp only, uses Waitable):
+    - rclcpp_action_server_init links handle to service handles (FISH custom)
+    - rclcpp_action_execute_goal/cancel/result (FISH custom)
+    - NO callback_start/end (bypasses ServiceBase)
+
+
+5. Summary Table
+-----------------
+
+  Code Path                      | Lang   | Tracepoint                    | Mechanism
+  -------------------------------|--------|-------------------------------|----------
+  client.hpp send_request        | C++    | rclcpp_client_request_sent    | TRACEPOINT macro
+  client.hpp handle_response     | C++    | rclcpp_client_response_received | TRACEPOINT macro
+  client.hpp handle_response cb  | C++    | callback_start/end            | TRACEPOINT macro
+  client.py call_async           | Python | rclcpp_client_request_sent    | ctypes bridge
+  executors.py _execute_client   | Python | rclcpp_client_response_received | ctypes bridge
+  action/client.py send_goal     | Python | rclcpp_client_request_sent    | ctypes bridge
+  action/client.py execute       | Python | rclcpp_client_response_received | ctypes bridge
+  any_service_callback.hpp       | C++    | callback_start/end            | TRACEPOINT macro (stock)
+  executors.py _execute_service  | Python | callback_start/end            | ctypes bridge (FISH)
+
+  All rclpy paths fire the SAME LTTng events as rclcpp paths.
+  Differentiation in trace: vpid + procname identifies the source process.
+
+
+6. What Is NOT Traced
+----------------------
+
+  - rclcpp Client: rclcpp_executor_execute does NOT fire for client dispatch
+  - rclcpp Client: callback_register does NOT fire (callback is per-request, not per-entity)
+  - rclpy Client: no callback variant exists (future-only), so callback_start/end never fires
+  - rclcpp ActionClient: not yet patched (Waitable, same gap as ActionServer before FISH)
+  - Sync service call (rclpy client.call()): blocks on event.wait(), no separate tracepoint
