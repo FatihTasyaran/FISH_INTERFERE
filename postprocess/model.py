@@ -478,6 +478,195 @@ def identify_callbacks(mongo, nodes, entities, executors):
 
 
 # ---------------------------------------------------------------------------
+# Runtime Aspect Attribution
+# ---------------------------------------------------------------------------
+
+def attribute_aspects(mongo, executors, nodes, entities):
+    """
+    Transfer pub/cli aspects from node level to entity level using
+    callback window scanning.
+
+    For each node's executor PID:
+      1. Load all callback_start/end + rcl_publish + client_request_sent events
+      2. For each rcl_publish inside a callback window → attribute pub aspect to entity
+      3. For each client_request_sent inside a callback window → attribute cli aspect to entity
+      4. Remove attributed aspects from node, warn about unattributed remainder
+    """
+    coll = mongo["ros2_trace"]
+
+    # Build callback_addr → entity mapping
+    cb_to_entity = {}  # callback_addr → (entity_id, entity)
+    for e_id, e in entities.items():
+        cb = e.A_v.get("cb_addr")
+        if cb and cb != "NA":
+            cb_to_entity[cb] = (e_id, e)
+
+    # Build node_id → (node, vpid) mapping
+    node_to_pid = {}
+    for ex_id, ex in executors.items():
+        pid = ex.A_v['pid']
+        for n_id in ex.Z_v:
+            node_to_pid[n_id] = pid
+
+    total_attributed_pub = 0
+    total_attributed_cli = 0
+    total_unattributed = 0
+
+    for node_id, node in nodes.items():
+        pub_aspects = node.A_v.get("pub_aspects", [])
+        cli_aspects = node.A_v.get("cli_aspects", [])
+        if not pub_aspects and not cli_aspects:
+            continue
+
+        pid = node_to_pid.get(node_id)
+        if pid is None:
+            continue
+
+        # Build publisher_handle → topic map for this pid
+        pub_handle_to_topic = {}
+        for doc in coll.find({"event": "ros2:rcl_publisher_init", "vpid": pid}):
+            pub_handle_to_topic[doc["payload"]["publisher_handle"]] = doc["payload"]["topic_name"]
+
+        # Build client_handle → service_name map for this pid
+        cli_handle_to_service = {}
+        for doc in coll.find({"event": "ros2:rcl_client_init", "vpid": pid}):
+            cli_handle_to_service[doc["payload"]["client_handle"]] = doc["payload"]["service_name"]
+
+        # Load callback_start events for this pid (sorted by time)
+        cb_starts = []
+        for doc in coll.find({"event": "ros2:callback_start", "vpid": pid}).sort("ts", 1):
+            full_ns = int(doc["ts"].timestamp() * 1e9) + doc["ts_nanos"]
+            cb_starts.append({
+                "ns": full_ns, "vtid": doc["vtid"],
+                "cb": doc["payload"]["callback"]
+            })
+
+        # Load callback_end events
+        cb_ends = []
+        for doc in coll.find({"event": "ros2:callback_end", "vpid": pid}).sort("ts", 1):
+            full_ns = int(doc["ts"].timestamp() * 1e9) + doc["ts_nanos"]
+            cb_ends.append({
+                "ns": full_ns, "vtid": doc["vtid"],
+                "cb": doc["payload"]["callback"]
+            })
+
+        # Load rcl_publish events
+        publishes = []
+        for doc in coll.find({"event": "ros2:rcl_publish", "vpid": pid}).sort("ts", 1):
+            full_ns = int(doc["ts"].timestamp() * 1e9) + doc["ts_nanos"]
+            publishes.append({
+                "ns": full_ns, "vtid": doc["vtid"],
+                "ph": doc["payload"]["publisher_handle"]
+            })
+
+        # Load client_request_sent events
+        cli_requests = []
+        for doc in coll.find({"event": "ros2:rclcpp_client_request_sent", "vpid": pid}).sort("ts", 1):
+            full_ns = int(doc["ts"].timestamp() * 1e9) + doc["ts_nanos"]
+            cli_requests.append({
+                "ns": full_ns, "vtid": doc["vtid"],
+                "ch": doc["payload"]["client_handle"]
+            })
+
+        # Track active callbacks per thread
+        # For each publish/client_request, find enclosing callback_start/end
+        active_cbs = {}  # vtid → (cb_addr, start_ns)
+        entity_pub_topics = {}  # cb_addr → set of topics
+        entity_cli_services = {}  # cb_addr → set of services
+
+        # Merge all events into timeline
+        events = []
+        for e in cb_starts:
+            events.append(("cb_start", e["ns"], e["vtid"], e["cb"], None))
+        for e in cb_ends:
+            events.append(("cb_end", e["ns"], e["vtid"], e["cb"], None))
+        for e in publishes:
+            events.append(("publish", e["ns"], e["vtid"], None, e["ph"]))
+        for e in cli_requests:
+            events.append(("cli_req", e["ns"], e["vtid"], None, e["ch"]))
+        events.sort(key=lambda x: x[1])
+
+        for evt_type, ns, vtid, cb, handle in events:
+            if evt_type == "cb_start":
+                active_cbs[vtid] = cb
+            elif evt_type == "cb_end":
+                if vtid in active_cbs:
+                    del active_cbs[vtid]
+            elif evt_type == "publish":
+                if vtid in active_cbs:
+                    cb_addr = active_cbs[vtid]
+                    topic = pub_handle_to_topic.get(handle)
+                    if topic:
+                        entity_pub_topics.setdefault(cb_addr, set()).add(topic)
+            elif evt_type == "cli_req":
+                if vtid in active_cbs:
+                    cb_addr = active_cbs[vtid]
+                    service = cli_handle_to_service.get(handle)
+                    if service:
+                        entity_cli_services.setdefault(cb_addr, set()).add(service)
+
+        # Transfer attributed pub aspects to entities (deduplicated)
+        attributed_pub_topics = set()
+        for cb_addr, topics in entity_pub_topics.items():
+            if cb_addr in cb_to_entity:
+                e_id, entity = cb_to_entity[cb_addr]
+                existing_pub_topics = {a["topic"] for a in entity.A_v["aspects"]
+                                       if a.get("aspect") == "pub"}
+                for topic in topics:
+                    if topic in existing_pub_topics:
+                        continue
+                    msg_type = ""
+                    for pa in pub_aspects:
+                        if pa["topic"] == topic:
+                            msg_type = pa.get("msg_type", "")
+                            break
+                    entity.A_v["aspects"].append({
+                        "aspect": "pub", "topic": topic, "msg_type": msg_type
+                    })
+                    existing_pub_topics.add(topic)
+                    attributed_pub_topics.add(topic)
+                    total_attributed_pub += 1
+
+        # Transfer attributed cli aspects to entities (deduplicated)
+        attributed_cli_services = set()
+        for cb_addr, services in entity_cli_services.items():
+            if cb_addr in cb_to_entity:
+                e_id, entity = cb_to_entity[cb_addr]
+                existing_cli_services = {a["service"] for a in entity.A_v["aspects"]
+                                          if a.get("aspect") == "cli"}
+                for service in services:
+                    if service in existing_cli_services:
+                        continue
+                    entity.A_v["aspects"].append({
+                        "aspect": "cli", "service": service
+                    })
+                    existing_cli_services.add(service)
+                    attributed_cli_services.add(service)
+                    total_attributed_cli += 1
+
+        # Remove attributed aspects from node, keep unattributed
+        remaining_pub = [a for a in pub_aspects
+                         if a["topic"] not in attributed_pub_topics]
+        remaining_cli = [a for a in cli_aspects
+                         if a["service"] not in attributed_cli_services]
+        node.A_v["pub_aspects"] = remaining_pub
+        node.A_v["cli_aspects"] = remaining_cli
+
+        if remaining_pub or remaining_cli:
+            # Filter out /rosout — always unattributed (published from many places)
+            real_remaining = [a for a in remaining_pub if a["topic"] != "/rosout"]
+            real_remaining += remaining_cli
+            if real_remaining:
+                total_unattributed += len(real_remaining)
+                print(f"  [attribute_aspects] WARNING: {node.A_v['label']} has "
+                      f"{len(real_remaining)} unattributed aspects: "
+                      f"{[a.get('topic', a.get('service')) for a in real_remaining]}")
+
+    print(f"[attribute_aspects] Attributed: {total_attributed_pub} pub, "
+          f"{total_attributed_cli} cli. Unattributed: {total_unattributed}")
+
+
+# ---------------------------------------------------------------------------
 # Graph Construction
 # ---------------------------------------------------------------------------
 
@@ -811,14 +1000,15 @@ if __name__ == "__main__":
     influx = connect_influx(args.session)
     session_dir = os.path.expanduser(f"~/fish_traces/{args.session}")
 
-    # Layer extraction
+    # Phase 1: Vertex discovery (all vertices + vertical edges)
     executors, nodes = identify_executors(mongo)
     entities = identify_entities(mongo, nodes)
     functions = identify_callbacks(mongo, nodes, entities, executors)
+    attribute_aspects(mongo, executors, nodes, entities)
     pretty_print_four_layers(executors, nodes, entities, functions)
     create_detection_summary(executors, nodes, entities, functions, mongo)
 
-    # Graph construction
+    # Phase 2: Edge construction (horizontal edges)
     G = create_graph_add_vertical_relations(executors, nodes, entities, functions)
     node_infos = get_node_infos(mongo)
     G = add_horizontal_relations(G, node_infos, executors, nodes, entities, functions)
