@@ -343,3 +343,57 @@ Implementation:
     - Autoware trace session with internal service calls
 
 Priority: HIGH (after Jazzy port — first thing to verify on Autoware run)
+
+
+9. Per-callback roofline model via hardware performance counters
+-----------------------------------------------------------------
+Problem:
+  FISH captures callback execution time (callback_start/end) but not
+  computational characteristics. We don't know if a callback is
+  compute-bound, memory-bound, or cache-contention-limited.
+
+  A cache-aware roofline model per callback would enable:
+    - Identify compute vs memory bound callbacks
+    - Estimate shared bus contention between concurrent callbacks
+    - Cache-related delay analysis (L1/L2/L3/DRAM hierarchy)
+    - Data transaction volume per callback
+    - Input for schedulability analysis (WCET decomposition)
+
+Approach:
+  Use Linux perf PMU counters system-wide alongside FISH tracing.
+  PMU monitoring has a fixed, system-independent overhead (HW register
+  reads, context switch save/restore). No per-process attach needed.
+
+  Data collection:
+    perf stat -a -e cycles,instructions,cache-misses,cache-references,\
+      LLC-load-misses,LLC-store-misses,bus-cycles -I 1 \
+      -o $SESSION_DIR/perf_counters.csv
+
+    Run concurrently with LTTng trace session. Start in trace_session.sh
+    start_session(), stop in stop_session().
+
+  Analysis (per callback):
+    1. callback_start/end gives time window [t1, t2]
+    2. Interpolate perf counter values in that window
+    3. Derive per-callback metrics:
+       - IPC = instructions / cycles
+       - Cache miss rate = cache-misses / cache-references
+       - LLC miss rate = LLC-load-misses / (LLC-load-misses + LLC-load-hits)
+       - Operational intensity estimate = instructions / (cache-misses * cache_line_size)
+    4. Plot on cache-aware roofline (compute ceiling + memory ceilings per cache level)
+
+  GPU callbacks (via nsys):
+    nsys already provides kernel-level compute and memory throughput.
+    Can generate GPU roofline datapoints directly from:
+      - Kernel duration + SM occupancy → achieved compute
+      - memcpy bytes / duration → achieved bandwidth
+      - Register usage → occupancy limit
+
+  Deliverable:
+    - perf integration in FISH trace session management
+    - Per-callback roofline datapoint extraction
+    - Roofline plot generation (cache-aware, separate CPU and GPU)
+    - Reference: https://sips.inesc-id.pt/~ilic/roofline.php
+
+Priority: MEDIUM (enables deeper scheduling analysis, not blocking
+  current model extraction — but high value for paper contribution)
