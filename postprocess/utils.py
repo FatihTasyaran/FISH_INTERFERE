@@ -685,7 +685,7 @@ def export_fish_detail(G, ex_id, out_path, fmt="pdf", filter_boilerplate=True):
         if rel == "contains" and u in subtree_ids and v in subtree_ids:
             lines.append(f'  {u} -> {v} [color="#E74C3C", style=dashed, arrowsize=0.7];')
 
-        elif rel == "comm" and data.get("level") == "L2":
+        elif rel == "comm" and data.get("level") in ("L2", "L3"):
             if u not in subtree_ids and u not in external_ids:
                 continue
             if v not in subtree_ids and v not in external_ids:
@@ -913,7 +913,13 @@ def export_fish_dot(G, out_path, fmt="pdf", filter_boilerplate=True):
             else:
                 edge_style = 'color="black", style=dashed, arrowsize=0.8'
 
-            if level == "L2":
+            if level == "L3":
+                topic = data.get("topic", data.get("service", ""))
+                if topic:
+                    short = _short_topic(topic)
+                    edge_style += f', label="{_dot_escape(short)}", fontsize=6'
+                edge_style += ', penwidth=0.8'
+            elif level == "L2":
                 topic = data.get("topic", data.get("service", ""))
                 if topic:
                     short = _short_topic(topic)
@@ -1056,8 +1062,8 @@ def export_fish_radial(G, out_path, fmt="png", filter_boilerplate=True):
         if data.get("rel") != "comm":
             continue
         level = data.get("level", "")
-        # Only show L1 edges in radial (L2 is too noisy, L0 redundant)
-        if level != "L1":
+        # Show L1 and L3 edges in radial (L2 noisy, L0 redundant)
+        if level not in ("L1", "L3"):
             continue
 
         nature = data.get("nature", "msg")
