@@ -1,6 +1,6 @@
 # Custom Tracepoints
 
-FISH adds 13 custom LTTng tracepoints to ROS 2 to close visibility gaps
+FISH adds 11 custom LTTng tracepoints to ROS 2 to close visibility gaps
 in the standard ros2_tracing instrumentation. These are installed via
 `install_fish_tracepoints` and built in an overlay workspace.
 
