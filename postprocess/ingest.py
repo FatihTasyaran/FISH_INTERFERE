@@ -318,7 +318,7 @@ def ingest_fish_events(db, session_dir: str):
 
     docs = []
     for f_name in sorted(os.listdir(log_dir)):
-        if not f_name.endswith(".log"):
+        if not f_name.startswith("fish_events_") or not f_name.endswith(".log"):
             continue
         with open(os.path.join(log_dir, f_name)) as f:
             for line in f:

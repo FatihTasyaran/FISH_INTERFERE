@@ -29,7 +29,7 @@ MONGO_URI = "mongodb://localhost:27017"
 INFLUX_HOST = "http://127.0.0.1:8181"
 INFLUX_TOKEN_FILE = os.path.expanduser("~/inf.tok")
 
-TRACE_SESSION = "fish_20260330_184541"
+TRACE_SESSION = "fish_20260330_234647"
 vertex_counter = count(1)
 SKIP_DEBUG = True
 SKIP_RVIZ = True
@@ -217,44 +217,60 @@ def identify_entities(mongo, nodes):
             pubs = {t: m for t, m in pubs.items() if not _is_param_service(t)}
         node.A_v['publishers'] = pubs
 
-        # Subscriptions → entity
+        # Subscriptions → entity with sub aspect
         for topic, msg_type in info.get("Subscribers", {}).items():
             if SKIP_PARAMSERVICE and _is_param_service(topic):
                 continue
             e_A = ret_A_dict("E", label=topic, etype="sub")
             e_A["msg_type"] = msg_type
+            e_A["aspects"] = [{"aspect": "sub", "topic": topic, "msg_type": msg_type}]
             e = FishVertex("E", next(vertex_counter), e_A, [], 2)
             node.Z_v.append(e.id_v)
             entities[e.id_v] = e
 
-        # Services → entity
+        # Services → entity with req_sub + res_pub aspects
         for srv_name, srv_type in info.get("Service_Servers", {}).items():
             if SKIP_PARAMSERVICE and _is_param_service(srv_name):
                 continue
             e_A = ret_A_dict("E", label=srv_name, etype="serv")
             e_A["srv_type"] = srv_type
+            e_A["aspects"] = [
+                {"aspect": "req_sub", "service": srv_name},
+                {"aspect": "res_pub", "service": srv_name},
+            ]
             e = FishVertex("E", next(vertex_counter), e_A, [], 2)
             node.Z_v.append(e.id_v)
             entities[e.id_v] = e
 
-        # Service clients → entity
-        for cli_name, cli_type in info.get("Service_Clients", {}).items():
-            if SKIP_PARAMSERVICE and _is_param_service(cli_name):
-                continue
-            e_A = ret_A_dict("E", label=cli_name, etype="cli")
-            e_A["srv_type"] = cli_type
-            e = FishVertex("E", next(vertex_counter), e_A, [], 2)
-            node.Z_v.append(e.id_v)
-            entities[e.id_v] = e
-
-        # Timers → entity
+        # Timers → entity (aspects added later via runtime attribution)
         for timer_handle, period_ns in info.get("Timers", {}).items():
             e_A = ret_A_dict("E", label=f"timer_{period_ns}ns", etype="tmr")
             e_A["timer_handle"] = timer_handle
             e_A["period_ns"] = period_ns
+            e_A["aspects"] = []
             e = FishVertex("E", next(vertex_counter), e_A, [], 2)
             node.Z_v.append(e.id_v)
             entities[e.id_v] = e
+
+        # Node-level unattributed aspects (will be transferred to entities via runtime attribution)
+        # Publishers — known from node_info or rcl_publisher_init, entity TBD
+        node_pub_aspects = []
+        pubs = info.get("Publishers", {})
+        if SKIP_PARAMSERVICE:
+            pubs = {t: m for t, m in pubs.items() if not _is_param_service(t)}
+        for topic, msg_type in pubs.items():
+            node_pub_aspects.append({"aspect": "pub", "topic": topic, "msg_type": msg_type})
+        node.A_v["pub_aspects"] = node_pub_aspects
+        node.A_v["publishers"] = pubs  # keep for backward compat
+
+        # Service clients — known from node_info or rcl_client_init, entity TBD
+        node_cli_aspects = []
+        for cli_name, cli_type in info.get("Service_Clients", {}).items():
+            if SKIP_PARAMSERVICE and _is_param_service(cli_name):
+                continue
+            node_cli_aspects.append({"aspect": "cli", "service": cli_name})
+        node.A_v["cli_aspects"] = node_cli_aspects
+        node.A_v["service_clients"] = {a["service"]: "" for a in node_cli_aspects}  # keep for backward compat
 
         # Actions → abstract entity with 5 component entities (3 services + 2 publishers)
         coll = mongo["ros2_trace"]
@@ -688,14 +704,11 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
             if n.id_v not in existing:
                 pub_index.setdefault(topic, []).append(n.id_v)
 
-    # Service client index — from entities (etype="cli")
+    # Service client index — from node attribute (cli is an aspect, not entity)
     client_index = {}  # service_name → [node_id, ...]
     for n in nodes.values():
-        for e_id in n.Z_v:
-            e = entities.get(e_id)
-            if e and e.A_v.get("etype") == "cli":
-                cli_name = e.A_v["label"]
-                client_index.setdefault(cli_name, []).append(n.id_v)
+        for cli_name in n.A_v.get("service_clients", {}).keys():
+            client_index.setdefault(cli_name, []).append(n.id_v)
 
     # --- L2: Entity-level edges ---
     l2_count = 0
@@ -715,16 +728,20 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
                            nature="msg", topic=topic)
                 l2_count += 1
 
-    # Service matching: client_node → server_entity
+    # Service matching: bidirectional — request (comm) + response (dep)
     for srv_name, srv_list in srv_index.items():
         client_nodes = client_index.get(srv_name, [])
         for client_node_id in client_nodes:
             for srv_node_id, srv_entity_id in srv_list:
                 if client_node_id == srv_node_id:
                     continue
+                # Request: client → server (communication)
                 G.add_edge(client_node_id, srv_entity_id, rel="comm", level="L2",
-                           nature="dep", service=srv_name)
-                l2_count += 1
+                           nature="comm", service=srv_name, direction="request")
+                # Response: server → client (dependency — future fulfillment)
+                G.add_edge(srv_entity_id, client_node_id, rel="comm", level="L2",
+                           nature="dep", service=srv_name, direction="response")
+                l2_count += 2
 
     print(f"[FISH graph] L2 horizontal edges: {l2_count}")
 

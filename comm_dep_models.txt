@@ -4,18 +4,21 @@ FISH Communication Patterns — Atomic Definitions
 Terminology
 -----------
   Entity:   A node's callback implementation. Entity type = callback type.
-            Types: sub, serv, tmr, cli
-            An entity may have publisher or subscriber aspects — these
-            determine edge direction, not entity type.
+            Types: sub, serv, tmr (only these three)
+            An entity may have additional aspects (pub, sub, cli) that
+            determine its participation in communication patterns.
 
   Aspect:   A feature of an entity within a communication pattern.
-            An entity whose callback publishes has a "publisher aspect".
-            An entity whose callback receives has a "subscriber aspect".
-            Aspects are not entity types — they describe participation
-            in a specific communication instance.
+            - pub:  entity's callback publishes on a topic
+            - sub:  entity's callback is triggered by a topic message
+            - cli:  entity's callback calls a service (request/response)
+            Aspects determine edge direction. They are NOT entity types.
 
-  Aspect list:  Each entity carries a list of (aspect, topic, msg_type)
-                tuples describing all communications it participates in.
+  Aspect list:  Each entity carries a list of aspects describing all
+                communications it participates in. Examples:
+                  (aspect: sub, topic: /lidar_points, msg: PointCloud2)
+                  (aspect: pub, topic: /kiss/odometry, msg: Odometry)
+                  (aspect: cli, service: /some_service)
 
 
 ==========================================================================
@@ -354,3 +357,140 @@ Service client as entity aspect (not entity type):
 
   These tracepoints make the previously invisible execute_client path
   fully observable in trace data.
+
+
+==========================================================================
+3. Action (Composite Pattern)
+==========================================================================
+
+An action is a composite communication pattern built from patterns 1
+and 2. It decomposes into 3 service pairs + 2 topic pairs.
+
+Elements:
+  - Action server:  a node that accepts goals and produces results
+  - Action client:  a node (or entity with cli aspect) that sends goals
+  - Goal:           the requested task (send_goal service)
+  - Result:         the final outcome (get_result service)
+  - Feedback:       periodic progress updates (topic)
+  - Cancel:         cancellation request (cancel_goal service)
+  - Status:         goal status updates (topic)
+
+Decomposition:
+  Action = 3 × Pattern 2 (service) + 2 × Pattern 1 (pub/sub)
+
+  Server node components:
+    [SRV] /_action/send_goal      server entity, callback: goal handler
+    [SRV] /_action/cancel_goal    server entity, callback: cancel handler
+    [SRV] /_action/get_result     server entity, callback: result handler
+    PUB   /_action/feedback       publisher aspect of a server entity
+    PUB   /_action/status         publisher aspect of a server entity
+
+  Client node components:
+    cli aspect: /_action/send_goal      on the requesting entity
+    cli aspect: /_action/cancel_goal    on the requesting entity
+    cli aspect: /_action/get_result     on the requesting entity
+    [SUB] /_action/feedback             subscriber entity
+    [SUB] /_action/status               subscriber entity
+
+  Abstract grouping:
+    [ACT] action entity (not a callback, groups the above components)
+
+Collapsed view (action as single entity):
+
+       Client Node                            Server Node
+    ┌──────────────┐                       ┌──────────────┐
+    │              │                       │              │
+    │  [entity]    │     action_name       │  [ACT]       │
+    │  with cli    │ ──────────────────>   │  abstract    │
+    │  aspect      │     (composite)       │  grouping    │
+    │              │                       │              │
+    └──────────────┘                       └──────────────┘
+
+Expanded view (action decomposed into primitives):
+
+       Client Node                            Server Node
+    ┌──────────────┐                       ┌──────────────┐
+    │              │                       │              │
+    │  [entity]    │  send_goal (svc)      │  [SRV]       │
+    │  cli aspect ─┼──────────────────>    │  goal_cb     │
+    │              │                       │    └─[F]     │
+    │  [entity]    │  cancel_goal (svc)    │  [SRV]       │
+    │  cli aspect ─┼──────────────────>    │  cancel_cb   │
+    │              │                       │    └─[F]     │
+    │  [entity]    │  get_result (svc)     │  [SRV]       │
+    │  cli aspect ─┼──────────────────>    │  result_cb   │
+    │              │                       │    └─[F]     │
+    │              │                       │              │
+    │  [SUB]       │  feedback (topic)     │  PUB         │
+    │  feedback_cb │ <═════════════════    │  (on a SRV   │
+    │              │                       │   entity)    │
+    │  [SUB]       │  status (topic)       │  PUB         │
+    │  status_cb   │ <═════════════════    │  (on a SRV   │
+    │              │                       │   entity)    │
+    │              │                       │              │
+    └──────────────┘                       └──────────────┘
+                                             │
+                                           [ACT] abstract
+                                           references all 5
+                                           server components
+
+Runtime trace sequence (action goal lifecycle):
+
+  Client entity callback (Node A):
+    callback_start(entity_cb)
+      ...
+      rclcpp_client_request_sent(cli_handle, seq=1)     ← send_goal request
+    callback_end(entity_cb)
+
+    rclcpp_client_response_received(cli_handle, seq=1)  ← goal accepted
+    rclcpp_client_request_sent(cli_handle, seq=1)       ← get_result request
+
+  Server (Node B):
+    rclcpp_action_execute_goal(action_handle)            ← goal dispatch
+      callback_start(goal_srv_cb)
+        ... process goal ...
+        rcl_publish(feedback_handle)                     ← feedback published
+      callback_end(goal_srv_cb)
+
+    rclcpp_action_execute_result(action_handle)          ← result dispatch
+      callback_start(result_srv_cb)
+        ... prepare result ...
+      callback_end(result_srv_cb)
+
+  Client (Node A):
+    rclcpp_client_response_received(cli_handle, seq=1)  ← result received
+
+  Timing measurements:
+    Goal accept latency:   send_goal request_sent → response_received
+    Execution time:        execute_goal → execute_result
+    Result latency:        get_result request_sent → response_received
+    Total action duration: first request_sent → last response_received
+    Feedback period:       successive rcl_publish on feedback topic
+
+Edge summary per action:
+  3 service edges (Pattern 2):  client entity → [SRV] send_goal
+                                client entity → [SRV] cancel_goal
+                                client entity → [SRV] get_result
+  2 topic edges (Pattern 1):   [SRV] entity (pub aspect) → [SUB] feedback
+                                [SRV] entity (pub aspect) → [SUB] status
+
+Trace events used:
+  Structural:
+    rclcpp_action_server_init    → action_handle, service handles
+    rcl_client_init              → client service names
+    rcl_service_init             → server service names
+    rcl_subscription_init        → feedback/status subscribers
+    rcl_publisher_init           → feedback/status publishers
+
+  Runtime:
+    rclcpp_action_execute_goal   → goal dispatch (FISH custom)
+    rclcpp_action_execute_cancel → cancel dispatch (FISH custom)
+    rclcpp_action_execute_result → result dispatch (FISH custom)
+    rclcpp_client_request_sent   → request timing (FISH custom)
+    rclcpp_client_response_received → response timing (FISH custom)
+    callback_start/end           → callback execution timing
+    rcl_publish                  → feedback/status publish timing
+
+Verified: session fish_20260330_234647, 3 actions (takeoff, orbit, land).
+  request_sent + response_received pairs observed for all 3 actions.
+  Goal accept latency ~1ms, result latency 6-10s (flight maneuver time).
