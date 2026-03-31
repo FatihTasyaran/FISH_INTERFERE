@@ -765,16 +765,37 @@ def export_fish_dot(G, out_path, fmt="pdf", filter_boilerplate=True):
         elif t_v == "N":
             return f"N\\n{_dot_escape(v.A_v.get('label', '?'))}"
         elif t_v == "E":
+            is_ext = v.A_v.get('external', False)
             etype = v.A_v.get('etype', '?')
-            short = _short_topic(v.A_v.get('label', '?'))
+            label_raw = v.A_v.get('label', '?')
+            if is_ext:
+                short = _short_topic(label_raw.replace('ext:', ''))
+                return f"EXT\\n{_dot_escape(short)}"
+            short = _short_topic(label_raw)
             return f"{etype.upper()}\\n{_dot_escape(short)}"
         elif t_v == "F":
             sym = shorten_symbol(v.A_v.get('label', '?'))
             ptype = v.A_v.get('ptype', '?')
+            if ptype == "ext":
+                short = sym.replace('ext:', '')
+                short = _short_topic(short) if '/' in short else short
+                if len(short) > 22:
+                    short = short[:20] + ".."
+                return f"EXT\\n{_dot_escape(short)}"
             if len(sym) > 22:
                 sym = sym[:20] + ".."
             return f"{_dot_escape(sym)}\\n({ptype})"
         return str(v.id_v)
+
+    def _node_style(v):
+        """Return DOT style string for external vs normal vertices."""
+        is_ext = v.A_v.get('external', False) or v.A_v.get('ptype') == 'ext'
+        if is_ext:
+            if v.t_v == "E":
+                return 'shape=circle, style="filled,dashed", fillcolor="#D5D8DC", fontsize=8, width=0.7'
+            elif v.t_v == "F":
+                return 'shape=circle, style="filled,dashed", fillcolor="#E8E8E8", fontsize=7, width=0.5'
+        return None  # use default
 
     # Build executor → subtree map for clustering
     # EX → [N ids] → [E ids] → [F ids]
@@ -837,15 +858,41 @@ def export_fish_dot(G, out_path, fmt="pdf", filter_boilerplate=True):
         # E nodes
         for e_id in subtree["e"]:
             ev = G.nodes[e_id]["v"]
-            lines.append(f'    {e_id} [label="{_node_label(ev)}", {STYLE["E"]}];')
+            style = _node_style(ev) or STYLE["E"]
+            lines.append(f'    {e_id} [label="{_node_label(ev)}", {style}];')
 
         # F nodes
         for f_id in subtree["f"]:
             fv = G.nodes[f_id]["v"]
-            lines.append(f'    {f_id} [label="{_node_label(fv)}", {STYLE["F"]}];')
+            style = _node_style(fv) or STYLE["F"]
+            lines.append(f'    {f_id} [label="{_node_label(fv)}", {style}];')
 
         lines.append(f'  }}')
         lines.append('')
+
+    # External entities (not in any executor subtree)
+    clustered_ids = set()
+    for subtree in ex_nodes.values():
+        clustered_ids.add(subtree.get("ex_id", 0))
+        clustered_ids.update(subtree["n"])
+        clustered_ids.update(subtree["e"])
+        clustered_ids.update(subtree["f"])
+    for ex_id in ex_nodes:
+        clustered_ids.add(ex_id)
+
+    for nid, data in G.nodes(data=True):
+        if nid in clustered_ids or nid in skip_ids:
+            continue
+        v = data.get("v")
+        if not v:
+            continue
+        if v.A_v.get("external") or v.A_v.get("ptype") == "ext":
+            style = _node_style(v)
+            if not style:
+                style = 'shape=circle, style="filled,dashed", fillcolor="#D5D8DC", fontsize=7, width=0.5'
+            lines.append(f'  {nid} [label="{_node_label(v)}", {style}];')
+
+    lines.append('')
 
     # Edges
     for u, v, data in G.edges(data=True):
@@ -956,17 +1003,28 @@ def export_fish_radial(G, out_path, fmt="png", filter_boilerplate=True):
         t_v = v.t_v
         style = STYLE.get(t_v, 'shape=circle')
 
+        is_ext = v.A_v.get('external', False) or v.A_v.get('ptype') == 'ext'
+
         if t_v == "EX":
             label = f"{_dot_escape(v.A_v.get('label', '?'))}\\npid={v.A_v.get('pid', '?')}"
         elif t_v == "N":
             label = _dot_escape(v.A_v.get('label', '?'))
         elif t_v == "E":
-            etype = v.A_v.get('etype', '?')
-            short = _short_topic(v.A_v.get('label', '?'))
-            label = f"{etype.upper()}:{_dot_escape(short)}"
+            if is_ext:
+                short = _short_topic(v.A_v.get('label', '?').replace('ext:', ''))
+                label = f"EXT:{_dot_escape(short)}"
+                style = 'shape=circle, style="filled,dashed", fillcolor="#D5D8DC", fontsize=8, width=0.7'
+            else:
+                etype = v.A_v.get('etype', '?')
+                short = _short_topic(v.A_v.get('label', '?'))
+                label = f"{etype.upper()}:{_dot_escape(short)}"
         elif t_v == "F":
-            # Functions as tiny dots in radial — no label
-            label = ""
+            if is_ext:
+                short = _short_topic(v.A_v.get('label', '?').replace('ext:', ''))
+                label = f"EXT:{_dot_escape(short)}" if short else "EXT"
+                style = 'shape=point, width=0.15, fillcolor="#999999", style=filled'
+            else:
+                label = ""
         else:
             continue
 

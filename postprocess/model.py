@@ -1002,13 +1002,13 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
         ext_e_A["aspects"] = [{"aspect": "pub", "topic": topic}]
         ext_e = FishVertex("E", next(vertex_counter), ext_e_A, [], 2)
         entities[ext_e.id_v] = ext_e
-        G.add_node(ext_e.id_v, vertex=ext_e)
+        G.add_node(ext_e.id_v, v=ext_e)
         # Ext function
         ext_f_A = ret_A_dict("F", label=f"ext:{topic}", ptype="ext")
         ext_f = FishVertex("F", next(vertex_counter), ext_f_A, [], 3)
         functions[ext_f.id_v] = ext_f
         ext_e.Z_v.append(ext_f.id_v)
-        G.add_node(ext_f.id_v, vertex=ext_f)
+        G.add_node(ext_f.id_v, v=ext_f)
         G.add_edge(ext_e.id_v, ext_f.id_v, rel="contains", level="V")
         # Edges to all subscribers
         for sub_e_id, sub_n_id in sub_list:
@@ -1027,12 +1027,12 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
         ext_e_A["aspects"] = [{"aspect": "sub", "topic": topic}]
         ext_e = FishVertex("E", next(vertex_counter), ext_e_A, [], 2)
         entities[ext_e.id_v] = ext_e
-        G.add_node(ext_e.id_v, vertex=ext_e)
+        G.add_node(ext_e.id_v, v=ext_e)
         ext_f_A = ret_A_dict("F", label=f"ext:{topic}", ptype="ext")
         ext_f = FishVertex("F", next(vertex_counter), ext_f_A, [], 3)
         functions[ext_f.id_v] = ext_f
         ext_e.Z_v.append(ext_f.id_v)
-        G.add_node(ext_f.id_v, vertex=ext_f)
+        G.add_node(ext_f.id_v, v=ext_f)
         G.add_edge(ext_e.id_v, ext_f.id_v, rel="contains", level="V")
         for pub_e_id, pub_n_id in pub_list:
             G.add_edge(pub_e_id, ext_e.id_v, **_topic_edge_attrs(topic, external=True))
@@ -1050,12 +1050,12 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
         ext_e_A["aspects"] = [{"aspect": "cli", "service": srv_name}]
         ext_e = FishVertex("E", next(vertex_counter), ext_e_A, [], 2)
         entities[ext_e.id_v] = ext_e
-        G.add_node(ext_e.id_v, vertex=ext_e)
+        G.add_node(ext_e.id_v, v=ext_e)
         ext_f_A = ret_A_dict("F", label=f"ext:{srv_name}", ptype="ext")
         ext_f = FishVertex("F", next(vertex_counter), ext_f_A, [], 3)
         functions[ext_f.id_v] = ext_f
         ext_e.Z_v.append(ext_f.id_v)
-        G.add_node(ext_f.id_v, vertex=ext_f)
+        G.add_node(ext_f.id_v, v=ext_f)
         G.add_edge(ext_e.id_v, ext_f.id_v, rel="contains", level="V")
         for srv_e_id, srv_n_id in srv_list:
             G.add_edge(ext_e.id_v, srv_e_id, rel="comm", level="L2",
