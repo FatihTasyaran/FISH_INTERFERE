@@ -887,19 +887,11 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
                     topic = aspect["topic"]
                     pub_entity_index.setdefault(topic, []).append((e_id, n.id_v))
 
-    # Fallback: unattributed pub aspects (still on node level)
+    # Node-level pub index (for skipped edge counting only)
     pub_node_index = {}  # topic → [node_id, ...]
     for n in nodes.values():
         for pa in n.A_v.get("pub_aspects", []):
-            topic = pa["topic"]
-            pub_node_index.setdefault(topic, []).append(n.id_v)
-        # Also from node.A_v['publishers'] for backward compat
-        for topic in n.A_v.get("publishers", {}):
-            if SKIP_PARAMSERVICE and _is_param_service(topic):
-                continue
-            existing = pub_node_index.get(topic, [])
-            if n.id_v not in existing:
-                pub_node_index.setdefault(topic, []).append(n.id_v)
+            pub_node_index.setdefault(pa["topic"], []).append(n.id_v)
 
     # cli aspect index: service → [(entity_id, node_id), ...] from attributed entities
     cli_entity_index = {}
@@ -913,19 +905,18 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
                     srv = aspect["service"]
                     cli_entity_index.setdefault(srv, []).append((e_id, n.id_v))
 
-    # Fallback: unattributed cli aspects (still on node level)
+    # Node-level cli index (for skipped edge counting only)
     cli_node_index = {}  # service → [node_id, ...]
     for n in nodes.values():
         for ca in n.A_v.get("cli_aspects", []):
-            srv = ca["service"]
-            cli_node_index.setdefault(srv, []).append(n.id_v)
+            cli_node_index.setdefault(ca["service"], []).append(n.id_v)
 
     # --- L2: Entity-level edges ---
     l2_count = 0
 
-    # 1. Topic edges: pub aspect entity → sub aspect entity
+    # 1. Topic edges: pub aspect entity → sub aspect entity (same layer only)
+    l2_skipped_pub = 0
     for topic, sub_list in sub_index.items():
-        # Try entity-level pub first
         pub_entities = pub_entity_index.get(topic, [])
         if pub_entities:
             for pub_e_id, pub_n_id in pub_entities:
@@ -936,19 +927,14 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
                                nature="msg", topic=topic)
                     l2_count += 1
         else:
-            # Fallback: node-level pub
-            pub_nodes = pub_node_index.get(topic, [])
-            for pub_n_id in pub_nodes:
-                for sub_e_id, sub_n_id in sub_list:
-                    if pub_n_id == sub_n_id:
-                        continue
-                    G.add_edge(pub_n_id, sub_e_id, rel="comm", level="L2",
-                               nature="msg", topic=topic)
-                    l2_count += 1
+            # Unattributed pub — no edge (cross-layer edges not allowed)
+            has_node_pub = bool(pub_node_index.get(topic, []))
+            if has_node_pub and sub_list:
+                l2_skipped_pub += 1
 
-    # 2. Service edges: cli aspect entity → srv entity (request) + srv entity → cli entity (response)
+    # 2. Service edges: cli aspect entity → srv entity (same layer only)
+    l2_skipped_cli = 0
     for srv_name, srv_list in srv_index.items():
-        # Try entity-level cli first
         cli_entities = cli_entity_index.get(srv_name, [])
         if cli_entities:
             for cli_e_id, cli_n_id in cli_entities:
@@ -961,17 +947,13 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
                                nature="dep", service=srv_name, direction="response")
                     l2_count += 2
         else:
-            # Fallback: node-level cli
-            cli_nodes = cli_node_index.get(srv_name, [])
-            for cli_n_id in cli_nodes:
-                for srv_e_id, srv_n_id in srv_list:
-                    if cli_n_id == srv_n_id:
-                        continue
-                    G.add_edge(cli_n_id, srv_e_id, rel="comm", level="L2",
-                               nature="comm", service=srv_name, direction="request")
-                    G.add_edge(srv_e_id, cli_n_id, rel="comm", level="L2",
-                               nature="dep", service=srv_name, direction="response")
-                    l2_count += 2
+            # Unattributed cli — no edge (cross-layer edges not allowed)
+            has_node_cli = bool(cli_node_index.get(srv_name, []))
+            if has_node_cli and srv_list:
+                l2_skipped_cli += 1
+
+    if l2_skipped_pub or l2_skipped_cli:
+        print(f"[FISH graph] L2 skipped (unattributed): {l2_skipped_pub} pub, {l2_skipped_cli} cli")
 
     print(f"[FISH graph] L2 horizontal edges: {l2_count}")
 
