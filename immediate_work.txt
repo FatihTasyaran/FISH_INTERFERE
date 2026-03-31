@@ -299,3 +299,47 @@ Problem:
   Target: < 30 seconds.
 
 Priority: MEDIUM (doesn't block functionality, blocks scaling to longer sessions)
+
+
+8. Service client continuation function (split callback model)
+---------------------------------------------------------------
+Problem:
+  When an entity has a client aspect (calls a service), its callback
+  execution is split into two phases:
+
+    Phase 1: entity callback runs, sends request (cli aspect)
+    Phase 2: response arrives, handle_response runs (continuation)
+
+  These are two separate executor dispatch cycles. Currently the model
+  has a single function per entity — the response dep edge returns to
+  the SAME function. This is incorrect: the continuation should be a
+  separate function vertex.
+
+  Correct model:
+    [F] entity_cb ──request──> [F] server_cb
+    [F] server_cb ──response──> [F] entity_cb_continuation
+
+  Current model (wrong):
+    [F] entity_cb ──request──> [F] server_cb
+    [F] server_cb ──response──> [F] entity_cb  ← same function
+
+Implementation:
+  1. For each entity with cli aspect, create a second function vertex
+     (continuation) linked to rclcpp_client_response_received trace event
+  2. Response dep edge targets the continuation function, not the original
+  3. Continuation function gets callback_start/end timing from
+     handle_response (when callback variant is used)
+
+  Requires: rclcpp_client_response_received tracepoint firing for
+  internal node-to-node service calls (currently only fires for
+  rclpy ActionClient CLI calls, not rclcpp internal clients).
+
+  First real test case: Autoware on Jazzy — expected to have internal
+  rclcpp node-to-node service calls where both client and server are
+  persistent traced nodes.
+
+  Dependencies:
+    - Jazzy port (jazzy_port.txt)
+    - Autoware trace session with internal service calls
+
+Priority: HIGH (after Jazzy port — first thing to verify on Autoware run)
