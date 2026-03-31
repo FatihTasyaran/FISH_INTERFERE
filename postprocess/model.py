@@ -597,14 +597,19 @@ def attribute_aspects(mongo, executors, nodes, entities):
                 if vtid in active_cbs:
                     del active_cbs[vtid]
             elif evt_type == "publish":
-                if vtid in active_cbs:
-                    cb_addr = active_cbs[vtid]
+                # Try same thread first, then any active callback in same process
+                cb_addr = active_cbs.get(vtid)
+                if cb_addr is None and active_cbs:
+                    cb_addr = next(iter(active_cbs.values()))
+                if cb_addr:
                     topic = pub_handle_to_topic.get(handle)
                     if topic:
                         entity_pub_topics.setdefault(cb_addr, set()).add(topic)
             elif evt_type == "cli_req":
-                if vtid in active_cbs:
-                    cb_addr = active_cbs[vtid]
+                cb_addr = active_cbs.get(vtid)
+                if cb_addr is None and active_cbs:
+                    cb_addr = next(iter(active_cbs.values()))
+                if cb_addr:
                     service = cli_handle_to_service.get(handle)
                     if service:
                         entity_cli_services.setdefault(cb_addr, set()).add(service)
