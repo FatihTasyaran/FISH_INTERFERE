@@ -960,6 +960,90 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
     if l2_skipped_pub or l2_skipped_cli:
         print(f"[FISH graph] L2 skipped (unattributed): {l2_skipped_pub} pub, {l2_skipped_cli} cli")
 
+    # --- External boundary entities ---
+    # Detect topics/services with one side inside trace, other side missing.
+    # Create EXT placeholder entities + functions for the missing side.
+    ext_count = 0
+
+    # All topics that have a subscriber entity but no publisher entity
+    all_pub_topics = set(pub_entity_index.keys()) | set(pub_node_index.keys())
+    for topic, sub_list in sub_index.items():
+        if topic in all_pub_topics:
+            continue  # has a publisher (entity or node level)
+        # External publisher → create ext entity with pub aspect → edge to sub entity
+        ext_e_A = ret_A_dict("E", label=f"ext:{topic}", etype="sub")
+        ext_e_A["external"] = True
+        ext_e_A["aspects"] = [{"aspect": "pub", "topic": topic}]
+        ext_e = FishVertex("E", next(vertex_counter), ext_e_A, [], 2)
+        entities[ext_e.id_v] = ext_e
+        G.add_node(ext_e.id_v, vertex=ext_e)
+        # Ext function
+        ext_f_A = ret_A_dict("F", label=f"ext:{topic}", ptype="ext")
+        ext_f = FishVertex("F", next(vertex_counter), ext_f_A, [], 3)
+        functions[ext_f.id_v] = ext_f
+        ext_e.Z_v.append(ext_f.id_v)
+        G.add_node(ext_f.id_v, vertex=ext_f)
+        G.add_edge(ext_e.id_v, ext_f.id_v, rel="contains", level="V")
+        # Edges to all subscribers
+        for sub_e_id, sub_n_id in sub_list:
+            G.add_edge(ext_e.id_v, sub_e_id, rel="comm", level="L2",
+                       nature="msg", topic=topic, external=True)
+            l2_count += 1
+            ext_count += 1
+
+    # All topics that have a publisher entity but no subscriber entity
+    all_sub_topics = set(sub_index.keys())
+    for topic, pub_list in pub_entity_index.items():
+        if topic in all_sub_topics:
+            continue
+        # External subscriber → create ext entity with sub aspect
+        ext_e_A = ret_A_dict("E", label=f"ext:{topic}", etype="sub")
+        ext_e_A["external"] = True
+        ext_e_A["aspects"] = [{"aspect": "sub", "topic": topic}]
+        ext_e = FishVertex("E", next(vertex_counter), ext_e_A, [], 2)
+        entities[ext_e.id_v] = ext_e
+        G.add_node(ext_e.id_v, vertex=ext_e)
+        ext_f_A = ret_A_dict("F", label=f"ext:{topic}", ptype="ext")
+        ext_f = FishVertex("F", next(vertex_counter), ext_f_A, [], 3)
+        functions[ext_f.id_v] = ext_f
+        ext_e.Z_v.append(ext_f.id_v)
+        G.add_node(ext_f.id_v, vertex=ext_f)
+        G.add_edge(ext_e.id_v, ext_f.id_v, rel="contains", level="V")
+        for pub_e_id, pub_n_id in pub_list:
+            G.add_edge(pub_e_id, ext_e.id_v, rel="comm", level="L2",
+                       nature="msg", topic=topic, external=True)
+            l2_count += 1
+            ext_count += 1
+
+    # Services that have a server entity but no client entity
+    for srv_name, srv_list in srv_index.items():
+        has_cli = bool(cli_entity_index.get(srv_name)) or bool(cli_node_index.get(srv_name))
+        if has_cli:
+            continue
+        # External client → create ext entity with cli aspect
+        ext_e_A = ret_A_dict("E", label=f"ext:{srv_name}", etype="sub")
+        ext_e_A["external"] = True
+        ext_e_A["aspects"] = [{"aspect": "cli", "service": srv_name}]
+        ext_e = FishVertex("E", next(vertex_counter), ext_e_A, [], 2)
+        entities[ext_e.id_v] = ext_e
+        G.add_node(ext_e.id_v, vertex=ext_e)
+        ext_f_A = ret_A_dict("F", label=f"ext:{srv_name}", ptype="ext")
+        ext_f = FishVertex("F", next(vertex_counter), ext_f_A, [], 3)
+        functions[ext_f.id_v] = ext_f
+        ext_e.Z_v.append(ext_f.id_v)
+        G.add_node(ext_f.id_v, vertex=ext_f)
+        G.add_edge(ext_e.id_v, ext_f.id_v, rel="contains", level="V")
+        for srv_e_id, srv_n_id in srv_list:
+            G.add_edge(ext_e.id_v, srv_e_id, rel="comm", level="L2",
+                       nature="comm", service=srv_name, direction="request", external=True)
+            G.add_edge(srv_e_id, ext_e.id_v, rel="comm", level="L2",
+                       nature="dep", service=srv_name, direction="response", external=True)
+            l2_count += 2
+            ext_count += 2
+
+    if ext_count:
+        print(f"[FISH graph] L2 external boundary edges: {ext_count}")
+
     print(f"[FISH graph] L2 horizontal edges: {l2_count}")
 
     # --- L3: Propagate entity edges to function level ---
