@@ -264,3 +264,38 @@ Requirements:
 
 Priority: HIGH (blocks action tracepoint validation and reproducible
   trace sessions for paper results)
+
+
+7. Speed up runtime aspect attribution
+----------------------------------------
+Problem:
+  attribute_aspects() currently loads ALL callback_start/end + rcl_publish
+  events from MongoDB per PID, merges into timeline, and scans. This is
+  slow (~3 minutes for 9M events) because:
+    - Multiple sequential MongoDB queries per PID
+    - No compound index on (vpid, event, ts)
+    - Full event loading into Python memory
+
+  Two complementary approaches:
+
+  A. MongoDB compound index (quick win):
+     Add index on (vpid, event, ts) to ros2_trace collection.
+     This would dramatically speed up the per-PID filtered queries.
+     Implementation: add to ingest.py after collection creation:
+       db["ros2_trace"].create_index([("vpid", 1), ("event", 1), ("ts", 1)])
+     Risk: increases ingest time slightly, increases storage.
+
+  B. Single-pass bulk load (larger improvement):
+     Instead of querying per PID, load ALL relevant events once:
+       - All callback_start/end events
+       - All rcl_publish events
+       - All rclcpp_client_request_sent events
+     Group by vpid in memory, then process per-node.
+     Risk: for very long traces, may exceed available memory.
+     Mitigation: stream from babeltrace2 directly instead of MongoDB,
+     or use windowed processing.
+
+  Current timing: ~3 minutes for 9.1M event session (30s of trace data).
+  Target: < 30 seconds.
+
+Priority: MEDIUM (doesn't block functionality, blocks scaling to longer sessions)
