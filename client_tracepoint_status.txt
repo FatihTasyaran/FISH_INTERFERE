@@ -1,0 +1,126 @@
+FISH Client Tracepoint Implementation Status
+==============================================
+
+Date: 2026-03-31
+
+
+1. What We Added
+-----------------
+
+Two new LTTng tracepoints:
+  ros2:rclcpp_client_request_sent(client_handle, sequence_number)
+  ros2:rclcpp_client_response_received(client_handle, sequence_number, response_type)
+
+Patched in three locations:
+
+  A. tracetools C (libtracetools.so):
+     tp_call.h, tracetools.h, tracetools.c — event definitions
+     Status: WORKING (symbols exported, verified)
+
+  B. rclcpp client.hpp (overlay workspace):
+     async_send_request_impl() → rclcpp_client_request_sent after rcl_send_request
+     handle_response() → rclcpp_client_response_received + callback_start/end
+     Status: COMPILED, NOT YET TESTED (no rclcpp service client in AAS)
+
+  C. rclpy ctypes bridge + Python patches:
+     fish_rclpy_trace.py → trace_client_request_sent(), trace_client_response_received()
+     client.py → call_async() patched with trace_client_request_sent
+     executors.py → _execute_client() patched with trace_client_response_received
+     Status: COMPILED, NOT FIRING (see section 2)
+
+
+2. Why rclpy Tracepoints Don't Fire
+-------------------------------------
+
+Problem: ros2 action send_goal CLI uses rclpy's ActionClient class, which
+does NOT use rclpy.client.Client or the executor's _take_client/_execute_client.
+
+  ActionClient (rclpy/action/client.py):
+    - Inherits from Waitable, not Client
+    - Has its own take_data() and execute() methods
+    - Calls _client_handle.send_goal_request() directly (C pybind11)
+    - Response handling in execute() via take_goal_response/take_result_response
+    - Completely bypasses client.py and executors._execute_client
+
+  Our patches are in:
+    client.py:call_async()       → ActionClient doesn't call this
+    executors.py:_execute_client → ActionClient doesn't go through this
+
+  This is analogous to the rclcpp action server situation:
+    - Action servers use Waitable interface, bypass ServiceBase
+    - Action clients use Waitable interface, bypass ClientBase
+
+
+3. What Needs To Be Done
+--------------------------
+
+Three separate client communication paths need tracepoints:
+
+  PATH 1: rclcpp Client (client.hpp)
+    Used by: rclcpp nodes calling services directly (create_client + async_send_request)
+    Current status: PATCHED in client.hpp
+    Tracepoints: rclcpp_client_request_sent + rclcpp_client_response_received
+                 + callback_start/end (when callback variant used)
+    Testing needed: find or create an rclcpp node that makes service calls
+
+  PATH 2: rclpy Client (client.py)
+    Used by: rclpy nodes calling services directly (create_client + call_async)
+    Current status: PATCHED in client.py + executors.py
+    Tracepoints: rclcpp_client_request_sent + rclcpp_client_response_received
+                 (via ctypes bridge, response_type always 0=future_only)
+    Testing needed: find or create an rclpy node that makes direct service calls
+
+  PATH 3: rclpy ActionClient (action/client.py)
+    Used by: ros2 action send_goal CLI, any rclpy node using ActionClient
+    Current status: PATCHED (2026-03-31)
+    Patched locations in rclpy/action/client.py:
+      a. send_goal_async() line 591:
+         After: sequence_number = self._client_handle.send_goal_request(request)
+         Add:   trace_client_request_sent(client_handle_ptr, sequence_number)
+
+      b. execute() method, goal response handling:
+         After: taken_goal_data = self._client_handle.take_goal_response(...)
+         Add:   trace_client_response_received(client_handle_ptr, sequence, 0)
+
+      c. execute() method, result response handling:
+         After: taken_result_data = self._client_handle.take_result_response(...)
+         Add:   trace_client_response_received(client_handle_ptr, sequence, 0)
+
+    Also PATH 3b: rclcpp ActionClient (rclcpp_action/client.hpp) ← MISSING
+      rclcpp action client also uses Waitable pattern, likely same issue.
+      Needs investigation in rclcpp_action/include/rclcpp_action/client.hpp
+
+  PATH 4 (future): rclcpp Waitable in general
+    Any custom Waitable implementation bypasses all standard tracepoints.
+    This is an architectural gap in ros2_tracing, not FISH-specific.
+
+
+4. Summary of All Client-Related Code Paths
+---------------------------------------------
+
+  Code Path              | Language | Mechanism          | Traced?
+  -----------------------|----------|--------------------|--------
+  Client.async_send_req  | rclcpp   | client.hpp         | YES (patched)
+  Client.call_async      | rclpy    | client.py          | YES (patched)
+  Client._execute_client | rclpy    | executors.py       | YES (patched)
+  ActionClient.send_goal | rclcpp   | action/client.hpp  | NO
+  ActionClient.send_goal | rclpy    | action/client.py   | NO
+  ActionClient.execute   | rclpy    | action/client.py   | NO
+  Any Waitable.execute   | rclcpp   | waitable interface  | NO
+
+
+5. Relationship to Entity Model
+---------------------------------
+
+Per FISH design (comm_dep_models.txt):
+  - Client is an ASPECT, not an entity type
+  - Entity types = callback types = sub, serv, tmr
+  - An entity with client aspect calls a service inside its callback
+  - The request_sent event fires inside the entity's callback window
+  - The response_received event fires later in a separate executor dispatch
+
+The tracepoints enable:
+  - Round-trip latency measurement (request_sent.ts → response_received.ts)
+  - Sequence number matching (request ↔ response)
+  - Response type identification (future-only vs callback)
+  - Attribution to the requesting entity via callback window matching

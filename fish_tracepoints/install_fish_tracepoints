@@ -23,23 +23,27 @@ set -euo pipefail
 # ─── Argument parsing ────────────────────────────────────────────────────────
 DO_ACTION=false
 DO_RCLPY=false
+DO_CLIENT=false
 
 if [ $# -eq 0 ]; then
     DO_ACTION=true
     DO_RCLPY=true
+    DO_CLIENT=true
 fi
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --action) DO_ACTION=true ;;
         --rclpy)  DO_RCLPY=true ;;
-        --all)    DO_ACTION=true; DO_RCLPY=true ;;
+        --client) DO_CLIENT=true ;;
+        --all)    DO_ACTION=true; DO_RCLPY=true; DO_CLIENT=true ;;
         --help|-h)
-            echo "Usage: $0 [--action] [--rclpy] [--all] [--help]"
+            echo "Usage: $0 [--action] [--rclpy] [--client] [--all] [--help]"
             echo ""
             echo "  --action  Install 4 action server dispatch tracepoints"
             echo "  --rclpy   Install 5 rclpy callback chain tracepoints"
-            echo "  --all     Install both (default if no flag given)"
+            echo "  --client  Install 2 service client tracepoints"
+            echo "  --all     Install all (default if no flag given)"
             exit 0
             ;;
         *)
@@ -584,6 +588,263 @@ print("  Done.")
 PATCH_RCLPY_C
 }
 
+patch_tracetools_client() {
+    log "  Patching tracetools for client tracepoints ..."
+
+    python3 <<'PATCH_CLIENT_C'
+OVERLAY = "/root/trace_overlay_ws/src/tracetools"
+
+# ── tp_call.h ──
+path = f"{OVERLAY}/include/tracetools/tp_call.h"
+with open(path) as f:
+    content = f.read()
+
+if "rclcpp_client_request_sent" in content:
+    print("    tp_call.h already has client events, skipping")
+else:
+    INSERT_BEFORE = "#endif  // _TRACETOOLS__TP_CALL_H_"
+    new_events = """
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  rclcpp_client_request_sent,
+  TP_ARGS(
+    const void *, client_handle_arg,
+    const int64_t, sequence_number_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, client_handle, client_handle_arg)
+    ctf_integer(int64_t, sequence_number, sequence_number_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  rclcpp_client_response_received,
+  TP_ARGS(
+    const void *, client_handle_arg,
+    const int64_t, sequence_number_arg,
+    const int, response_type_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, client_handle, client_handle_arg)
+    ctf_integer(int64_t, sequence_number, sequence_number_arg)
+    ctf_integer(int, response_type, response_type_arg)
+  )
+)
+
+"""
+    content = content.replace(INSERT_BEFORE, new_events + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tp_call.h patched — 2 client TRACEPOINT_EVENT added")
+
+# ── tracetools.h ──
+path = f"{OVERLAY}/include/tracetools/tracetools.h"
+with open(path) as f:
+    content = f.read()
+
+if "rclcpp_client_request_sent" in content:
+    print("    tracetools.h already has client events, skipping")
+else:
+    INSERT_BEFORE = "#ifdef __cplusplus\n}\n#endif\n\n#endif  // TRACETOOLS__TRACETOOLS_H_"
+    new_decls = """/// `rclcpp_client_request_sent`
+/**
+ * Service client request sent.
+ *
+ * \\param[in] client_handle pointer to the rcl_client_t
+ * \\param[in] sequence_number request sequence ID
+ */
+DECLARE_TRACEPOINT(
+  rclcpp_client_request_sent,
+  const void * client_handle,
+  const int64_t sequence_number)
+
+/// `rclcpp_client_response_received`
+/**
+ * Service client response received.
+ * response_type: 0=future_only, 1=callback, 2=callback_with_request
+ *
+ * \\param[in] client_handle pointer to the rcl_client_t
+ * \\param[in] sequence_number response sequence ID (matches request)
+ * \\param[in] response_type variant type of the pending request
+ */
+DECLARE_TRACEPOINT(
+  rclcpp_client_response_received,
+  const void * client_handle,
+  const int64_t sequence_number,
+  const int response_type)
+
+"""
+    content = content.replace(INSERT_BEFORE, new_decls + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tracetools.h patched — 2 client DECLARE_TRACEPOINT added")
+
+# ── tracetools.c ──
+path = f"{OVERLAY}/src/tracetools.c"
+with open(path) as f:
+    content = f.read()
+
+if "rclcpp_client_request_sent" in content:
+    print("    tracetools.c already has client events, skipping")
+else:
+    INSERT_BEFORE = "#ifndef _WIN32\n# pragma GCC diagnostic pop"
+    new_impls = """void TRACEPOINT(
+  rclcpp_client_request_sent,
+  const void * client_handle,
+  const int64_t sequence_number)
+{
+  CONDITIONAL_TP(
+    rclcpp_client_request_sent,
+    client_handle,
+    sequence_number);
+}
+
+void TRACEPOINT(
+  rclcpp_client_response_received,
+  const void * client_handle,
+  const int64_t sequence_number,
+  const int response_type)
+{
+  CONDITIONAL_TP(
+    rclcpp_client_response_received,
+    client_handle,
+    sequence_number,
+    response_type);
+}
+
+"""
+    content = content.replace(INSERT_BEFORE, new_impls + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tracetools.c patched — 2 client TRACEPOINT implementations added")
+
+print("  Done.")
+PATCH_CLIENT_C
+}
+
+# ─── Patch and build rclcpp (client tracepoints) ────────────────────────────
+patch_and_build_rclcpp_client() {
+    step "Patching rclcpp client.hpp and building ..."
+
+    # Copy rclcpp into overlay workspace if not already there
+    if [ ! -d "$OVERLAY_WS/src/rclcpp" ]; then
+        cp -r "$CLONE_DIR/rclcpp/rclcpp" "$OVERLAY_WS/src/rclcpp"
+        log "  Copied rclcpp into workspace"
+    fi
+
+    cd "$OVERLAY_WS/src/rclcpp"
+
+    # Patch client.hpp using Python for reliable multi-line insertion
+    python3 <<'PATCH_CLIENT_HPP'
+import os
+
+path = os.environ.get("OVERLAY_WS", "/root/trace_overlay_ws") + "/src/rclcpp/include/rclcpp/client.hpp"
+with open(path) as f:
+    content = f.read()
+
+if "rclcpp_client_request_sent" in content:
+    print("    client.hpp already patched, skipping")
+else:
+    # 1. Add tracetools include after rcl/wait.h
+    content = content.replace(
+        '#include "rcl/wait.h"',
+        '#include "rcl/wait.h"\n\n#include <tracetools/tracetools.h>')
+
+    # 2. Patch async_send_request_impl — add request_sent tracepoint after rcl_send_request
+    old_send = """    rcl_ret_t ret = rcl_send_request(get_client_handle().get(), &request, &sequence_number);
+    if (RCL_RET_OK != ret) {
+      rclcpp::exceptions::throw_from_rcl_error(ret, "failed to send request");
+    }
+    pending_requests_.try_emplace("""
+    new_send = """    rcl_ret_t ret = rcl_send_request(get_client_handle().get(), &request, &sequence_number);
+    if (RCL_RET_OK != ret) {
+      rclcpp::exceptions::throw_from_rcl_error(ret, "failed to send request");
+    }
+    // FISH: trace client request sent
+    TRACEPOINT(
+      rclcpp_client_request_sent,
+      static_cast<const void *>(get_client_handle().get()),
+      sequence_number);
+    pending_requests_.try_emplace("""
+    content = content.replace(old_send, new_send)
+
+    # 3. Patch handle_response — add response_received + callback_start/end
+    # Replace the three variant branches
+    old_response = """    if (std::holds_alternative<Promise>(value)) {
+      auto & promise = std::get<Promise>(value);
+      promise.set_value(std::move(typed_response));
+    } else if (std::holds_alternative<CallbackTypeValueVariant>(value)) {
+      auto & inner = std::get<CallbackTypeValueVariant>(value);
+      const auto & callback = std::get<CallbackType>(inner);
+      auto & promise = std::get<Promise>(inner);
+      auto & future = std::get<SharedFuture>(inner);
+      promise.set_value(std::move(typed_response));
+      callback(std::move(future));
+    } else if (std::holds_alternative<CallbackWithRequestTypeValueVariant>(value)) {
+      auto & inner = std::get<CallbackWithRequestTypeValueVariant>(value);
+      const auto & callback = std::get<CallbackWithRequestType>(inner);
+      auto & promise = std::get<PromiseWithRequest>(inner);
+      auto & future = std::get<SharedFutureWithRequest>(inner);
+      auto & request = std::get<SharedRequest>(inner);
+      promise.set_value(std::make_pair(std::move(request), std::move(typed_response)));
+      callback(std::move(future));
+    }"""
+
+    new_response = """    // FISH: trace client response received
+    int fish_response_type = std::holds_alternative<Promise>(value) ? 0 :
+        std::holds_alternative<CallbackTypeValueVariant>(value) ? 1 : 2;
+    TRACEPOINT(
+      rclcpp_client_response_received,
+      static_cast<const void *>(this->get_client_handle().get()),
+      request_header->sequence_number,
+      fish_response_type);
+    if (std::holds_alternative<Promise>(value)) {
+      auto & promise = std::get<Promise>(value);
+      promise.set_value(std::move(typed_response));
+    } else if (std::holds_alternative<CallbackTypeValueVariant>(value)) {
+      auto & inner = std::get<CallbackTypeValueVariant>(value);
+      const auto & callback = std::get<CallbackType>(inner);
+      auto & promise = std::get<Promise>(inner);
+      auto & future = std::get<SharedFuture>(inner);
+      promise.set_value(std::move(typed_response));
+      TRACEPOINT(callback_start, static_cast<const void *>(&callback), false);
+      callback(std::move(future));
+      TRACEPOINT(callback_end, static_cast<const void *>(&callback));
+    } else if (std::holds_alternative<CallbackWithRequestTypeValueVariant>(value)) {
+      auto & inner = std::get<CallbackWithRequestTypeValueVariant>(value);
+      const auto & callback = std::get<CallbackWithRequestType>(inner);
+      auto & promise = std::get<PromiseWithRequest>(inner);
+      auto & future = std::get<SharedFutureWithRequest>(inner);
+      auto & request = std::get<SharedRequest>(inner);
+      promise.set_value(std::make_pair(std::move(request), std::move(typed_response)));
+      TRACEPOINT(callback_start, static_cast<const void *>(&callback), false);
+      callback(std::move(future));
+      TRACEPOINT(callback_end, static_cast<const void *>(&callback));
+    }"""
+
+    content = content.replace(old_response, new_response)
+
+    with open(path, "w") as f:
+        f.write(content)
+    print("    client.hpp patched — request_sent + response_received + callback_start/end")
+
+PATCH_CLIENT_HPP
+
+    # Build rclcpp with overlay tracetools
+    set +u && source "$OVERLAY_WS/install/setup.bash" && set -u
+
+    cd "$OVERLAY_WS"
+    colcon build \
+        --packages-select rclcpp \
+        --cmake-args \
+            -DBUILD_TESTING=OFF \
+            "-Dtracetools_DIR=$OVERLAY_WS/install/tracetools/share/tracetools/cmake" \
+        2>&1 | tail -5
+
+    log "  rclcpp built with client tracepoints"
+}
+
 # ─── Build tracetools ───────────────────────────────────────────────────────
 build_tracetools() {
     step "Building tracetools ..."
@@ -778,6 +1039,15 @@ def _init():
         _lib.ros_trace_callback_end.argtypes = [ctypes.c_void_p]
         _lib.ros_trace_callback_end.restype = None
 
+        # Client tracepoints
+        _lib.ros_trace_rclcpp_client_request_sent.argtypes = [
+            ctypes.c_void_p, ctypes.c_int64]
+        _lib.ros_trace_rclcpp_client_request_sent.restype = None
+
+        _lib.ros_trace_rclcpp_client_response_received.argtypes = [
+            ctypes.c_void_p, ctypes.c_int64, ctypes.c_int]
+        _lib.ros_trace_rclcpp_client_response_received.restype = None
+
         _enabled = True
     except (OSError, AttributeError):
         _enabled = False
@@ -849,6 +1119,23 @@ def trace_cb_end(callback):
     if not _enabled:
         return
     _lib.ros_trace_callback_end(ctypes.c_void_p(id(callback)))
+
+
+def trace_client_request_sent(client_handle_ptr, sequence_number):
+    if not _enabled:
+        return
+    _lib.ros_trace_rclcpp_client_request_sent(
+        ctypes.c_void_p(client_handle_ptr),
+        ctypes.c_int64(sequence_number))
+
+
+def trace_client_response_received(client_handle_ptr, sequence_number, response_type):
+    if not _enabled:
+        return
+    _lib.ros_trace_rclcpp_client_response_received(
+        ctypes.c_void_p(client_handle_ptr),
+        ctypes.c_int64(sequence_number),
+        ctypes.c_int(response_type))
 PYBRIDGE
 
     log "    Created $RCLPY_DIR/fish_rclpy_trace.py"
@@ -1006,12 +1293,121 @@ else:
                 trace_cb_end(srv.callback)
             srv.send_response(response, header)"""
 
+    # Patch _execute_client — trace response received
+    old_cli = """    async def _execute_client(self, client, seq_and_response):
+        header, response = seq_and_response
+        if header is not None:
+            try:
+                sequence = header.request_id.sequence_number
+                future = client.get_pending_request(sequence)
+            except KeyError:
+                # The request was cancelled
+                pass
+            else:
+                future._set_executor(self)
+                future.set_result(response)"""
+    new_cli = """    async def _execute_client(self, client, seq_and_response):
+        header, response = seq_and_response
+        if header is not None:
+            try:
+                sequence = header.request_id.sequence_number
+                future = client.get_pending_request(sequence)
+            except KeyError:
+                # The request was cancelled
+                pass
+            else:
+                from rclpy.fish_rclpy_trace import trace_client_response_received
+                trace_client_response_received(client.handle.pointer, sequence, 0)
+                future._set_executor(self)
+                future.set_result(response)"""
+
     content = content.replace(old_sub, new_sub)
     content = content.replace(old_tmr, new_tmr)
     content = content.replace(old_srv, new_srv)
+    content = content.replace(old_cli, new_cli)
     with open(path, "w") as f:
         f.write(content)
     print("    executors.py patched")
+
+# ── client.py ──
+path = f"{RCLPY}/client.py"
+with open(path) as f:
+    content = f.read()
+
+if "fish_rclpy_trace" in content:
+    print("    client.py already patched")
+else:
+    # Patch call_async — trace request sent
+    old_call = "            future.add_done_callback(self.remove_pending_request)"
+    new_call = """            future.add_done_callback(self.remove_pending_request)
+
+            # FISH: trace client request sent
+            try:
+                from rclpy.fish_rclpy_trace import trace_client_request_sent
+                trace_client_request_sent(self.handle.pointer, sequence_number)
+            except Exception:
+                pass"""
+    content = content.replace(old_call, new_call)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    client.py patched")
+
+# ── action/client.py ──
+path = f"{RCLPY}/action/client.py"
+with open(path) as f:
+    content = f.read()
+
+if "fish_rclpy_trace" in content:
+    print("    action/client.py already patched")
+else:
+    # Patch send_goal_async — trace request sent
+    old_send = "            future.add_done_callback(self._remove_pending_goal_request)"
+    new_send = """            future.add_done_callback(self._remove_pending_goal_request)
+
+            # FISH: trace action client request sent
+            try:
+                from rclpy.fish_rclpy_trace import trace_client_request_sent
+                trace_client_request_sent(id(self._client_handle), sequence_number)
+            except Exception:
+                pass"""
+    content = content.replace(old_send, new_send)
+
+    # Patch execute() — trace goal response received
+    old_goal_resp = "                self._pending_goal_requests[sequence_number].set_result(goal_handle)"
+    new_goal_resp = """                # FISH: trace action client goal response received
+                try:
+                    from rclpy.fish_rclpy_trace import trace_client_response_received
+                    trace_client_response_received(id(self._client_handle), sequence_number, 0)
+                except Exception:
+                    pass
+                self._pending_goal_requests[sequence_number].set_result(goal_handle)"""
+    content = content.replace(old_goal_resp, new_goal_resp)
+
+    # Patch execute() — trace result response received
+    old_result_resp = "                self._pending_result_requests[sequence_number].set_result(result_response)"
+    new_result_resp = """                # FISH: trace action client result response received
+                try:
+                    from rclpy.fish_rclpy_trace import trace_client_response_received
+                    trace_client_response_received(id(self._client_handle), sequence_number, 0)
+                except Exception:
+                    pass
+                self._pending_result_requests[sequence_number].set_result(result_response)"""
+    content = content.replace(old_result_resp, new_result_resp)
+
+    # Patch execute() — trace cancel response received
+    old_cancel_resp = "                self._pending_cancel_requests[sequence_number].set_result(cancel_response)"
+    new_cancel_resp = """                # FISH: trace action client cancel response received
+                try:
+                    from rclpy.fish_rclpy_trace import trace_client_response_received
+                    trace_client_response_received(id(self._client_handle), sequence_number, 0)
+                except Exception:
+                    pass
+                self._pending_cancel_requests[sequence_number].set_result(cancel_response)"""
+    content = content.replace(old_cancel_resp, new_cancel_resp)
+
+    with open(path, "w") as f:
+        f.write(content)
+    print("    action/client.py patched")
 
 # Clear __pycache__
 import shutil, os
@@ -1019,6 +1415,10 @@ cache = f"{RCLPY}/__pycache__"
 if os.path.isdir(cache):
     shutil.rmtree(cache)
     print("    __pycache__ cleared")
+action_cache = f"{RCLPY}/action/__pycache__"
+if os.path.isdir(action_cache):
+    shutil.rmtree(action_cache)
+    print("    action/__pycache__ cleared")
 
 print("  Done.")
 PATCH_RCLPY
@@ -1048,6 +1448,7 @@ print(os.path.abspath(m.__file__))
     python3 <<PATCHNAMES
 do_action = $( $DO_ACTION && echo "True" || echo "False" )
 do_rclpy  = $( $DO_RCLPY  && echo "True" || echo "False" )
+do_client = $( $DO_CLIENT && echo "True" || echo "False" )
 
 with open("$NAMES_PY") as f:
     content = f.read()
@@ -1091,6 +1492,29 @@ if do_rclpy and "rclpy_subscription_callback_added" not in content:
 elif do_rclpy:
     print("  rclpy events already present")
 
+# Client events
+if do_client and "rclcpp_client_request_sent" not in content:
+    client_entries = '''    "ros2:rclcpp_client_request_sent",
+    "ros2:rclcpp_client_response_received",'''
+
+    # Find the right anchor: after rclpy events, action events, or stock events
+    if '"ros2:rclpy_callback_register",' in content:
+        anchor = '    "ros2:rclpy_callback_register",\n]'
+        content = content.replace(anchor,
+            '    "ros2:rclpy_callback_register",\n' + client_entries + '\n]')
+    elif '"ros2:rclcpp_action_execute_result",' in content:
+        anchor = '    "ros2:rclcpp_action_execute_result",\n]'
+        content = content.replace(anchor,
+            '    "ros2:rclcpp_action_execute_result",\n' + client_entries + '\n]')
+    else:
+        anchor = "    tracepoints.rclcpp_executor_execute,\n]"
+        content = content.replace(anchor,
+            "    tracepoints.rclcpp_executor_execute,\n" + client_entries + "\n]")
+    changed = True
+    print("  Added 2 client events")
+elif do_client:
+    print("  Client events already present")
+
 if changed:
     with open("$NAMES_PY", "w") as f:
         f.write(content)
@@ -1116,6 +1540,12 @@ verify() {
         log "Action symbols in libtracetools.so: $action_syms (expected: 4)"
     fi
 
+    if $DO_CLIENT; then
+        local client_syms
+        client_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_rclcpp_client_" || true)
+        log "Client symbols in libtracetools.so: $client_syms (expected: 2)"
+    fi
+
     if $DO_RCLPY; then
         local rclpy_syms
         rclpy_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_rclpy_" || true)
@@ -1139,6 +1569,7 @@ print(len(DEFAULT_EVENTS_ROS))
     local expected=28
     $DO_ACTION && expected=$((expected + 4))
     $DO_RCLPY  && expected=$((expected + 5))
+    $DO_CLIENT && expected=$((expected + 2))
     log "Events in DEFAULT_EVENTS_ROS: $event_count (expected: $expected)"
 
     if [ "${FISH_SETUP_PARENT:-}" != "1" ]; then
@@ -1182,15 +1613,17 @@ main() {
     clone_repos
     copy_sources
 
-    # Patch tracetools C source (action first, then rclpy)
+    # Patch tracetools C source (action first, then rclpy, then client)
     step "Patching tracetools C source ..."
     $DO_ACTION && patch_tracetools_action
     $DO_RCLPY  && patch_tracetools_rclpy
+    $DO_CLIENT && patch_tracetools_client
 
     build_tracetools
 
     # Feature-specific post-build work
     $DO_ACTION && patch_and_build_rclcpp_action
+    $DO_CLIENT && patch_and_build_rclcpp_client
     if $DO_RCLPY; then
         install_rclpy_tracepoints
     fi

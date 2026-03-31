@@ -86,7 +86,8 @@ Builds custom LTTng tracepoints in an overlay workspace and patches rclpy.
 **Effect:**
 - Clones `ros2_tracing`, `rclcpp`, `rcl` source at pinned tags
 - Patches tracetools C source (tp_call.h, tracetools.h, tracetools.c)
-- Builds patched tracetools + rclcpp_action in overlay workspace at `/root/trace_overlay_ws/`
+- Builds patched tracetools, rclcpp_action, and rclcpp in overlay workspace at `/root/trace_overlay_ws/`
+- Patches rclcpp client.hpp for service client request/response tracing
 - Creates `fish_rclpy_trace.py` ctypes bridge in rclpy package directory
 - Patches rclpy Python files (subscription.py, service.py, timer.py, node.py, executors.py)
 - Updates `tracetools_trace` event list (names.py)
@@ -96,7 +97,8 @@ Builds custom LTTng tracepoints in an overlay workspace and patches rclpy.
 ./install_fish_tracepoints              # all tracepoints (default)
 ./install_fish_tracepoints --action     # action server only (4 events)
 ./install_fish_tracepoints --rclpy      # rclpy callback chain only (5 events)
-./install_fish_tracepoints --all        # both (same as no flags)
+./install_fish_tracepoints --client     # service client only (2 events)
+./install_fish_tracepoints --all        # all (same as no flags)
 ```
 
 **Action server tracepoints** (4 events, C++ patches to rclcpp_action):
@@ -120,6 +122,18 @@ Builds custom LTTng tracepoints in an overlay workspace and patches rclpy.
 
 Existing `ros2:callback_start` and `ros2:callback_end` events are reused for
 rclpy runtime callback boundaries (injected into rclpy executors.py).
+
+**Service client tracepoints** (2 events, C++ patches to rclcpp client.hpp):
+
+| Event | Description |
+|-------|-------------|
+| `ros2:rclcpp_client_request_sent` | Client sends request (client_handle + sequence_number) |
+| `ros2:rclcpp_client_response_received` | Client receives response (client_handle + sequence_number + response_type) |
+
+`response_type`: 0 = future-only, 1 = callback, 2 = callback with request.
+When a callback is present (type 1 or 2), existing `ros2:callback_start` and
+`ros2:callback_end` events are fired around the callback invocation.
+Round-trip latency = `response_received.ts - request_sent.ts`.
 
 ---
 

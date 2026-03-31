@@ -290,3 +290,67 @@ Trace verification (session fish_20260330_184541):
       uses its own event loop, not the patched rclpy executor.
     - This does not affect structural edge construction (rcl_client_init
       is sufficient) but means no runtime callback timing for CLI clients.
+
+
+Service client as entity aspect (not entity type):
+
+  Client is NOT an entity type. It is an ASPECT of another entity.
+  An entity (sub, serv, tmr) whose callback calls async_send_request()
+  has a "client aspect" for that service.
+
+  Why not entity type:
+    - Client callback is OPTIONAL (future-only vs callback overload)
+    - Client callback is registered per-request, not at init time
+    - rclpy has NO client callback at all (future-only)
+    - ROS 2 tracing has ZERO tracepoints for client (no callback_start/end,
+      no callback_register, no executor_execute)
+    - See client_implementation.txt for full source analysis
+
+  The client callback (when present) is a "continuation" of the
+  requesting entity's work — executed later by the same executor
+  when the response arrives.
+
+  Service call model with client aspect:
+
+       Entity [TMR] timer_cb (Node A)
+       │
+       │ callback_start
+       │   work...
+       │   async_send_request(req) ───────────────────┐
+       │   work...                                     │ request
+       │ callback_end                                  │ (DDS)
+       │                                               ▼
+       │                                    Entity [SRV] server_cb (Node B)
+       │                                    │ callback_start
+       │                                    │   process request
+       │                                    │   send response
+       │                                    │ callback_end
+       │                                               │
+       │              ┌────────────────────────────────┘
+       │              │ response (DDS)
+       │              ▼
+       │ handle_response (Node A, same executor)
+       │   continuation:
+       │     promise.set_value(response)
+       │     or: callback_start → callback(future) → callback_end
+       │
+       │ ◄── round-trip delay measurable ──►
+       │ (request_sent.ts → response_received.ts)
+
+  FISH custom tracepoints (rclcpp client.hpp patch):
+
+    1. rclcpp_client_request_sent(client_handle, sequence_number)
+       When: async_send_request_impl, after rcl_send_request succeeds
+       Links: client_handle → rcl_client_init → service_name
+
+    2. rclcpp_client_response_received(client_handle, sequence_number, response_type)
+       When: handle_response entry, before variant dispatch
+       response_type: 0=future_only, 1=callback, 2=callback_with_request
+       Links: sequence_number matches request_sent, measures round-trip
+
+    3. callback_start/end (reused existing tracepoint)
+       When: around callback invocation in handle_response (type 1 and 2 only)
+       Only fires when callback variant is used, not for future-only
+
+  These tracepoints make the previously invisible execute_client path
+  fully observable in trace data.

@@ -41,3 +41,6 @@ ros2:rclpy_service_callback_added
 ros2:rclpy_timer_callback_added
 ros2:rclpy_timer_link_node
 ros2:rclpy_callback_register
+# Service client tracing (FISH custom)
+ros2:rclcpp_client_request_sent
+ros2:rclcpp_client_response_received
