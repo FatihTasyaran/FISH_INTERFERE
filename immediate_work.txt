@@ -364,23 +364,57 @@ Approach:
   PMU monitoring has a fixed, system-independent overhead (HW register
   reads, context switch save/restore). No per-process attach needed.
 
-  Data collection:
-    perf stat -a -e cycles,instructions,cache-misses,cache-references,\
-      LLC-load-misses,LLC-store-misses,bus-cycles -I 1 \
-      -o $SESSION_DIR/perf_counters.csv
+  Data collection (two concurrent streams):
 
-    Run concurrently with LTTng trace session. Start in trace_session.sh
-    start_session(), stop in stop_session().
+    A. Per-CPU PMU counters:
+       perf stat -a -A -e cycles,instructions,cache-misses,cache-references,\
+         LLC-load-misses,LLC-store-misses,bus-cycles -I 1 \
+         -o $SESSION_DIR/perf_counters.csv
 
-  Analysis (per callback):
-    1. callback_start/end gives time window [t1, t2]
-    2. Interpolate perf counter values in that window
-    3. Derive per-callback metrics:
+       The -A flag reports per-CPU counters (not aggregated).
+       Run concurrently with LTTng trace session. Start in trace_session.sh
+       start_session(), stop in stop_session().
+
+    B. CPU migration tracking:
+       LTTng kernel tracepoint: sched_migrate_task
+       Fires on every thread migration: (pid, old_cpu, new_cpu, timestamp)
+       Much lower volume than sched_switch (only on migration, not every
+       context switch).
+
+       Requires: lttng-modules installed, root access, kernel tracing enabled.
+       Add to fish_events.txt as kernel event:
+         lttng enable-event -k sched_migrate_task
+
+       Alternative (lower fidelity): use cpu_id field already present in
+       every LTTng UST event — shows CPU at tracepoint fire time but misses
+       inter-tracepoint migrations.
+
+  Analysis (per callback, migration-aware):
+    1. callback_start/end gives time window [t1, t2] and initial cpu_id
+    2. sched_migrate_task events within [t1, t2] for this vtid give
+       the CPU timeline: [(t1, cpu3), (t_mig, cpu7), ..., (t2, cpu7)]
+    3. For each (cpu, time_slice) segment:
+       - Read per-CPU PMU counter delta from perf_counters.csv
+       - Attribute that delta to this callback
+    4. Sum across all CPU segments → callback's total PMU values
+    5. Derive per-callback metrics:
        - IPC = instructions / cycles
        - Cache miss rate = cache-misses / cache-references
        - LLC miss rate = LLC-load-misses / (LLC-load-misses + LLC-load-hits)
-       - Operational intensity estimate = instructions / (cache-misses * cache_line_size)
-    4. Plot on cache-aware roofline (compute ceiling + memory ceilings per cache level)
+       - Operational intensity = instructions / (cache-misses * cache_line_size)
+    6. Plot on cache-aware roofline
+
+  Why migration tracking is critical:
+    Without it, per-CPU counter attribution is incorrect:
+      - Thread migrates cpu3→cpu7 mid-callback
+      - cpu3's counter delta includes OTHER threads' work after migration
+      - cpu7's counter delta includes OTHER threads' work before migration
+      - Naive attribution double-counts or misattributes
+
+    With sched_migrate_task:
+      - Exact time slices per CPU known
+      - Counter deltas split proportionally
+      - Precise per-callback roofline datapoint
 
   GPU callbacks (via nsys):
     nsys already provides kernel-level compute and memory throughput.
@@ -389,14 +423,21 @@ Approach:
       - memcpy bytes / duration → achieved bandwidth
       - Register usage → occupancy limit
 
+  P-MoVE/SuperTwin integration:
+    PMU abstraction layer from P-MoVE handles Intel/AMD/ARM event name
+    differences. CARM model construction reuses P-MoVE's microbenchmark
+    approach for establishing cache-level bandwidth ceilings.
+    See reference_supertwin_pmove.md for details.
+
   Deliverable:
-    - perf integration in FISH trace session management
-    - Per-callback roofline datapoint extraction
+    - perf + sched_migrate_task integration in FISH trace session
+    - Per-callback migration-aware PMU attribution
     - Roofline plot generation (cache-aware, separate CPU and GPU)
     - Reference: https://sips.inesc-id.pt/~ilic/roofline.php
 
-Priority: MEDIUM (enables deeper scheduling analysis, not blocking
-  current model extraction — but high value for paper contribution)
+Priority: HIGH (enables precise per-callback compute/memory characterization,
+  shared bus contention analysis, and WCET decomposition — strong paper
+  contribution building on SuperTwin/P-MoVE heritage)
 
 
 10. Multi-container trace composition for unified task model
