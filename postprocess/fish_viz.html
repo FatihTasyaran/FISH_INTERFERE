@@ -16,7 +16,8 @@ body { margin: 0; font-family: monospace; background: #ffffff; color: #222; over
 #info .val { color: #111; }
 #stats { position: fixed; bottom: 10px; left: 10px; z-index: 10; background: rgba(240,240,240,0.9); padding: 6px 10px; border-radius: 6px; font-size: 11px; border: 1px solid #ccc; }
 svg { width: 100vw; height: 100vh; }
-.link { stroke-opacity: 0.5; }
+.link { stroke-opacity: 0.5; cursor: pointer; }
+.link.highlight-path { stroke-opacity: 1; stroke-width: 4 !important; }
 .link.contains { stroke: #E74C3C; stroke-dasharray: 4,2; stroke-width: 1; }
 .link.msg { stroke: #3498DB; stroke-width: 2; }
 .link.comm { stroke: #2ECC71; stroke-width: 2; }
@@ -41,7 +42,8 @@ svg { width: 100vw; height: 100vh; }
   <b>FISH Graph Explorer</b><br><br>
   <label>Layout: <select id="layoutSelect">
     <option value="force">Force</option>
-    <option value="tree">Tree</option>
+    <option value="tree-stair-3">Tree Stair-3</option>
+    <option value="tree-stair-inf">Tree Stair-Inf</option>
     <option value="radial">Radial Tree</option>
   </select></label>
   <label>Layer: <select id="layerFilter">
@@ -88,9 +90,9 @@ fetch('fish_graph.json').then(r => r.json()).then(data => {
     .force("x", d3.forceX(width/2).strength(0.02))
     .force("y", d3.forceY(height/2).strength(0.02));
 
-  // Links
-  const link = g.append("g").selectAll("line")
-    .data(data.edges).enter().append("line")
+  // Links (path for orthogonal routing)
+  const link = g.append("g").selectAll("path")
+    .data(data.edges).enter().append("path")
     .attr("class", d => {
       let cls = "link";
       if (d.rel === "contains") cls += " contains";
@@ -101,6 +103,7 @@ fetch('fish_graph.json').then(r => r.json()).then(data => {
       }
       return cls;
     })
+    .attr("fill", "none")
     .attr("marker-end", d => d.rel !== "contains" ? "url(#arrow)" : null);
 
   // Arrow marker
@@ -197,16 +200,110 @@ fetch('fish_graph.json').then(r => r.json()).then(data => {
     });
   });
 
-  svg.on("click", () => {
-    node.classed("dim", false).classed("highlight", false);
-    link.classed("dim", false);
-    document.getElementById("info").innerHTML = "<h3>Click a node</h3>";
+  // Edge click → trace full path (follow chain forward and backward)
+  link.on("click", (e, d) => {
+    e.stopPropagation();
+
+    const getId = x => typeof x === "object" ? x.id : x;
+    const srcId = getId(d.source);
+    const tgtId = getId(d.target);
+
+    // Build adjacency for comm edges only (same level)
+    const fwd = {};  // id → [{edge, target}]
+    const bwd = {};  // id → [{edge, source}]
+    data.edges.forEach(edge => {
+      if (edge.rel !== "comm") return;
+      if (d.level && edge.level !== d.level) return;
+      const s = getId(edge.source), t = getId(edge.target);
+      if (!fwd[s]) fwd[s] = [];
+      fwd[s].push({edge, target: t});
+      if (!bwd[t]) bwd[t] = [];
+      bwd[t].push({edge, source: s});
+    });
+
+    // BFS forward from target
+    const pathNodes = new Set([srcId, tgtId]);
+    const pathEdges = new Set();
+    pathEdges.add(d);
+
+    let queue = [tgtId];
+    let visited = new Set([tgtId, srcId]);
+    while (queue.length) {
+      const cur = queue.shift();
+      (fwd[cur] || []).forEach(({edge, target}) => {
+        if (!visited.has(target)) {
+          visited.add(target);
+          pathNodes.add(target);
+          pathEdges.add(edge);
+          queue.push(target);
+        }
+      });
+    }
+
+    // BFS backward from source
+    queue = [srcId];
+    visited = new Set([srcId, tgtId]);
+    while (queue.length) {
+      const cur = queue.shift();
+      (bwd[cur] || []).forEach(({edge, source}) => {
+        if (!visited.has(source)) {
+          visited.add(source);
+          pathNodes.add(source);
+          pathEdges.add(edge);
+          queue.push(source);
+        }
+      });
+    }
+
+    // Highlight path
+    node.classed("dim", n => !pathNodes.has(n.id));
+    node.classed("highlight", n => n.id === srcId || n.id === tgtId);
+    link.classed("dim", e => !pathEdges.has(e));
+    link.classed("highlight-path", e => pathEdges.has(e));
+
+    // Info panel
+    const pathNodeList = [...pathNodes].map(id => {
+      const n = nodeMap[id];
+      if (!n) return `ID ${id}`;
+      const label = (n.label || "").split("/").pop() || n.label;
+      return `[${n.type}] ${label}`;
+    });
+
+    let html = `<h3>Path (${d.level || "?"}: ${d.nature || d.rel})</h3>`;
+    if (d.topic) html += `<div class="field"><span class="key">Topic:</span> <span class="val">${d.topic}</span></div>`;
+    if (d.service) html += `<div class="field"><span class="key">Service:</span> <span class="val">${d.service}</span></div>`;
+    if (d.msg_type) html += `<div class="field"><span class="key">Type:</span> <span class="val">${d.msg_type}</span></div>`;
+    if (d.avg_rate_hz) html += `<div class="field"><span class="key">Rate:</span> <span class="val">${d.avg_rate_hz.toFixed(1)} Hz</span></div>`;
+    if (d.direction) html += `<div class="field"><span class="key">Direction:</span> <span class="val">${d.direction}</span></div>`;
+    if (d.external) html += `<div class="field"><span class="key">External:</span> <span class="val">yes</span></div>`;
+    html += `<div class="field"><span class="key">Path nodes (${pathNodes.size}):</span></div>`;
+    pathNodeList.forEach(n => {
+      html += `<div class="field" style="margin-left:10px"><span class="val">${n}</span></div>`;
+    });
+    html += `<div class="field"><span class="key">Path edges:</span> <span class="val">${pathEdges.size}</span></div>`;
+
+    document.getElementById("info").innerHTML = html;
   });
 
-  // Tick
+  svg.on("click", () => {
+    node.classed("dim", false).classed("highlight", false);
+    link.classed("dim", false).classed("highlight-path", false);
+    document.getElementById("info").innerHTML = "<h3>Click a node or edge</h3>";
+  });
+
+  // Tick — orthogonal edge routing when in tree/radial, direct in force
   sim.on("tick", () => {
-    link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
-        .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+    link.attr("d", d => {
+      const sx = d.source.x, sy = d.source.y;
+      const tx = d.target.x, ty = d.target.y;
+      if (currentLayout.startsWith("tree")) {
+        // Orthogonal: go down from source, then across, then down to target
+        const midY = (sy + ty) / 2;
+        return `M${sx},${sy} L${sx},${midY} L${tx},${midY} L${tx},${ty}`;
+      }
+      // Direct line for force/radial
+      return `M${sx},${sy} L${tx},${ty}`;
+    });
     node.attr("transform", d => `translate(${d.x},${d.y})`);
   });
 
@@ -252,25 +349,42 @@ fetch('fish_graph.json').then(r => r.json()).then(data => {
     return {id: "root", data: null, children: rootChildren};
   }
 
-  function applyTreeLayout() {
-    const root = d3.hierarchy(buildHierarchy());
-    const treeLayout = d3.tree().size([width - 200, height - 200]);
-    treeLayout(root);
+  function applyStairLayout(mode) {
+    // Group nodes by type (layer)
+    const layers = {EX: [], N: [], E: [], F: []};
+    data.nodes.forEach(n => {
+      if (layers[n.type]) layers[n.type].push(n);
+    });
 
-    const nodeById = {};
-    data.nodes.forEach(n => { nodeById[n.id] = n; });
+    const margin = 60;
+    const stairStep = (mode === 3) ? 18 : 12;  // stair-3: cycle 3, stair-inf: every node descends
+    let layerGap = 200;
+    let currentY = 80;
 
-    root.descendants().forEach(d => {
-      if (d.data.id !== "root" && nodeById[d.data.id]) {
-        nodeById[d.data.id].fx = d.x + 100;
-        nodeById[d.data.id].fy = d.y + 100;
-      }
+    ["EX", "N", "E", "F"].forEach(type => {
+      const nodes = layers[type];
+      if (!nodes.length) return;
+
+      const spacing = Math.max(80, (width - 2 * margin) / nodes.length);
+      let maxY = currentY;
+
+      nodes.forEach((n, i) => {
+        n.fx = margin + i * spacing;
+        if (mode === 3) {
+          n.fy = currentY + (i % 3) * stairStep;
+        } else {
+          n.fy = currentY + i * stairStep;
+        }
+        if (n.fy > maxY) maxY = n.fy;
+      });
+
+      currentY = maxY + layerGap;
     });
 
     sim.alpha(0.3).restart();
     setTimeout(() => {
       data.nodes.forEach(n => { n.fx = null; n.fy = null; });
-    }, 2000);
+    }, 3000);
   }
 
   function applyRadialLayout() {
@@ -304,7 +418,8 @@ fetch('fish_graph.json').then(r => r.json()).then(data => {
 
   function switchLayout(layout) {
     currentLayout = layout;
-    if (layout === "tree") applyTreeLayout();
+    if (layout === "tree-stair-3") applyStairLayout(3);
+    else if (layout === "tree-stair-inf") applyStairLayout("inf");
     else if (layout === "radial") applyRadialLayout();
     else applyForceLayout();
   }
