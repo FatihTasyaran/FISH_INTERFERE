@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FISH Interactive Graph</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+body { margin: 0; font-family: monospace; background: #ffffff; color: #222; overflow: hidden; }
+#controls { position: fixed; top: 10px; left: 10px; z-index: 10; background: rgba(240,240,240,0.95); padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
+#controls label { margin-right: 12px; font-size: 12px; cursor: pointer; }
+#controls select, #controls input { background: #fff; color: #222; border: 1px solid #aaa; padding: 2px 6px; font-size: 12px; }
+#info { position: fixed; top: 10px; right: 10px; z-index: 10; background: rgba(250,250,250,0.95); padding: 12px; border-radius: 8px; width: 320px; font-size: 11px; max-height: 90vh; overflow-y: auto; border: 1px solid #ccc; }
+#info h3 { margin: 0 0 8px 0; color: #0066cc; font-size: 13px; }
+#info .field { margin: 2px 0; }
+#info .key { color: #666; }
+#info .val { color: #111; }
+#stats { position: fixed; bottom: 10px; left: 10px; z-index: 10; background: rgba(240,240,240,0.9); padding: 6px 10px; border-radius: 6px; font-size: 11px; border: 1px solid #ccc; }
+svg { width: 100vw; height: 100vh; }
+.link { stroke-opacity: 0.5; }
+.link.contains { stroke: #E74C3C; stroke-dasharray: 4,2; stroke-width: 1; }
+.link.msg { stroke: #3498DB; stroke-width: 2; }
+.link.comm { stroke: #2ECC71; stroke-width: 2; }
+.link.dep { stroke: #E74C3C; stroke-width: 2.5; }
+.link.external { stroke-dasharray: 6,3; stroke-opacity: 0.35; }
+.link.L3 { stroke-width: 1.5; }
+.node text { pointer-events: none; fill: #333; font-size: 9px; text-anchor: middle; }
+.node circle { stroke-width: 1.5; cursor: pointer; }
+.node.EX circle { fill: #5DADE2; stroke: #2E86C1; }
+.node.N circle { fill: #58D68D; stroke: #28B463; }
+.node.E circle { fill: #F4D03F; stroke: #D4AC0D; }
+.node.E.ext circle { fill: #AAB7B8; stroke: #808B96; stroke-dasharray: 3,2; }
+.node.F circle { fill: #F8F9FA; stroke: #BDC3C7; }
+.node.F.ext circle { fill: #BDC3C7; stroke: #808B96; stroke-dasharray: 3,2; }
+.node.highlight circle { stroke: #ff6600; stroke-width: 3; }
+.node.dim { opacity: 0.15; }
+.link.dim { opacity: 0.03; }
+</style>
+</head>
+<body>
+<div id="controls">
+  <b>FISH Graph Explorer</b><br><br>
+  <label>Layout: <select id="layoutSelect">
+    <option value="force">Force</option>
+    <option value="tree">Tree</option>
+    <option value="radial">Radial Tree</option>
+  </select></label>
+  <label>Layer: <select id="layerFilter">
+    <option value="all">All Layers</option>
+    <option value="L0">L0 (Executor)</option>
+    <option value="L1">L1 (Node)</option>
+    <option value="L2">L2 (Entity)</option>
+    <option value="L3">L3 (Function)</option>
+  </select></label>
+  <label><input type="checkbox" id="showExternal" checked> External</label>
+  <label><input type="checkbox" id="showContains" checked> Vertical</label>
+  <label><input type="checkbox" id="showLabels" checked> Labels</label>
+</div>
+<div id="info"><h3>Click a node</h3></div>
+<div id="stats"></div>
+<svg></svg>
+<script>
+const RADIUS = {EX: 18, N: 14, E: 10, F: 7};
+
+fetch('fish_graph.json').then(r => r.json()).then(data => {
+  const nodeMap = {};
+  data.nodes.forEach(n => { nodeMap[n.id] = n; });
+
+  const svg = d3.select("svg");
+  const width = window.innerWidth, height = window.innerHeight;
+  const g = svg.append("g");
+
+  // Zoom
+  svg.call(d3.zoom().scaleExtent([0.1, 8]).on("zoom", e => g.attr("transform", e.transform)));
+
+  // Force simulation — semi-static: stabilizes quickly, nodes barely move after
+  const sim = d3.forceSimulation(data.nodes)
+    .velocityDecay(0.6)
+    .alphaDecay(0.05)
+    .force("link", d3.forceLink(data.edges).id(d => d.id).distance(d => {
+      if (d.rel === "contains") return 50;
+      if (d.level === "L3") return 150;
+      if (d.level === "L2") return 130;
+      return 110;
+    }).strength(d => d.rel === "contains" ? 1.0 : 0.15))
+    .force("charge", d3.forceManyBody().strength(d => d.type === "EX" ? -600 : d.type === "N" ? -200 : d.type === "F" ? -40 : -120))
+    .force("center", d3.forceCenter(width/2, height/2).strength(0.05))
+    .force("collide", d3.forceCollide().radius(d => RADIUS[d.type] + 8).strength(0.9))
+    .force("x", d3.forceX(width/2).strength(0.02))
+    .force("y", d3.forceY(height/2).strength(0.02));
+
+  // Links
+  const link = g.append("g").selectAll("line")
+    .data(data.edges).enter().append("line")
+    .attr("class", d => {
+      let cls = "link";
+      if (d.rel === "contains") cls += " contains";
+      else {
+        cls += " " + (d.nature || "msg");
+        if (d.external) cls += " external";
+        if (d.level) cls += " " + d.level;
+      }
+      return cls;
+    })
+    .attr("marker-end", d => d.rel !== "contains" ? "url(#arrow)" : null);
+
+  // Arrow marker
+  svg.append("defs").append("marker")
+    .attr("id", "arrow").attr("viewBox", "0 -5 10 10")
+    .attr("refX", 20).attr("refY", 0).attr("markerWidth", 6).attr("markerHeight", 6)
+    .attr("orient", "auto")
+    .append("path").attr("d", "M0,-5L10,0L0,5").attr("fill", "#555");
+
+  // Nodes
+  const node = g.append("g").selectAll("g")
+    .data(data.nodes).enter().append("g")
+    .attr("class", d => {
+      let cls = "node " + d.type;
+      if (d.external) cls += " ext";
+      return cls;
+    })
+    .call(d3.drag()
+      .on("start", (e,d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on("drag", (e,d) => { d.fx = e.x; d.fy = e.y; })
+      .on("end", (e,d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+
+  node.append("circle").attr("r", d => RADIUS[d.type] || 8);
+
+  node.append("text").attr("dy", d => RADIUS[d.type] + 12)
+    .text(d => {
+      let l = d.label || "";
+      if (l.startsWith("ext:")) l = l.slice(4);
+      if (l.length > 25) l = l.slice(0, 23) + "..";
+      const parts = l.split("/");
+      return parts[parts.length - 1] || l;
+    });
+
+  // Click → info panel
+  node.on("click", (e, d) => {
+    e.stopPropagation();
+    let html = `<h3>${d.type}: ${d.label}</h3>`;
+    html += `<div class="field"><span class="key">ID:</span> <span class="val">${d.id}</span></div>`;
+    html += `<div class="field"><span class="key">Level:</span> <span class="val">${d.level}</span></div>`;
+    if (d.pid) html += `<div class="field"><span class="key">PID:</span> <span class="val">${d.pid}</span></div>`;
+    if (d.etype) html += `<div class="field"><span class="key">Entity type:</span> <span class="val">${d.etype}</span></div>`;
+    if (d.ptype) html += `<div class="field"><span class="key">Func type:</span> <span class="val">${d.ptype}</span></div>`;
+    if (d.full_name) html += `<div class="field"><span class="key">Full name:</span> <span class="val">${d.full_name}</span></div>`;
+    if (d.external) html += `<div class="field"><span class="key">External:</span> <span class="val">yes</span></div>`;
+    if (d.aspects && d.aspects.length) {
+      html += `<div class="field"><span class="key">Aspects:</span></div>`;
+      d.aspects.forEach(a => {
+        const what = a.topic || a.service || "";
+        html += `<div class="field" style="margin-left:10px"><span class="val">${a.aspect}: ${what}</span></div>`;
+      });
+    }
+    if (d.children && d.children.length) {
+      html += `<div class="field"><span class="key">Children:</span> <span class="val">${d.children.length}</span></div>`;
+    }
+
+    // Connected edges
+    const incoming = data.edges.filter(e => e.target === d.id || (e.target && e.target.id === d.id));
+    const outgoing = data.edges.filter(e => e.source === d.id || (e.source && e.source.id === d.id));
+    const commIn = incoming.filter(e => e.rel === "comm");
+    const commOut = outgoing.filter(e => e.rel === "comm");
+    if (commIn.length) {
+      html += `<div class="field"><span class="key">Incoming comm:</span></div>`;
+      commIn.forEach(e => {
+        const t = e.topic || e.service || "";
+        const src = typeof e.source === "object" ? e.source.label : (nodeMap[e.source]||{}).label || e.source;
+        html += `<div class="field" style="margin-left:10px"><span class="val">${e.nature} ${t} from ${src}</span></div>`;
+      });
+    }
+    if (commOut.length) {
+      html += `<div class="field"><span class="key">Outgoing comm:</span></div>`;
+      commOut.forEach(e => {
+        const t = e.topic || e.service || "";
+        const tgt = typeof e.target === "object" ? e.target.label : (nodeMap[e.target]||{}).label || e.target;
+        html += `<div class="field" style="margin-left:10px"><span class="val">${e.nature} ${t} to ${tgt}</span></div>`;
+      });
+    }
+
+    document.getElementById("info").innerHTML = html;
+
+    // Highlight connected
+    const connectedIds = new Set([d.id]);
+    data.edges.forEach(e => {
+      const sid = typeof e.source === "object" ? e.source.id : e.source;
+      const tid = typeof e.target === "object" ? e.target.id : e.target;
+      if (sid === d.id) connectedIds.add(tid);
+      if (tid === d.id) connectedIds.add(sid);
+    });
+    node.classed("dim", n => !connectedIds.has(n.id));
+    node.classed("highlight", n => n.id === d.id);
+    link.classed("dim", e => {
+      const sid = typeof e.source === "object" ? e.source.id : e.source;
+      const tid = typeof e.target === "object" ? e.target.id : e.target;
+      return sid !== d.id && tid !== d.id;
+    });
+  });
+
+  svg.on("click", () => {
+    node.classed("dim", false).classed("highlight", false);
+    link.classed("dim", false);
+    document.getElementById("info").innerHTML = "<h3>Click a node</h3>";
+  });
+
+  // Tick
+  sim.on("tick", () => {
+    link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+    node.attr("transform", d => `translate(${d.x},${d.y})`);
+  });
+
+  // --- Layout functions ---
+  let currentLayout = "force";
+
+  function buildHierarchy() {
+    // Build tree from containment edges: find roots (EX nodes) and children via Z_v
+    const childMap = {};
+    data.edges.forEach(e => {
+      if (e.rel === "contains") {
+        const sid = typeof e.source === "object" ? e.source.id : e.source;
+        const tid = typeof e.target === "object" ? e.target.id : e.target;
+        if (!childMap[sid]) childMap[sid] = [];
+        childMap[sid].push(tid);
+      }
+    });
+
+    // Virtual root connecting all EX nodes + orphan externals
+    const exNodes = data.nodes.filter(n => n.type === "EX");
+    const allContained = new Set();
+    Object.values(childMap).forEach(arr => arr.forEach(id => allContained.add(id)));
+    Object.keys(childMap).forEach(id => allContained.add(parseInt(id) || id));
+    const orphans = data.nodes.filter(n => !allContained.has(n.id) && n.type !== "EX");
+
+    function makeTree(id) {
+      const n = nodeMap[id];
+      const result = {id: id, data: n, children: []};
+      if (childMap[id]) {
+        childMap[id].forEach(cid => {
+          result.children.push(makeTree(cid));
+        });
+      }
+      return result;
+    }
+
+    const rootChildren = exNodes.map(n => makeTree(n.id));
+    // Add orphan externals as direct children of root
+    orphans.forEach(n => {
+      rootChildren.push({id: n.id, data: n, children: []});
+    });
+
+    return {id: "root", data: null, children: rootChildren};
+  }
+
+  function applyTreeLayout() {
+    const root = d3.hierarchy(buildHierarchy());
+    const treeLayout = d3.tree().size([width - 200, height - 200]);
+    treeLayout(root);
+
+    const nodeById = {};
+    data.nodes.forEach(n => { nodeById[n.id] = n; });
+
+    root.descendants().forEach(d => {
+      if (d.data.id !== "root" && nodeById[d.data.id]) {
+        nodeById[d.data.id].fx = d.x + 100;
+        nodeById[d.data.id].fy = d.y + 100;
+      }
+    });
+
+    sim.alpha(0.3).restart();
+    setTimeout(() => {
+      data.nodes.forEach(n => { n.fx = null; n.fy = null; });
+    }, 2000);
+  }
+
+  function applyRadialLayout() {
+    const root = d3.hierarchy(buildHierarchy());
+    const radialLayout = d3.tree().size([2 * Math.PI, Math.min(width, height) / 2 - 100]);
+    radialLayout(root);
+
+    const cx = width / 2, cy = height / 2;
+    const nodeById = {};
+    data.nodes.forEach(n => { nodeById[n.id] = n; });
+
+    root.descendants().forEach(d => {
+      if (d.data.id !== "root" && nodeById[d.data.id]) {
+        const angle = d.x;
+        const radius = d.y;
+        nodeById[d.data.id].fx = cx + radius * Math.cos(angle - Math.PI / 2);
+        nodeById[d.data.id].fy = cy + radius * Math.sin(angle - Math.PI / 2);
+      }
+    });
+
+    sim.alpha(0.3).restart();
+    setTimeout(() => {
+      data.nodes.forEach(n => { n.fx = null; n.fy = null; });
+    }, 2000);
+  }
+
+  function applyForceLayout() {
+    data.nodes.forEach(n => { n.fx = null; n.fy = null; });
+    sim.alpha(1).restart();
+  }
+
+  function switchLayout(layout) {
+    currentLayout = layout;
+    if (layout === "tree") applyTreeLayout();
+    else if (layout === "radial") applyRadialLayout();
+    else applyForceLayout();
+  }
+
+  document.getElementById("layoutSelect").onchange = function() {
+    switchLayout(this.value);
+  };
+
+  // Filters
+  function applyFilters() {
+    const layer = document.getElementById("layerFilter").value;
+    const showExt = document.getElementById("showExternal").checked;
+    const showVert = document.getElementById("showContains").checked;
+    const showLbl = document.getElementById("showLabels").checked;
+
+    node.style("display", d => {
+      if (!showExt && d.external) return "none";
+      if (layer !== "all" && d.level !== parseInt(layer[1])) return "none";
+      return null;
+    });
+    link.style("display", d => {
+      if (!showVert && d.rel === "contains") return "none";
+      if (!showExt && d.external) return "none";
+      if (layer !== "all") {
+        const lvl = layer;
+        if (d.rel === "contains") return showVert ? null : "none";
+        if (d.level !== lvl) return "none";
+      }
+      return null;
+    });
+    node.selectAll("text").style("display", showLbl ? null : "none");
+  }
+
+  document.getElementById("layerFilter").onchange = applyFilters;
+  document.getElementById("showExternal").onchange = applyFilters;
+  document.getElementById("showContains").onchange = applyFilters;
+  document.getElementById("showLabels").onchange = applyFilters;
+
+  // Stats
+  const nTypes = {};
+  data.nodes.forEach(n => { nTypes[n.type] = (nTypes[n.type]||0) + 1; });
+  const eTypes = {};
+  data.edges.forEach(e => { eTypes[e.rel + (e.nature ? ":" + e.nature : "")] = (eTypes[e.rel + (e.nature ? ":" + e.nature : "")]||0) + 1; });
+  let statsHtml = `Nodes: ${data.nodes.length} (${Object.entries(nTypes).map(([k,v])=>k+":"+v).join(", ")}) | `;
+  statsHtml += `Edges: ${data.edges.length} (${Object.entries(eTypes).map(([k,v])=>k+":"+v).join(", ")})`;
+  document.getElementById("stats").innerHTML = statsHtml;
+});
+</script>
+</body>
+</html>

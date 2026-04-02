@@ -1696,3 +1696,63 @@ def export_fish_l3_chains(G, out_path, fmt="png"):
 
     print(f"[FISH viz] L3 chains: {out_file}")
     return out_file
+
+
+def export_fish_json(G, out_path="fish_graph.json"):
+    """Export FISH graph as JSON for D3 interactive visualization.
+
+    Each node carries: id, type, label, level, children, and type-specific fields.
+    Each edge carries: source, target, rel, level, nature, and comm-specific fields.
+    """
+    import json
+
+    graph_json = {"nodes": [], "edges": []}
+
+    for nid, data in G.nodes(data=True):
+        v = data.get("v")
+        if not v:
+            continue
+        node = {
+            "id": v.id_v,
+            "type": v.t_v,
+            "label": v.A_v.get("label", str(v.id_v)),
+            "level": v.level,
+            "children": list(v.Z_v) if v.Z_v else [],
+        }
+        if v.t_v == "EX":
+            node["pid"] = v.A_v.get("pid")
+        elif v.t_v == "N":
+            node["full_name"] = v.A_v.get("full_name", "")
+        elif v.t_v == "E":
+            node["etype"] = v.A_v.get("etype")
+            node["external"] = v.A_v.get("external", False)
+            node["aspects"] = v.A_v.get("aspects", [])
+        elif v.t_v == "F":
+            node["ptype"] = v.A_v.get("ptype")
+            node["external"] = v.A_v.get("ptype") == "ext"
+            node["cb_addr"] = v.A_v.get("cb_addr", "")
+        graph_json["nodes"].append(node)
+
+    for u, v, data in G.edges(data=True):
+        edge = {
+            "source": u,
+            "target": v,
+            "rel": data.get("rel"),
+            "level": data.get("level", ""),
+            "nature": data.get("nature", ""),
+        }
+        for k in ["topic", "service", "msg_type", "avg_rate_hz", "direction", "tau"]:
+            if data.get(k):
+                edge[k] = data[k]
+        if data.get("external"):
+            edge["external"] = True
+        if data.get("comm_count"):
+            edge["comm_count"] = data["comm_count"]
+        graph_json["edges"].append(edge)
+
+    with open(out_path, "w") as f:
+        json.dump(graph_json, f, indent=2)
+
+    print(f"[FISH viz] JSON: {len(graph_json['nodes'])} nodes, "
+          f"{len(graph_json['edges'])} edges → {out_path}")
+    return out_path

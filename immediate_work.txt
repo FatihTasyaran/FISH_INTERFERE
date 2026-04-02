@@ -397,3 +397,53 @@ Approach:
 
 Priority: MEDIUM (enables deeper scheduling analysis, not blocking
   current model extraction — but high value for paper contribution)
+
+
+10. Multi-container trace composition for unified task model
+--------------------------------------------------------------
+Problem:
+  In multi-container deployments like AAS, each container runs a subset
+  of the robotic system (aircraft, ground station, simulation). FISH
+  currently traces a single container. The complete task model requires
+  composing traces from multiple containers into a single graph.
+
+  Example (AAS):
+    - aircraft container: px4_interface, px4_offboard, yolo, kiss_icp
+    - simulation container: ros_gz_bridge, PX4 SITL, Gazebo
+    - ground container: ground station nodes
+
+  Currently, topics crossing container boundaries appear as external
+  entities (EXT). With multi-container composition, these EXT entities
+  would be replaced by real entities from the other container's trace.
+
+Approach:
+  1. Install FISH in each container independently (setup_fish.sh)
+  2. Run trace session in each container concurrently (synchronized
+     via /clock topic or NTP)
+  3. After collection, compose traces:
+     a. Ingest each container's trace into separate MongoDB databases
+     b. Extract model per container (identify_executors → entities → functions)
+     c. Merge models: match EXT entities across containers by topic/service name
+        - EXT publisher in container A matches real subscriber in container B
+        - EXT subscriber in container A matches real publisher in container B
+        - Replace EXT→real edges with cross-container real→real edges
+     d. Unified graph: all executors from all containers, cross-container
+        edges marked with container origin and network latency
+
+  Timestamp alignment:
+    - All containers share /clock topic (simulated time) — timestamps align
+    - For real deployment: NTP sync + clock offset correction
+    - Cross-container message latency measurable from publish→take timestamps
+
+  Visualization:
+    - D3 interactive: color-code nodes by container origin
+    - Grafana: per-container dashboards + unified cross-container view
+
+  Deliverable:
+    - fish_compose.py: takes N session directories, merges into unified model
+    - Cross-container edge detection via topic/service name matching
+    - Unified fish_graph.json for D3 visualization
+
+Priority: HIGH (required for complete system model in multi-container
+  deployments — paper contribution: "FISH composes distributed traces
+  into a unified scheduling hierarchy")
