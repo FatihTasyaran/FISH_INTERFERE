@@ -295,9 +295,9 @@ def pretty_print_three_layers(executors, nodes, entities):
                         extra = f"  period={period / 1e6:.1f}ms"
                     else:
                         extra = f"  period={period}ns"
-                elif etype == "act":
-                    comps = e.A_v.get('action_components', {})
-                    extra = f"  ({len(comps)} components)"
+                if e.A_v.get("action_name"):
+                    a_short = e.A_v['action_name'].rsplit('/',1)[-1]
+                    extra += f"  action:{a_short}:{e.A_v.get('action_role','?')}"
 
                 print(f"  {n_cont}{e_prefix} [{etype.upper()}] id={e.id_v}  {label}{extra}")
 
@@ -352,9 +352,9 @@ def pretty_print_four_layers(executors, nodes, entities, functions):
                         extra = f"  period={period / 1e6:.1f}ms"
                     else:
                         extra = f"  period={period}ns"
-                elif etype == "act":
-                    comps = e.A_v.get('action_components', {})
-                    extra = f"  ({len(comps)} components)"
+                if e.A_v.get("action_name"):
+                    a_short = e.A_v['action_name'].rsplit('/',1)[-1]
+                    extra += f"  action:{a_short}:{e.A_v.get('action_role','?')}"
 
                 cb_addr = e.A_v.get('cb_addr', 'NA')
                 cb_str = f"  cb={cb_addr}" if cb_addr != "NA" else ""
@@ -393,32 +393,22 @@ def create_detection_summary(executors, nodes, entities, functions, mongo):
     for n_id in gpu_node_ids:
         gpu_entity_ids.update(nodes[n_id].Z_v)
 
-    act_component_names = set()
-    for e in entities.values():
-        if e.A_v.get("etype") == "act":
-            for comp_name in e.A_v.get("action_components", {}).values():
-                act_component_names.add(comp_name)
-
     print(f"\n--- Function Layer (Layer 3) ---")
     print(f"Total Function vertices: {len(functions)}")
     matched = sum(1 for e in entities.values() if e.A_v.get("cb_addr", "NA") != "NA")
-    print(f"Entities with rclcpp callbacks: {matched}/{len(entities)}")
+    print(f"Entities with callbacks: {matched}/{len(entities)}")
 
     no_cb_gpu = [e for eid, e in entities.items() if eid in gpu_entity_ids and e.A_v.get("cb_addr", "NA") == "NA"]
-    no_cb_act = [e for e in entities.values() if e.A_v["etype"] == "act"]
-    no_cb_act_comp = [e for e in entities.values() if e.A_v.get("cb_addr", "NA") == "NA"
-                      and e.A_v["etype"] == "serv" and e.A_v["label"] in act_component_names]
+    no_cb_action = [e for e in entities.values() if e.A_v.get("cb_addr", "NA") == "NA"
+                    and e.A_v.get("action_name")]
     no_cb_other = [e for eid, e in entities.items() if e.A_v.get("cb_addr", "NA") == "NA"
-                   and e.A_v["etype"] != "act"
-                   and e.A_v["label"] not in act_component_names
+                   and not e.A_v.get("action_name")
                    and eid not in gpu_entity_ids]
 
     if no_cb_gpu:
         print(f"  nsys-profiled (GPU function layer pending): {len(no_cb_gpu)} entities")
-    if no_cb_act:
-        print(f"  action abstract entities (no direct callback): {len(no_cb_act)} entities")
-    if no_cb_act_comp:
-        print(f"  action component services (rclcpp_action internal dispatch, no tracepoint): {len(no_cb_act_comp)} entities")
+    if no_cb_action:
+        print(f"  action components (internal dispatch): {len(no_cb_action)} entities")
     if no_cb_other:
         print(f"  UNEXPECTED missing callbacks ({len(no_cb_other)}):")
         for e in no_cb_other:

@@ -272,29 +272,29 @@ def identify_entities(mongo, nodes):
         node.A_v["cli_aspects"] = node_cli_aspects
         node.A_v["service_clients"] = {a["service"]: "" for a in node_cli_aspects}  # keep for backward compat
 
-        # Actions → abstract entity with 5 component entities (3 services + 2 publishers)
+        # Actions → mark component entities with action_name + action_role (no abstract entity)
         coll = mongo["ros2_trace"]
+        action_type_map = {}
         for action_name, action_info in info.get("Action_Servers", {}).items():
-            e_A = ret_A_dict("E", label=action_name, etype="act")
-            e_A["action_type"] = action_info if isinstance(action_info, str) else action_info.get("type", "")
-
+            action_type = action_info if isinstance(action_info, str) else action_info.get("type", "")
             short_name = action_name.rsplit('/', 1)[-1]
             act_init = coll.find_one({"event": "ros2:rclcpp_action_server_init",
                                       "payload.action_name": short_name})
 
-            component_ids = {}
             if act_init:
                 p = act_init["payload"]
-                e_A["action_handle"] = p["action_server_handle"]
 
-                # Create 3 service component entities
+                # 3 service component entities
                 for role, handle_key in [("send_goal", "goal_service_handle"),
                                          ("cancel_goal", "cancel_service_handle"),
                                          ("get_result", "result_service_handle")]:
                     svc_name = f"{action_name}/_action/{role}"
                     ce_A = ret_A_dict("E", label=svc_name, etype="serv")
                     ce_A["service_handle"] = p[handle_key]
+                    ce_A["action_name"] = action_name
                     ce_A["action_role"] = role
+                    ce_A["action_type"] = action_type
+                    ce_A["action_handle"] = p["action_server_handle"]
                     ce_A["aspects"] = [
                         {"aspect": "req_sub", "service": svc_name},
                         {"aspect": "res_pub", "service": svc_name},
@@ -302,21 +302,15 @@ def identify_entities(mongo, nodes):
                     ce = FishVertex("E", next(vertex_counter), ce_A, [], 2)
                     node.Z_v.append(ce.id_v)
                     entities[ce.id_v] = ce
-                    component_ids[role] = ce.id_v
 
-                # Create 2 publisher component entries (look up handles from trace)
+                # 2 publisher components → add as pub aspects on the goal service entity
+                # (feedback/status are published by the action server during goal execution)
                 for pub_role in ["feedback", "status"]:
                     pub_topic = f"{action_name}/_action/{pub_role}"
-                    pub_init = coll.find_one({"event": "ros2:rcl_publisher_init",
-                                              "payload.node_handle": node_handle,
-                                              "payload.topic_name": pub_topic})
-                    if pub_init:
-                        component_ids[pub_role] = pub_init["payload"]["publisher_handle"]
-
-            e_A["action_components"] = component_ids
-            e = FishVertex("E", next(vertex_counter), e_A, [], 2)
-            node.Z_v.append(e.id_v)
-            entities[e.id_v] = e
+                    node_pub_aspects.append({
+                        "aspect": "pub", "topic": pub_topic,
+                        "action_name": action_name, "action_role": pub_role,
+                    })
 
     return entities
 
@@ -463,10 +457,6 @@ def identify_callbacks(mongo, nodes, entities, executors):
                                                     "payload.callback": callback_ptr})
                             if cb_reg:
                                 cb_info = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
-
-            elif etype == "act":
-                # Abstract entity — functions live on component service entities.
-                continue
 
             if cb_info:
                 entity.A_v["cb_addr"] = cb_info["callback"]
