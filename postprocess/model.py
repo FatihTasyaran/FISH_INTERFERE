@@ -235,8 +235,8 @@ def identify_entities(mongo, nodes):
             e_A = ret_A_dict("E", label=srv_name, etype="serv")
             e_A["srv_type"] = srv_type
             e_A["aspects"] = [
-                {"aspect": "req_sub", "service": srv_name},
-                {"aspect": "res_pub", "service": srv_name},
+                {"aspect": "sub", "service": srv_name},
+                {"aspect": "pub", "service": srv_name},
             ]
             e = FishVertex("E", next(vertex_counter), e_A, [], 2)
             node.Z_v.append(e.id_v)
@@ -296,8 +296,8 @@ def identify_entities(mongo, nodes):
                     ce_A["action_type"] = action_type
                     ce_A["action_handle"] = p["action_server_handle"]
                     ce_A["aspects"] = [
-                        {"aspect": "req_sub", "service": svc_name},
-                        {"aspect": "res_pub", "service": svc_name},
+                        {"aspect": "sub", "service": svc_name},
+                        {"aspect": "pub", "service": svc_name},
                     ]
                     ce = FishVertex("E", next(vertex_counter), ce_A, [], 2)
                     node.Z_v.append(ce.id_v)
@@ -845,8 +845,8 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
 
     L2 (entity level):
       - pub aspect on entity A → sub aspect on entity B (nature="msg")
-      - cli aspect on entity A → req_sub aspect on entity B (nature="comm", request)
-      - res_pub aspect on entity B → entity A (nature="dep", response)
+      - cli aspect on entity A → sub aspect on entity B (nature="comm", request)
+      - pub aspect on entity B → entity A (nature="dep", response)
       Fallback: unattributed pub/cli aspects use node-level matching
 
     L3 (function level): propagate L2 edges down to functions
@@ -871,7 +871,7 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
 
     # sub aspect index: topic → [(entity_id, node_id), ...]
     sub_index = {}
-    # srv (req_sub) aspect index: service_name → [(entity_id, node_id), ...]
+    # srv (sub) aspect index: service_name → [(entity_id, node_id), ...]
     srv_index = {}
     # pub aspect index (entity-level): topic → [(entity_id, node_id), ...]
     pub_entity_index = {}
@@ -889,7 +889,7 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
                 if aspect["aspect"] == "sub":
                     topic = aspect["topic"]
                     sub_index.setdefault(topic, []).append((e_id, n.id_v))
-                elif aspect["aspect"] == "req_sub":
+                elif aspect["aspect"] == "sub" and aspect.get("service"):
                     srv = aspect["service"]
                     srv_index.setdefault(srv, []).append((e_id, n.id_v))
                 elif aspect["aspect"] == "pub":
