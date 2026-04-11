@@ -1,6 +1,42 @@
 Immediate Work Items
 ====================
 
+0. [URGENT] Batch process detection in GPU daemon
+--------------------------------------------------
+Problem:
+  GPU daemon scans /proc one process at a time. Each new process triggers
+  a settle_time wait (default 3s) before the next scan. With Autoware's
+  74 processes, this means ~222 seconds (4 minutes) just for detection.
+
+  Current flow (serial):
+    detect PID 1234 → wait 3s → detect PID 1235 → wait 3s → ...
+
+  Expected flow (batch):
+    detect PID 1234, 1235, 1236, ... → wait 3s once → check all
+
+Root cause:
+  gpu.py daemon poll loop processes one new PID per cycle. Each cycle
+  sleeps settle_time after detection. Should collect ALL new PIDs in
+  one scan, then wait once, then process all.
+
+Fix:
+  In gpu.py daemon loop:
+    1. Scan /proc for ALL new PIDs (not seen before) in one pass
+    2. Wait settle_time ONCE
+    3. Check all new PIDs for CUDA libraries in parallel
+    4. Act on GPU processes (kill/resurrect for nsys)
+    5. Mark all checked PIDs as seen
+
+  This changes O(N * settle_time) → O(settle_time) for N processes.
+
+  Also consider: reduce settle_time to 1.0s or 0.5s for non-GPU nodes
+  (they don't need CUDA library loading time).
+
+Discovered: Autoware has 74 processes, 4 minutes wasted on serial detection.
+
+Priority: URGENT (blocks Autoware trace workflow)
+
+
 1. [FIXED 2026-03-29] Add globalTid to nsys ingest (cuda_runtime table)
 -----------------------------------------------------------------------
 Problem:
