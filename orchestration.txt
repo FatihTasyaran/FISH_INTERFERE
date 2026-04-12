@@ -1,0 +1,173 @@
+FISH Orchestration Pipeline
+============================
+
+Date: 2026-04-12
+Implementation: python/fish/gpu.py, install_fish.sh, fish_settings.ini
+
+
+Overview
+--------
+FISH uses a signal-based orchestration pipeline to ensure system
+stability before any invasive operations (kill/nsys). Each phase
+completes and emits a signal before the next phase begins.
+
+    ros2 launch ... (FISH wrapper intercepts)
+      |
+      +-- Wrapper: stdout --> /tmp/fish_launch_output.log (tee)
+      |
+      +-- Daemon Phase 1: Dual stabilization (parallel)
+      |     +-- CL: ros2 component list poll --> component_list_stable
+      |     +-- EX: "process started" count poll --> executor_started_stable
+      |     +-- BOTH OK --> system_stable signal
+      |
+      +-- Daemon Phase 2: GPU handler
+      |     +-- Scan /proc for CUDA processes
+      |     +-- Containers: save components --> kill --> nsys --> reload
+      |     +-- Standalone: kill --> nsys relaunch
+      |     +-- gpu_handler_complete signal
+      |
+      +-- Daemon Phase 3: Live collectors start
+      |     +-- node info, topic info, topic hz (background)
+      |
+      +-- Daemon Phase 4: Replay (optional)
+      |     +-- Runs [replay] command from fish_settings.ini
+      |     +-- replay_complete signal when process exits
+      |
+      +-- auto_stop: fish stop runs automatically
+
+
+Dual Stabilization (Phase 1)
+-----------------------------
+Two independent checks run in parallel within the same loop.
+Each has its own interval and required count. The phase completes
+only when BOTH checks pass.
+
+Component list stability (CL):
+  - Polls `ros2 component list` at configurable interval
+  - Normalizes output: sort lines, filter DDS error messages
+  - N consecutive identical results = stable
+  - Ensures all composable node containers have their components loaded
+
+Executor started stability (EX):
+  - Reads /tmp/fish_launch_output.log (written by FISH wrapper via tee)
+  - Counts lines matching "process started with pid"
+  - N consecutive identical counts = stable
+  - Ensures all launch-managed processes have been started
+
+Why both?
+  - CL alone misses standalone processes (they have no components)
+  - EX alone misses component loading (process starts before components)
+  - Together they guarantee: all processes started AND all components loaded
+
+Parallel execution:
+  Both checks run in the same loop. Each maintains its own:
+    - poll timer (independent intervals)
+    - previous value
+    - consecutive match counter
+  Loop sleeps for min(cl_interval, ex_interval, 1.0) per tick.
+
+Observed timing (Autoware):
+  - EX stabilizes at ~20-30s (all 74 processes started)
+  - CL stabilizes at ~30-50s (all 117 components loaded)
+  - Both OK at ~50s from launch
+
+
+Signal Files
+-------------
+Signal files are written to /tmp/ with monotonic timestamps.
+They serve two purposes:
+  1. Inter-process communication (wrapper <-> daemon)
+  2. Post-processing time markers (filter trace data by phase)
+
+  /tmp/fish_system_stable         -- both CL and EX passed
+  /tmp/fish_gpu_handler_complete  -- all GPU processes handled
+  /tmp/fish_replay_complete       -- replay command exited
+
+  /tmp/fish_launch_output.log     -- launch stdout (tee'd by wrapper)
+
+All signal files are cleaned up by trace_session.sh stop.
+
+
+fishlog Events
+---------------
+All phase transitions are logged to fishlog with monotonic timestamps
+(CLOCK_MONOTONIC, same as LTTng). This enables post-processing to
+correlate phases with trace events.
+
+  <ts> daemon ... stabilization_start cl_interval=10 cl_count=3 ex_interval=10 ex_count=3
+  <ts> daemon ... component_list_stable containers=20 components=117
+  <ts> daemon ... executor_started_stable count=74
+  <ts> daemon ... system_stable
+  <ts> daemon ... gpu_handler_complete
+  <ts> daemon ... replay_start cmd=ros2 bag play ...
+  <ts> daemon ... replay_complete exit=0
+  <ts> daemon ... auto_stop
+
+Post-processing filter example:
+  - Callbacks before system_stable: initialization, discard or mark
+  - Callbacks between system_stable and replay_start: idle steady-state
+  - Callbacks between replay_start and replay_complete: active mission
+  - Callbacks after replay_complete: shutdown, discard or mark
+
+
+Configuration (fish_settings.ini)
+----------------------------------
+
+[daemon]
+# Component list stability
+component_list_stability_interval = 10.0   # seconds between polls
+component_list_stability_count = 3         # consecutive identical required
+
+# Executor started stability
+executor_started_stability_interval = 10.0
+executor_started_stability_count = 3
+
+[replay]
+# Command to run after gpu_handler_complete. Leave empty to disable.
+command = ros2 bag play ~/autoware_map/sample-rosbag -r 0.2 -s sqlite3
+
+# Automatically stop FISH when replay command exits
+auto_stop = true
+
+
+Wrapper Changes (install_fish.sh)
+----------------------------------
+The ros2 wrapper now tees launch stdout to /tmp/fish_launch_output.log
+when FISH_ENABLED=1 and the command is `ros2 launch`:
+
+  $REAL_ROS2 "$@" > >( tee -a $FISH_LAUNCH_LOG ) 2>&1 &
+
+This file is read by the daemon for executor_started stability.
+The tee is transparent -- stdout still appears in the user's terminal.
+
+
+Daemon Changes (gpu.py)
+-------------------------
+New functions:
+  _count_executor_started()      -- count "process started" lines in log
+  _write_signal(name, logger)    -- write signal file + fishlog event
+  _wait_for_stable(logger)       -- dual poll loop (CL + EX parallel)
+
+Modified daemon_loop():
+  Phase 1: _wait_for_stable()           -- blocks until both OK
+  Phase 2: GPU handling + signal        -- gpu_handler_complete
+  Phase 3: live collectors
+  Phase 4: replay + auto_stop           -- replay_complete, then exit
+
+
+Design Decisions
+-----------------
+DD-003: Parallel dual stabilization
+  Both CL and EX run in the same loop rather than sequential threads.
+  Rationale: simpler, no thread synchronization, both are I/O-bound
+  (shell commands), and the loop naturally handles different intervals.
+
+DD-004: Signal files over IPC
+  Using /tmp/ files rather than pipes/sockets/signals for inter-process
+  communication. Rationale: survives process crashes, inspectable by
+  user (`cat /tmp/fish_system_stable`), trivial cleanup, no dependencies.
+
+DD-005: Replay in daemon, not wrapper
+  The daemon runs the replay command because it knows when GPU handler
+  is complete. The wrapper only manages the launch process lifecycle.
+  Replay output goes to fishlog/replay_output.log.

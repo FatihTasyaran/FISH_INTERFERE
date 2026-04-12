@@ -1,0 +1,217 @@
+Component Container Handling in FISH GPU Daemon
+=================================================
+
+Date: 2026-04-12 (updated)
+Implementation: python/fish/gpu.py
+
+
+Background
+----------
+ROS 2 composable node containers (component_container, component_container_mt)
+are single processes that host multiple nodes loaded as plugins at runtime.
+When FISH detects GPU activity in such a process and kills it for nsys
+relaunch, ALL hosted nodes die — breaking the entire pipeline they serve.
+
+Example (Autoware):
+  /sensing/lidar/top/pointcloud_preprocessor/pointcloud_container
+    1  /sensing/lidar/top/glog_component
+    2  /sensing/lidar/top/velodyne_ros_wrapper_node
+    3  /sensing/lidar/top/crop_box_filter_self
+    4  /sensing/lidar/top/crop_box_filter_mirror
+    5  /sensing/lidar/top/distortion_corrector_node
+    6  /sensing/lidar/top/ring_outlier_filter
+
+Killing the container kills all 6 nodes. Without reload, the perception
+pipeline is permanently broken for the rest of the trace session.
+
+
+Decision Flow
+-------------
+
+    GPU process detected (/proc/<pid>/maps has CUDA libs)
+    │
+    ├─ process_name ∈ {component_container, component_container_mt}?
+    │  (or cmdline contains /component_container)
+    │
+    │  YES → CONTAINER PATH
+    │  │
+    │  ├─ 1. Parse cmdline
+    │  │     Extract __node:= and __ns:= from --ros-args
+    │  │     → container_full = "<ns>/<name>"
+    │  │     e.g. "/sensing/lidar/top/pointcloud_preprocessor/pointcloud_container"
+    │  │
+    │  │     Parse fails? → fallback to STANDALONE PATH with warning
+    │  │
+    │  ├─ 2. Save component list
+    │  │     ros2 component list <container_full>
+    │  │     → [{uid, full_name, namespace, short_name}, ...]
+    │  │     Saved to: fishlog/container_<name>_components.txt
+    │  │
+    │  │     Empty? → proceed without reload step
+    │  │
+    │  ├─ 3. Build type mapping (BEFORE kill)
+    │  │     ros2 component types → all registered plugin types on system
+    │  │     Build normalized dict: {short_key: (package, fully::qualified::Class)}
+    │  │     Multiple normalizations per type for fuzzy matching
+    │  │
+    │  ├─ 4. Kill → nsys relaunch
+    │  │     SIGTERM → wait → SIGKILL if needed
+    │  │     2s DDS recovery wait
+    │  │     nsys profile <original_cmdline>
+    │  │
+    │  ├─ 5. Wait for container to register (max 30s)
+    │  │     Poll ros2 node list until container_full appears
+    │  │
+    │  │     Timeout? → log warning, skip reload, continue
+    │  │
+    │  └─ 6. Reload components
+    │        For each saved component:
+    │          short_name → normalize → match against type dict
+    │          → ros2 component load <container> <package> <plugin>
+    │              --node-name <short_name> --node-namespace <ns>
+    │        Log: OK/FAIL/SKIP per component
+    │
+    │  NO → STANDALONE PATH
+    │     Kill → nsys relaunch (existing behavior, no reload needed)
+
+
+Type Matching Algorithm
+-----------------------
+Problem: ros2 component list gives node NAMES (runtime), but
+ros2 component load needs PLUGIN CLASS (compile-time). No direct
+mapping API exists in ROS 2 Humble.
+
+Solution: heuristic matching via progressive normalization.
+
+Step 1 — Build type dict from ros2 component types:
+  Each plugin class → multiple normalized keys:
+    CropBoxFilterComponent → "cropboxfiltercomponent"
+                           → "cropboxfilter"        (strip "component")
+                           → "cropboxfiltercomponent" (no underscores)
+                           → "cropboxfilter"          (no underscores, stripped)
+
+Step 2 — Match node short_name against dict:
+  a) Direct:     "glog_component" → normalize → "glogcomponent" → match
+  b) Suffix strip: "crop_box_filter_self" → "cropboxfilterself"
+                   strip runtime suffix "self" → "cropboxfilter" → match
+  c) Substring:  if key⊂norm or norm⊂key (both ≥5 chars) → match
+
+Runtime suffixes (stripped in step b):
+  self, mirror, left, right, top, bottom, rear, front,
+  inner, outer, local, remote
+
+These are commonly added by launch files to distinguish multiple
+instances of the same plugin class.
+
+Verified matches (Autoware pointcloud_preprocessor container):
+  crop_box_filter_self     → CropBoxFilterComponent     ✓
+  crop_box_filter_mirror   → CropBoxFilterComponent     ✓
+  distortion_corrector_node → DistortionCorrectorComponent ✓
+  ring_outlier_filter      → RingOutlierFilterComponent  ✓
+  glog_component           → GlogComponent               ✓
+
+
+Known Limitations
+-----------------
+1. Parameters not restored
+   ros2 component load does not pass --params-file. Reloaded components
+   use default parameters. For GPU profiling this is usually acceptable
+   (inference pipeline structure is the same), but behavior may differ.
+
+   Future: ros2 param dump before kill → --params-file on reload.
+
+2. Remappings not restored
+   Topic remappings set by the launch file are lost. Reloaded components
+   use default topic names. DDS discovery still works but subscriptions
+   may not match if topics were remapped.
+
+   Future: parse launch log or intercept LoadNode service call.
+
+3. Type matching is heuristic
+   If a node name has no resemblance to its plugin class name, matching
+   fails. The component is logged as SKIP and the user can manually reload.
+
+   Failure rate: expected to be low for standard ROS 2 packages.
+   Autoware pointcloud_preprocessor: 5/5 matched.
+
+4. Only works for CUDA-detected containers
+   If a container has no CUDA libs in /proc/<pid>/maps, FISH skips it
+   entirely (CPU-only → LTTng sufficient). No kill, no reload.
+
+
+System Stabilization (2026-04-12)
+----------------------------------
+Problem discovered during Autoware testing:
+  - FISH daemon killed containers at t≈6s (batch settle 3s + scan)
+  - Components loaded by launch system at t≈25-30s
+  - Result: containers killed before components loaded → empty after nsys
+    relaunch → pipeline broken → no GPU activity → no pointcloud in RViz
+
+Solution: stabilization phase before any kill/nsys operations.
+
+  Daemon lifecycle (new):
+    1. Start → stabilization polling
+    2. Poll `ros2 component list` every stable_poll_interval (default 10s)
+    3. Normalize output (sort, filter DDS errors)
+    4. When stable_poll_count (default 3) consecutive identical polls
+       → emit "system_stable" signal to fishlog
+    5. THEN scan for GPU processes and handle (kill/nsys)
+    6. Start live collectors
+
+  fishlog events:
+    <ts> daemon - - fish_daemon stabilization_start interval=10.0 required=3
+    <ts> daemon - - fish_daemon system_stable polls=5 elapsed=50s containers=20 components=85
+
+  These timestamps allow post-processing to filter:
+    - Before system_stable → initialization noise, ignore
+    - After system_stable → steady-state, analyze
+
+  Settings (fish_settings.ini [daemon]):
+    stable_poll_interval = 10.0    # seconds between polls
+    stable_poll_count = 3          # consecutive identical polls required
+
+  Normalization (DDS jitter handling):
+    "No 'list_nodes' service response" lines are filtered out before
+    comparison. These appear intermittently even in healthy systems due
+    to DDS timing. Without filtering, they would reset the stability
+    counter on every poll.
+
+  Timing for Autoware (observed):
+    - Components start loading at t≈20s
+    - Fully loaded at t≈30s
+    - 3 polls × 10s = stable at t≈50-60s from launch
+    - Total overhead: ~30s beyond what was already needed for loading
+
+
+Batch Detection (also in this change)
+--------------------------------------
+Before: daemon detected one new PID per poll cycle, waited settle_time
+each time. 74 processes × 3s = 222s.
+
+After: collect ALL new PIDs in one pass, wait settle_time ONCE, then
+process all. O(N × settle_time) → O(settle_time).
+
+For Autoware: ~4 minutes → ~3 seconds.
+
+
+Files Modified
+--------------
+python/fish/gpu.py:
+  New constants: CONTAINER_EXECUTABLES
+  New functions:
+    _is_container()                    — detection
+    _parse_container_ros_name()        — cmdline → ROS name
+    _ros2_cmd_gpu()                    — ros2 CLI wrapper
+    _get_container_components()        — query component list
+    _get_available_component_types()   — query + normalize all types
+    _match_component_type()            — heuristic name→type matching
+    _wait_for_node()                   — poll ros2 node list
+    _reload_components()               — reload loop
+    _save_container_info()             — persist to fishlog
+    _handle_container_gpu_process()    — full container flow
+    _handle_standalone_gpu_process()   — extracted from old code
+    _get_component_list_snapshot()     — normalized component list for comparison
+    _wait_for_stable()                 — stabilization polling loop
+  Modified functions:
+    _handle_gpu_process()              — router: container vs standalone
+    daemon_loop()                      — batch detection

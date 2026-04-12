@@ -42,6 +42,14 @@ def load_settings() -> configparser.ConfigParser:
             "poll_interval": "1.0",
             "settle_time": "3.0",
             "nsys_report_timeout": "120",
+            "component_list_stability_interval": "10.0",
+            "component_list_stability_count": "3",
+            "executor_started_stability_interval": "10.0",
+            "executor_started_stability_count": "3",
+        },
+        "replay": {
+            "command": "",
+            "auto_stop": "true",
         },
         "trace": {
             "output_dir": "~/fish_traces",

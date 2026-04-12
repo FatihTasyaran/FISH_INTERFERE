@@ -66,6 +66,8 @@ SKIP_PATTERNS = [
     "tmux",
 ]
 
+CONTAINER_EXECUTABLES = {"component_container", "component_container_mt"}
+
 FISH_SESSION_DIR_FILE = "/tmp/fish_session_dir"
 FISH_SESSION_NAME_FILE = "/tmp/fish_session_name"
 FISH_DAEMON_PID_FILE = "/tmp/fish_daemon_pid"
@@ -345,6 +347,761 @@ def relaunch_with_nsys(
 
 
 # ---------------------------------------------------------------------------
+# Composable node container handling
+# ---------------------------------------------------------------------------
+
+def _is_container(process_name: str, cmdline: str) -> bool:
+    """Check if a process is a ROS 2 composable node container."""
+    if process_name in CONTAINER_EXECUTABLES:
+        return True
+    return any(f"/{exe}" in cmdline for exe in CONTAINER_EXECUTABLES)
+
+
+def _parse_container_ros_name(cmdline: str) -> tuple[str, str, str]:
+    """Extract (namespace, node_name, full_ros_name) from container cmdline.
+
+    Parses --ros-args -r __node:=<name> -r __ns:=<ns> patterns.
+    Returns ("", "", "") if node name cannot be found.
+    """
+    ns = ""
+    name = ""
+    parts = cmdline.split()
+    for part in parts:
+        if "__node:=" in part:
+            name = part.split("__node:=", 1)[1]
+        elif "__ns:=" in part:
+            ns = part.split("__ns:=", 1)[1]
+
+    if not name:
+        return "", "", ""
+
+    if ns:
+        full = f"{ns}/{name}" if not ns.endswith("/") else f"{ns}{name}"
+    else:
+        full = f"/{name}"
+
+    return ns, name, full
+
+
+def _ros2_cmd_gpu(cmd: str, timeout: float = 30.0) -> str:
+    """Run a ros2 CLI command using the real ros2 binary.
+
+    Returns combined stdout + stderr so that error messages from commands
+    like `ros2 component load` are visible to callers.
+    """
+    try:
+        result = subprocess.run(
+            "which -a ros2 | grep -v /fish/bin | head -1",
+            shell=True, text=True, capture_output=True,
+        )
+        real_ros2 = result.stdout.strip() or "/opt/ros/humble/bin/ros2"
+    except Exception:
+        real_ros2 = "/opt/ros/humble/bin/ros2"
+
+    full_cmd = cmd.replace("ros2 ", f"{real_ros2} ", 1)
+    try:
+        result = subprocess.run(
+            full_cmd, shell=True, text=True, capture_output=True, timeout=timeout,
+        )
+        combined = (result.stdout or "") + (result.stderr or "")
+        return combined.strip()
+    except (subprocess.TimeoutExpired, Exception) as e:
+        print(f"[FISH] WARNING: Command failed: {cmd} ({e})")
+        return ""
+
+
+def _get_container_components(container_ros_name: str) -> list[dict]:
+    """Query loaded components in a specific container.
+
+    Returns list of dicts: {uid, full_name, namespace, short_name}.
+
+    Handles two ros2 component list output formats:
+
+    Without container argument (lists all containers):
+        /container/name
+          1  /node1
+          2  /node2
+
+    With container argument (lists only that container's components):
+        1  /node1
+        2  /node2
+    """
+    output = _ros2_cmd_gpu(f"ros2 component list {container_ros_name}")
+    if not output:
+        return []
+    if "Unable to find container node" in output:
+        return []
+
+    def _parse_component_line(line: str) -> Optional[dict]:
+        stripped = line.strip()
+        if not stripped or not stripped[0].isdigit():
+            return None
+        parts = stripped.split(None, 1)
+        if len(parts) != 2:
+            return None
+        try:
+            uid = int(parts[0])
+        except ValueError:
+            return None
+        full_name = parts[1]
+        last_slash = full_name.rfind("/")
+        ns = full_name[:last_slash] if last_slash > 0 else ""
+        short_name = full_name[last_slash + 1:]
+        return {
+            "uid": uid,
+            "full_name": full_name,
+            "namespace": ns,
+            "short_name": short_name,
+        }
+
+    lines = output.splitlines()
+    # Detect if output has a container header (format 1) or not (format 2).
+    # Format 1: first non-empty line starts with `/` and is not indented.
+    has_header = False
+    for line in lines:
+        if not line.strip():
+            continue
+        if not line[0].isspace() and line.strip().startswith("/"):
+            has_header = True
+        break
+
+    components: list = []
+    if has_header:
+        # Format 1: find our container header and collect subsequent components
+        in_target = False
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if not line[0].isspace() and stripped.startswith("/"):
+                in_target = (stripped == container_ros_name)
+                continue
+            if in_target:
+                c = _parse_component_line(line)
+                if c:
+                    components.append(c)
+    else:
+        # Format 2: every line is a component of the target container
+        for line in lines:
+            c = _parse_component_line(line)
+            if c:
+                components.append(c)
+    return components
+
+
+def _get_available_component_types() -> dict[str, tuple[str, str]]:
+    """Get all registered component types via ros2 component types.
+
+    Returns {normalized_key: (package, full_plugin_name)}.
+    Multiple normalizations stored per type for fuzzy matching.
+    """
+    output = _ros2_cmd_gpu("ros2 component types", timeout=15.0)
+    if not output:
+        return {}
+
+    types: dict[str, tuple[str, str]] = {}
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Find the token containing :: (the fully-qualified plugin name)
+        plugin = None
+        for token in reversed(line.split()):
+            if "::" in token:
+                plugin = token
+                break
+        if not plugin:
+            continue
+
+        package = plugin.split("::")[0]
+        class_name = plugin.split("::")[-1]
+
+        # Store under multiple normalized keys
+        norm = class_name.lower()
+        types[norm] = (package, plugin)
+        no_us = norm.replace("_", "")
+        types[no_us] = (package, plugin)
+        for suffix in ("component", "node", "plugin", "wrapper"):
+            if norm.endswith(suffix):
+                types[norm[: -len(suffix)]] = (package, plugin)
+            if no_us.endswith(suffix):
+                types[no_us[: -len(suffix)]] = (package, plugin)
+
+    return types
+
+
+def _match_component_type(
+    short_name: str, available_types: dict[str, tuple[str, str]],
+) -> Optional[tuple[str, str]]:
+    """Match a component node's short name to (package, plugin).
+
+    Progressive: exact → suffix-stripped → substring.
+    """
+    norm = short_name.lower().replace("_", "")
+
+    if norm in available_types:
+        return available_types[norm]
+
+    # Strip common runtime suffixes added by launch files
+    for suffix in ("self", "mirror", "left", "right", "top", "bottom",
+                    "rear", "front", "inner", "outer", "local", "remote"):
+        if norm.endswith(suffix):
+            base = norm[: -len(suffix)]
+            if base in available_types:
+                return available_types[base]
+
+    # Substring: node name contained in type key or vice versa
+    for key, value in available_types.items():
+        if len(key) >= 5 and len(norm) >= 5:
+            if key in norm or norm in key:
+                return value
+
+    return None
+
+
+def _wait_for_node(node_name: str, timeout: float = 30.0) -> bool:
+    """Wait for a ROS 2 node to appear in ros2 node list."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        output = _ros2_cmd_gpu("ros2 node list", timeout=5.0)
+        if output and node_name in output:
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def _reload_components(
+    container_ros_name: str,
+    components: list[dict],
+    available_types: dict[str, tuple[str, str]],
+    logger: FishLogger,
+) -> int:
+    """Reload components into a relaunched container.
+
+    Returns count of successfully loaded components.
+    """
+    loaded = 0
+    for comp in components:
+        full_name = comp["full_name"]
+        short_name = comp["short_name"]
+        ns = comp["namespace"]
+
+        type_info = _match_component_type(short_name, available_types)
+        if not type_info:
+            print(f"[FISH]     SKIP {full_name}: no type match")
+            logger.log_daemon(f"component_type_not_found node={full_name}")
+            continue
+
+        package, plugin = type_info
+        cmd = f"ros2 component load {container_ros_name} {package} {plugin}"
+        cmd += f" --node-name {short_name}"
+        if ns:
+            cmd += f" --node-namespace {ns}"
+
+        result = _ros2_cmd_gpu(cmd, timeout=15.0)
+        if result and "loaded" in result.lower():
+            print(f"[FISH]     OK {full_name} ({plugin})")
+            logger.log_daemon(f"component_loaded node={full_name} type={plugin}")
+            loaded += 1
+        else:
+            print(f"[FISH]     FAIL {full_name}: {result}")
+            logger.log_daemon(
+                f"component_load_failed node={full_name} type={plugin}"
+            )
+
+    return loaded
+
+
+def _load_launch_components() -> dict:
+    """Load launch_components.json from the current session dir.
+
+    Returns a dict {container_full_name: [component_spec, ...]} or
+    an empty dict on any error (missing file, parse error, etc.).
+    """
+    try:
+        path = os.path.join(get_session_dir(), "launch_components.json")
+        with open(path, "r") as f:
+            import json as _json
+            return _json.load(f)
+    except (FileNotFoundError, ValueError, OSError):
+        return {}
+
+
+def _lookup_container_specs(
+    container_full: str, launch_components: dict,
+) -> list:
+    """Look up specs for a container with fuzzy fallback.
+
+    The static launch inspector can't always resolve the full runtime
+    namespace of a container (e.g., PushRosNamespace inside GroupAction
+    is hard to track statically). So the JSON may have the container
+    under its short name instead of its full namespaced path.
+
+    Strategy:
+      1. Exact match on the full container name.
+      2. Short-name match: combine specs from ALL JSON keys whose last
+         path segment equals the container's short name.
+
+    When multiple JSON keys match (e.g., two includes of the same launch
+    file for camera6 and camera7 both target "traffic_light_node_container"),
+    the returned list contains specs from all of them.  Downstream
+    per-component matching (by live short name) will filter down to the
+    relevant ones for a specific container.
+    """
+    # Exact match
+    if container_full in launch_components:
+        return launch_components[container_full]
+
+    # Short-name match: combine all matching entries
+    short = container_full.rstrip("/").split("/")[-1]
+    combined: list = []
+    for key, specs in launch_components.items():
+        if key.rstrip("/").split("/")[-1] == short:
+            combined.extend(specs)
+    return combined
+
+
+def _match_live_to_spec(live_full_name: str, specs: list) -> Optional[dict]:
+    """Match a live component (full ROS name) to its launch spec by short name."""
+    if not specs:
+        return None
+    live_short = live_full_name.rstrip("/").split("/")[-1]
+    # Filter specs whose "name" field equals the live short name
+    candidates = [s for s in specs if s.get("name") == live_short]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    # Multiple specs share the same short name (e.g., conditional duplicates
+    # like multiple "pointcloud_downsample_node" aliases for different plugins).
+    # We can't disambiguate without more info; pick the first one.
+    return candidates[0]
+
+
+def _load_yaml_params_for_node(yaml_path: str, node_name: str) -> dict:
+    """Extract a node's parameters from a ROS 2 YAML params file.
+
+    ROS 2 parameter YAML structure:
+        /**:
+          ros__parameters:
+            key1: val1
+        /some_node:
+          ros__parameters:
+            key2: val2
+
+    Returns a flat dict {key: value} with all parameters that apply
+    to *node_name*. Entries from `/**` always apply, and the node's
+    specific section overrides them.
+
+    Nested dicts are flattened with dot notation.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return {}
+    try:
+        with open(yaml_path, "r") as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    def _flatten(d: dict, prefix: str = "") -> dict:
+        out = {}
+        for k, v in d.items():
+            key = f"{prefix}.{k}" if prefix else str(k)
+            if isinstance(v, dict):
+                out.update(_flatten(v, key))
+            else:
+                out[key] = v
+        return out
+
+    params: dict = {}
+
+    # Sections that apply: "/**" (wildcard) and the specific node name
+    for section_key, section_val in data.items():
+        if not isinstance(section_val, dict):
+            continue
+        applies = False
+        if section_key == "/**":
+            applies = True
+        elif section_key.lstrip("/") == node_name.lstrip("/"):
+            applies = True
+        # Also handle namespaced keys like "/ns/node"
+        elif section_key.endswith("/" + node_name.lstrip("/")):
+            applies = True
+        if not applies:
+            continue
+        ros_params = section_val.get("ros__parameters", {})
+        if isinstance(ros_params, dict):
+            params.update(_flatten(ros_params))
+    return params
+
+
+def _format_param_value(v) -> str:
+    """Format a Python value for use in `-p name:=value`.
+
+    ROS 2 component load parses the value string using YAML rules, so
+    strings that look like numbers/bools need quoting.
+    """
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, (list, tuple)):
+        import json as _json
+        return _json.dumps(list(v))
+    if isinstance(v, str):
+        return v
+    return str(v)
+
+
+def _build_load_command(
+    container_full: str, spec: dict, live_component: Optional[dict] = None,
+) -> list[str]:
+    """Build a `ros2 component load` argv from a spec.
+
+    When *live_component* is given, prefer its runtime short_name and
+    namespace over whatever the spec has — the live values reflect the
+    true namespace context that static inspection can't always resolve.
+
+    Parameters from YAML files are expanded into individual -p args
+    because `ros2 component load` does not support --params-file.
+    """
+    cmd = [
+        "ros2", "component", "load",
+        container_full, spec["package"], spec["plugin"],
+    ]
+
+    if live_component is not None:
+        name = live_component.get("short_name") or spec.get("name")
+        ns = live_component.get("namespace") or spec.get("namespace")
+    else:
+        name = spec.get("name")
+        ns = spec.get("namespace")
+
+    if name:
+        cmd += ["--node-name", str(name)]
+    if ns and ns != "/":
+        cmd += ["--node-namespace", str(ns)]
+
+    # Parameters: expand YAML files, pass inline dicts directly
+    for p in spec.get("parameters") or []:
+        if isinstance(p, str) and p.endswith((".yaml", ".yml")):
+            # Expand the YAML file's params for this node
+            node_short = str(name) if name else ""
+            flat = _load_yaml_params_for_node(p, node_short)
+            for k, v in flat.items():
+                cmd += ["--parameter", f"{k}:={_format_param_value(v)}"]
+        elif isinstance(p, dict):
+            for k, v in p.items():
+                cmd += ["--parameter", f"{k}:={_format_param_value(v)}"]
+    # Remappings
+    for r in spec.get("remappings") or []:
+        if isinstance(r, list) and len(r) == 2:
+            cmd += ["--remap-rule", f"{r[0]}:={r[1]}"]
+    return cmd
+
+
+def _reload_from_matched_pairs(
+    container_full: str,
+    matched_pairs: list,
+    logger: FishLogger,
+    timeout: float = 180.0,
+) -> int:
+    """Reload components using (live, spec) pairs IN PARALLEL.
+
+    Each pair supplies:
+      - live: the runtime node name and namespace (from the pre-kill live list)
+      - spec: the package/plugin/parameters/remappings (from launch file)
+
+    All load commands are spawned simultaneously with subprocess.Popen.
+    We then wait for all of them up to *timeout* seconds. This means the
+    total reload time is bounded by the slowest component (e.g., a TRT
+    engine compile ~60-120s), not by their sum.
+
+    Uses subprocess with list argv (no shell) so values containing spaces,
+    brackets, or special characters are passed through unchanged.
+    """
+    if not matched_pairs:
+        return 0
+
+    # Find the real ros2 binary
+    try:
+        which = subprocess.run(
+            "which -a ros2 | grep -v /fish/bin | head -1",
+            shell=True, text=True, capture_output=True,
+        )
+        real_ros2 = which.stdout.strip() or "/opt/ros/humble/bin/ros2"
+    except Exception:
+        real_ros2 = "/opt/ros/humble/bin/ros2"
+
+    # Spawn all loads in parallel
+    procs: list = []
+    for live, spec in matched_pairs:
+        cmd_list = _build_load_command(container_full, spec, live_component=live)
+        if cmd_list and cmd_list[0] == "ros2":
+            cmd_list = [real_ros2] + cmd_list[1:]
+
+        name = live.get("full_name") or spec.get("name") or "?"
+        plugin = spec.get("plugin") or "?"
+
+        try:
+            p = subprocess.Popen(
+                cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+            )
+            procs.append({
+                "popen": p, "name": name, "plugin": plugin,
+                "cmd": cmd_list,
+            })
+        except Exception as e:
+            print(f"[FISH]     FAIL {name}: spawn error: {e}")
+            logger.log_daemon(
+                f"component_load_spawn_failed container={container_full} "
+                f"name={name} err={e}"
+            )
+
+    print(f"[FISH]   {len(procs)} load commands spawned in parallel, "
+          f"waiting up to {timeout}s...")
+
+    # Wait for all with a shared deadline
+    deadline = time.time() + timeout
+    loaded = 0
+    for entry in procs:
+        p = entry["popen"]
+        name = entry["name"]
+        plugin = entry["plugin"]
+        remaining = max(0.0, deadline - time.time())
+        try:
+            stdout, stderr = p.communicate(timeout=remaining)
+            success = p.returncode == 0 and "loaded" in ((stdout or "") + (stderr or "")).lower()
+        except subprocess.TimeoutExpired:
+            p.kill()
+            try:
+                p.communicate(timeout=5)
+            except Exception:
+                pass
+            stdout, stderr = "", f"timed out after {timeout}s"
+            success = False
+        except Exception as e:
+            stdout, stderr = "", f"{type(e).__name__}: {e}"
+            success = False
+
+        if success:
+            print(f"[FISH]     OK {name} ({plugin})")
+            logger.log_daemon(
+                f"component_loaded_from_spec container={container_full} "
+                f"name={name} plugin={plugin}"
+            )
+            loaded += 1
+        else:
+            err = (stderr or stdout or "empty response").strip()
+            err_short = err.splitlines()[0][:200] if err else "no output"
+            print(f"[FISH]     FAIL {name}: {err_short}")
+            logger.log_daemon(
+                f"component_load_from_spec_failed container={container_full} "
+                f"name={name} plugin={plugin} err={err_short[:100]}"
+            )
+    return loaded
+
+
+def _save_container_info(
+    name: str, container_full: str, pid: int, cmdline: str,
+    components: list[dict],
+) -> str:
+    """Save container component list to session fishlog dir."""
+    session_dir = get_session_dir()
+    save_path = os.path.join(
+        session_dir, "fishlog",
+        f"container_{name}_components.txt",
+    )
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    with open(save_path, "w") as f:
+        f.write(f"# Container: {container_full}\n")
+        f.write(f"# PID: {pid}\n")
+        f.write(f"# Cmdline: {cmdline}\n")
+        f.write(f"# Saved at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        for c in components:
+            f.write(f"{c['uid']}  {c['full_name']}\n")
+    return save_path
+
+
+# ---------------------------------------------------------------------------
+# System stabilization
+# ---------------------------------------------------------------------------
+
+def _get_component_list_snapshot() -> Optional[str]:
+    """Get a normalized component list snapshot for stability comparison.
+
+    Filters out transient DDS errors ("No 'list_nodes' service ...") so
+    they don't reset the stability counter.  Returns sorted, joined lines.
+    """
+    output = _ros2_cmd_gpu("ros2 component list", timeout=15.0)
+    if not output:
+        return None
+    lines = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Skip DDS timing errors — they appear intermittently
+        if "No " in stripped and "service" in stripped:
+            continue
+        lines.append(stripped)
+    lines.sort()
+    return "\n".join(lines)
+
+
+FISH_LAUNCH_OUTPUT = "/tmp/fish_launch_output.log"
+FISH_SIGNAL_DIR = "/tmp"
+
+
+def _count_executor_started() -> Optional[int]:
+    """Count 'process started with pid' lines in launch stdout log."""
+    try:
+        with open(FISH_LAUNCH_OUTPUT, "r") as f:
+            return sum(
+                1 for line in f if "process started with pid" in line
+            )
+    except FileNotFoundError:
+        return None
+
+
+def _write_signal(name: str, logger: FishLogger) -> None:
+    """Write a signal file and log to fishlog."""
+    path = os.path.join(FISH_SIGNAL_DIR, f"fish_{name}")
+    ts = int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1_000_000_000)
+    Path(path).write_text(f"{ts}\n")
+    logger.log_daemon(name)
+
+
+def _wait_for_stable(logger: FishLogger) -> None:
+    """Block until BOTH component list AND executor started are stable.
+
+    Two independent stability checks run in parallel within the same
+    loop.  Each has its own interval and required count (from settings).
+    The function returns only when both checks have passed.
+    """
+    cl_interval = settings.getfloat("daemon", "component_list_stability_interval")
+    cl_required = settings.getint("daemon", "component_list_stability_count")
+    ex_interval = settings.getfloat("daemon", "executor_started_stability_interval")
+    ex_required = settings.getint("daemon", "executor_started_stability_count")
+
+    logger.log_daemon(
+        f"stabilization_start "
+        f"cl_interval={cl_interval} cl_count={cl_required} "
+        f"ex_interval={ex_interval} ex_count={ex_required}"
+    )
+    print(
+        f"[FISH] Stabilization: dual polling\n"
+        f"[FISH]   component_list: every {cl_interval}s, "
+        f"{cl_required} identical → OK\n"
+        f"[FISH]   executor_started: every {ex_interval}s, "
+        f"{ex_required} identical → OK"
+    )
+
+    # Component list state
+    cl_prev: Optional[str] = None
+    cl_count = 0
+    cl_ok = False
+    cl_next = time.monotonic() + cl_interval
+
+    # Executor started state
+    ex_prev: Optional[int] = None
+    ex_count = 0
+    ex_ok = False
+    ex_next = time.monotonic() + ex_interval
+
+    tick = 0
+
+    while not (cl_ok and ex_ok):
+        if not is_trace_session_active():
+            time.sleep(1)
+            continue
+
+        now = time.monotonic()
+
+        # ── Component list check ──
+        if not cl_ok and now >= cl_next:
+            cl_next = now + cl_interval
+            snapshot = _get_component_list_snapshot()
+            tick += 1
+
+            if snapshot is None:
+                cl_prev = None
+                cl_count = 0
+                print(f"[FISH]   CL poll #{tick}: no response")
+            else:
+                n_cont = sum(1 for ln in snapshot.splitlines()
+                             if ln.startswith("/"))
+                n_comp = sum(1 for ln in snapshot.splitlines()
+                             if not ln.startswith("/"))
+                if snapshot == cl_prev:
+                    cl_count += 1
+                else:
+                    cl_count = 1
+                    cl_prev = snapshot
+
+                if cl_count >= cl_required:
+                    cl_ok = True
+                    logger.log_daemon(
+                        f"component_list_stable "
+                        f"containers={n_cont} components={n_comp}"
+                    )
+                    print(
+                        f"[FISH]   CL poll #{tick}: "
+                        f"{n_cont} containers, {n_comp} components "
+                        f"→ OK ({cl_count}/{cl_required})"
+                    )
+                else:
+                    label = "stable" if snapshot == cl_prev else "changed"
+                    print(
+                        f"[FISH]   CL poll #{tick}: "
+                        f"{n_cont} containers, {n_comp} components "
+                        f"({label} {cl_count}/{cl_required})"
+                    )
+
+        # ── Executor started check ──
+        if not ex_ok and now >= ex_next:
+            ex_next = now + ex_interval
+            proc_count = _count_executor_started()
+
+            if proc_count is None:
+                ex_prev = None
+                ex_count = 0
+                print(f"[FISH]   EX: launch log not found yet")
+            else:
+                if proc_count == ex_prev:
+                    ex_count += 1
+                else:
+                    ex_count = 1
+                    ex_prev = proc_count
+
+                if ex_count >= ex_required:
+                    ex_ok = True
+                    logger.log_daemon(
+                        f"executor_started_stable count={proc_count}"
+                    )
+                    print(
+                        f"[FISH]   EX: {proc_count} processes "
+                        f"→ OK ({ex_count}/{ex_required})"
+                    )
+                else:
+                    label = "stable" if proc_count == ex_prev else "changed"
+                    print(
+                        f"[FISH]   EX: {proc_count} processes "
+                        f"({label} {ex_count}/{ex_required})"
+                    )
+
+        time.sleep(min(cl_interval, ex_interval, 1.0))
+
+    _write_signal("system_stable", logger)
+    print(f"[FISH] System stable (both checks passed)")
+
+
+# ---------------------------------------------------------------------------
 # Daemon
 # ---------------------------------------------------------------------------
 
@@ -376,19 +1133,71 @@ def register_nsys_process_tree(nsys_proc: subprocess.Popen,
             print(f"[FISH] Registered post-relaunch GPU process: PID={proc.pid} {proc.process_name}")
 
 
+def _scan_session_nsys_pids() -> list[int]:
+    """Find all nsys profile PIDs whose --output path is in our session dir.
+
+    These are the launch_wrap-spawned nsys processes (children of the
+    launch system, not of the daemon). The daemon must signal them with
+    SIGINT at shutdown so they get a chance to write their .nsys-rep
+    files. If we let them be SIGTERM'd by the launch system tear-down,
+    nsys dies without saving anything.
+    """
+    session_dir = get_session_dir()
+    found: list = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            with open(f"/proc/{pid}/comm", "r") as f:
+                comm = f.read().strip()
+            if comm != "nsys":
+                continue
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="replace"
+                )
+            if session_dir in cmdline and "--output=" in cmdline:
+                found.append(pid)
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+    return found
+
+
 def graceful_stop_nsys(nsys_children: list[subprocess.Popen],
                         logger: Optional[FishLogger] = None) -> None:
     timeout = settings.getint("daemon", "nsys_report_timeout")
-    active = [c for c in nsys_children if c.poll() is None]
-    if not active:
+
+    # 1. Daemon-spawned children (standalone GPU node nsys instances)
+    daemon_active = [c for c in nsys_children if c.poll() is None]
+
+    # 2. launch_wrap-spawned nsys processes (containers wrapped at launch
+    #    time). These are NOT in nsys_children because they were spawned
+    #    by the launch system, not the daemon. We find them by scanning
+    #    /proc for nsys binaries whose --output path is in our session dir.
+    daemon_pids = {c.pid for c in daemon_active}
+    foreign_pids = [p for p in _scan_session_nsys_pids() if p not in daemon_pids]
+
+    if not daemon_active and not foreign_pids:
         return
-    for child in active:
-        print(f"[FISH] Sending SIGINT to nsys PID {child.pid} (triggering report generation)")
+
+    # Send SIGINT to all of them (this triggers nsys's clean shutdown
+    # which writes the .nsys-rep / .sqlite reports).
+    for child in daemon_active:
+        print(f"[FISH] Sending SIGINT to nsys PID {child.pid} (daemon child)")
         try:
             os.kill(child.pid, signal.SIGINT)
         except (ProcessLookupError, PermissionError):
             pass
-    for child in active:
+    for pid in foreign_pids:
+        print(f"[FISH] Sending SIGINT to nsys PID {pid} (launch-wrap)")
+        try:
+            os.kill(pid, signal.SIGINT)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    # Wait for all to finish writing
+    for child in daemon_active:
         try:
             child.wait(timeout=timeout)
             print(f"[FISH] nsys PID {child.pid} finished (report written)")
@@ -399,10 +1208,169 @@ def graceful_stop_nsys(nsys_children: list[subprocess.Popen],
             child.kill()
             child.wait()
 
+    # Wait for foreign nsys PIDs (poll /proc since we can't .wait() on
+    # processes we don't own).
+    deadline = time.time() + timeout
+    pending = list(foreign_pids)
+    while pending and time.time() < deadline:
+        still = []
+        for pid in pending:
+            if os.path.exists(f"/proc/{pid}"):
+                still.append(pid)
+            else:
+                print(f"[FISH] nsys PID {pid} finished (launch-wrap report written)")
+                if logger:
+                    logger.log_daemon(f"nsys_report_complete pid={pid} source=launch_wrap")
+        pending = still
+        if pending:
+            time.sleep(1)
+    for pid in pending:
+        print(f"[FISH] nsys PID {pid} timed out, force killing")
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
 
-def _handle_gpu_process(proc_info: dict, known_pids: set[int],
-                         nsys_children: list[subprocess.Popen],
-                         logger: FishLogger, settle_time: float) -> None:
+
+def _handle_container_gpu_process(
+    proc_info: dict, known_pids: set[int],
+    nsys_children: list[subprocess.Popen],
+    logger: FishLogger, settle_time: float,
+) -> None:
+    """Handle a composable node container that uses GPU.
+
+    Flow: save components → kill → nsys relaunch → wait → reload components.
+    """
+    pid = proc_info["pid"]
+    cmdline = proc_info["cmdline"]
+    process_name = proc_info["process_name"]
+
+    ns, name, container_full = _parse_container_ros_name(cmdline)
+    if not container_full:
+        print(f"[FISH] WARNING: Cannot parse container name, direct relaunch")
+        _handle_standalone_gpu_process(
+            proc_info, known_pids, nsys_children, logger, settle_time,
+        )
+        return
+
+    print(f"[FISH] ── Container: {container_full} (PID {pid}) ──")
+    logger.log_daemon(f"container_detected name={container_full} pid={pid}")
+
+    # 1. BEFORE killing: query the live component list for this container.
+    #    These are the exact components we need to reload after relaunch.
+    live_components = _get_container_components(container_full)
+    print(f"[FISH]   Live components ({len(live_components)}):")
+    for c in live_components:
+        print(f"[FISH]     {c['uid']:>2}  {c['full_name']}")
+    logger.log_daemon(
+        f"container_live_components name={container_full} "
+        f"count={len(live_components)}"
+    )
+
+    # 2. Look up the container's specs in launch_components.json.
+    #    Uses fuzzy (short-name) fallback because the static inspector
+    #    can't always resolve the full runtime namespace of a container.
+    launch_components = _load_launch_components()
+    all_specs = _lookup_container_specs(container_full, launch_components)
+
+    # 3. For each live component, find its spec by matching short names.
+    #    (Spec namespace is often None/unresolved from static inspection,
+    #    so we can't compare full paths — we compare the last segment only.)
+    matched_pairs: list = []   # list of (live_component, spec) tuples
+    unmatched_live: list = []
+    for live in live_components:
+        spec = _match_live_to_spec(live["full_name"], all_specs)
+        if spec is not None:
+            matched_pairs.append((live, spec))
+        else:
+            unmatched_live.append(live["full_name"])
+
+    if unmatched_live:
+        print(f"[FISH]   WARNING: {len(unmatched_live)} live components not in "
+              f"launch spec: {unmatched_live[:5]}"
+              + (" ..." if len(unmatched_live) > 5 else ""))
+        logger.log_daemon(
+            f"container_spec_unmatched name={container_full} "
+            f"count={len(unmatched_live)}"
+        )
+
+    print(f"[FISH]   Will reload {len(matched_pairs)} components "
+          f"(live={len(live_components)}, spec_pool={len(all_specs)})")
+    logger.log_daemon(
+        f"container_reload_plan name={container_full} "
+        f"reload_count={len(matched_pairs)} "
+        f"live_count={len(live_components)} "
+        f"spec_pool={len(all_specs)}"
+    )
+
+    # 3. Kill → nsys relaunch
+    print(f"[FISH]   Killing PID {pid}...")
+    logger.log_kill(pid, process_name, cmdline)
+    if not kill_process(pid):
+        print("[FISH]   ERROR: Failed to kill container")
+        return
+
+    print("[FISH]   Waiting for DDS recovery...")
+    time.sleep(2)
+
+    nsys_cmd = build_nsys_command(cmdline)
+    print(f"[FISH]   Relaunching with nsys...")
+    try:
+        nsys_proc = subprocess.Popen(nsys_cmd)
+        print(f"[FISH]   nsys PID: {nsys_proc.pid}")
+        logger.log_resurrect(pid, nsys_proc.pid, process_name, cmdline)
+        nsys_children.append(nsys_proc)
+    except Exception as e:
+        print(f"[FISH]   ERROR: nsys launch failed: {e}")
+        return
+
+    # 4. Wait for container to register
+    print(f"[FISH]   Waiting for container to register...")
+    if not _wait_for_node(container_full, timeout=30.0):
+        print(f"[FISH]   WARNING: Container did not register within 30s")
+        logger.log_daemon(f"container_timeout name={container_full}")
+        register_nsys_process_tree(nsys_proc, known_pids, settle_time)
+        return
+
+    # 5. Wait for the LAUNCH SYSTEM to reload components into the new container.
+    #    The launch system's LoadComposableNodes actions retry automatically
+    #    when the target container reappears. We just wait for the component
+    #    count to stabilize at the expected value (what we captured pre-kill).
+    expected = len(live_components)
+    if expected > 0:
+        print(f"[FISH]   Waiting for launch system to reload {expected} components...")
+        reload_deadline = time.time() + 60.0
+        last_count = -1
+        stable_ticks = 0
+        while time.time() < reload_deadline:
+            current = _get_container_components(container_full)
+            n = len(current)
+            if n == last_count and n > 0:
+                stable_ticks += 1
+                if stable_ticks >= 3 or n >= expected:
+                    break
+            else:
+                stable_ticks = 0
+                last_count = n
+            time.sleep(2.0)
+        final = _get_container_components(container_full)
+        print(f"[FISH]   Post-reload: {len(final)} / {expected} components")
+        logger.log_daemon(
+            f"container_post_reload name={container_full} "
+            f"final={len(final)} expected={expected}"
+        )
+
+    # 6. Register nsys tree
+    register_nsys_process_tree(nsys_proc, known_pids, settle_time)
+    print(f"[FISH] ── Container {container_full} done ──")
+
+
+def _handle_standalone_gpu_process(
+    proc_info: dict, known_pids: set[int],
+    nsys_children: list[subprocess.Popen],
+    logger: FishLogger, settle_time: float,
+) -> None:
+    """Handle a standalone (non-container) GPU process."""
     pid = proc_info["pid"]
     print(f"[FISH] PID {pid} has CUDA ({', '.join(proc_info['cuda_libs'])}) → nsys relaunch")
     gpu_proc = GpuProcess(
@@ -415,16 +1383,47 @@ def _handle_gpu_process(proc_info: dict, known_pids: set[int],
         register_nsys_process_tree(nsys_proc, known_pids, settle_time)
 
 
+def _handle_gpu_process(proc_info: dict, known_pids: set[int],
+                         nsys_children: list[subprocess.Popen],
+                         logger: FishLogger, settle_time: float) -> None:
+    """Route GPU process to the right handler.
+
+    Composable node containers are profiled by wrapping them in nsys
+    at launch time via `fish.launch_wrap` — they come up already
+    instrumented, so the daemon should NOT kill/relaunch them here.
+    Only standalone GPU processes go through the runtime kill+nsys
+    path.
+    """
+    if _is_container(proc_info["process_name"], proc_info["cmdline"]):
+        pid = proc_info["pid"]
+        cmdline = proc_info["cmdline"]
+        already_wrapped = "nsys" in cmdline.split()[:2] if cmdline else False
+        status = "already nsys-wrapped" if already_wrapped else "unwrapped"
+        print(
+            f"[FISH] GPU container PID={pid} — skipped by daemon "
+            f"({status}, handled by launch_wrap)"
+        )
+        logger.log_daemon(
+            f"container_daemon_skip pid={pid} "
+            f"wrapped={already_wrapped}"
+        )
+        return
+
+    _handle_standalone_gpu_process(
+        proc_info, known_pids, nsys_children, logger, settle_time,
+    )
+
+
 def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
     """
     FISH daemon main loop.
 
     Lifecycle:
-      1. Scan pre-existing nodes → handle GPU (nsys) / skip CPU
-      2. Poll for new nodes → same logic
-      3. After first complete scan → start live collectors
-         (node info, topic info, topic hz in background)
-      4. On shutdown → stop collectors → save data → stop nsys
+      1. Wait for system stabilization (component list polling)
+      2. Scan nodes → handle GPU (nsys) / skip CPU
+      3. Start live collectors
+      4. Poll for new nodes → same logic
+      5. On shutdown → stop collectors → save data → stop nsys
     """
     if poll_interval is None:
         poll_interval = settings.getfloat("daemon", "poll_interval")
@@ -440,25 +1439,79 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
     collector: Optional[LiveCollector] = None
     collector_started = False
 
-    # Handle pre-existing nodes
+    # Phase 1: Wait for system to stabilize
+    # Component list is polled until N consecutive identical results.
+    # This ensures all composable node containers have their components
+    # loaded before we attempt any kill/nsys operations.
+    _wait_for_stable(logger)
+
+    # Phase 2: Handle GPU processes (system is now stable)
     initial_nodes = scan_ros2_processes_with_cuda_check()
+    gpu_count = 0
     for proc_info in initial_nodes:
         pid = proc_info["pid"]
         known_pids.add(pid)
         if proc_info["cuda_libs"]:
-            print(f"[FISH] Pre-existing GPU node: PID={pid} {proc_info['process_name']}")
+            gpu_count += 1
+            print(f"[FISH] GPU node: PID={pid} {proc_info['process_name']}")
             logger.log_detect(pid, proc_info["process_name"], proc_info["cmdline"])
             _handle_gpu_process(proc_info, known_pids, nsys_children, logger, settle_time)
         else:
-            print(f"[FISH] Pre-existing CPU node: PID={pid} {proc_info['process_name']} (LTTng only)")
+            print(f"[FISH] CPU node: PID={pid} {proc_info['process_name']} (LTTng only)")
 
-    # Start live collectors after pre-existing nodes are handled
-    # (GPU relaunch is done, system is in steady state)
+    _write_signal("gpu_handler_complete", logger)
+    print(f"[FISH] GPU handler complete ({gpu_count} GPU, "
+          f"{len(initial_nodes) - gpu_count} CPU)")
+
+    # Phase 3: Start live collectors (system is stable, GPU relaunch done)
     if initial_nodes:
         collector = LiveCollector()
         collector.start()
         collector_started = True
         logger.log_daemon("live_collectors_started")
+
+    # Phase 4: Replay (optional — configured in fish_settings.ini [replay])
+    replay_cmd = settings.get("replay", "command").strip()
+    if replay_cmd:
+        print(f"[FISH] Starting replay: {replay_cmd}")
+        logger.log_daemon(f"replay_start cmd={replay_cmd}")
+        session_dir = get_session_dir()
+        replay_log = os.path.join(session_dir, "fishlog", "replay_output.log")
+        try:
+            with open(replay_log, "w") as rlog:
+                replay_proc = subprocess.run(
+                    replay_cmd, shell=True, stdout=rlog, stderr=rlog,
+                )
+            _write_signal("replay_complete", logger)
+            print(f"[FISH] Replay finished (exit={replay_proc.returncode})")
+            logger.log_daemon(
+                f"replay_complete exit={replay_proc.returncode}"
+            )
+        except Exception as e:
+            print(f"[FISH] Replay error: {e}")
+            logger.log_daemon(f"replay_error {e}")
+
+        # Auto-stop after replay
+        if settings.getboolean("replay", "auto_stop"):
+            print("[FISH] Auto-stopping trace session...")
+            logger.log_daemon("auto_stop")
+            # Stop collectors before exit
+            if collector and collector_started:
+                collector.stop()
+                logger.log_daemon("live_collectors_stopped")
+                collector_started = False
+            graceful_stop_nsys(nsys_children, logger)
+            # Trigger trace session stop via script
+            subprocess.run(
+                ["/opt/ros/humble/fish/scripts/trace_session.sh", "stop"],
+                capture_output=True,
+            )
+            logger.log_daemon("stopped")
+            try:
+                os.remove(FISH_DAEMON_PID_FILE)
+            except FileNotFoundError:
+                pass
+            sys.exit(0)
 
     def shutdown(signum, frame):
         logger.log_daemon("stopping")
@@ -494,46 +1547,48 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
         nsys_children = [c for c in nsys_children if c.poll() is None]
 
         current_nodes = scan_ros2_processes_with_cuda_check()
-        new_node_found = False
 
-        for proc_info in current_nodes:
-            pid = proc_info["pid"]
-            if pid in known_pids:
-                continue
+        # Batch detection: collect ALL new PIDs in one pass
+        new_procs = [p for p in current_nodes if p["pid"] not in known_pids]
+        for p in current_nodes:
+            known_pids.add(p["pid"])
 
-            new_node_found = True
-            logger.log_detect(pid, proc_info["process_name"], proc_info["cmdline"])
-            print(f"[FISH] New ROS 2 node detected: PID={pid} {proc_info['process_name']}")
-            print(f"[FISH] Waiting {settle_time}s for initialization...")
-            known_pids.add(pid)
+        if new_procs:
+            for p in new_procs:
+                logger.log_detect(p["pid"], p["process_name"], p["cmdline"])
+                print(f"[FISH] New: PID={p['pid']} {p['process_name']}")
+
+            # Wait settle_time ONCE for the entire batch
+            print(f"[FISH] Settling {settle_time}s for {len(new_procs)} process(es)...")
             time.sleep(settle_time)
 
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                print(f"[FISH] PID {pid} exited during settle, skipping")
-                continue
+            # Process each after settle
+            for proc_info in new_procs:
+                pid = proc_info["pid"]
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    print(f"[FISH] PID {pid} exited during settle, skipping")
+                    continue
 
-            cmdline = read_cmdline(pid)
-            if cmdline:
-                proc_info["cmdline"] = cmdline
-            proc_info["cuda_libs"] = check_pid_has_cuda(pid)
+                cmdline = read_cmdline(pid)
+                if cmdline:
+                    proc_info["cmdline"] = cmdline
+                proc_info["cuda_libs"] = check_pid_has_cuda(pid)
 
-            if proc_info["cuda_libs"]:
-                _handle_gpu_process(proc_info, known_pids, nsys_children, logger, settle_time)
-            else:
-                print(f"[FISH] PID {pid} is CPU-only (LTTng only)")
+                if proc_info["cuda_libs"]:
+                    _handle_gpu_process(
+                        proc_info, known_pids, nsys_children, logger, settle_time,
+                    )
+                else:
+                    print(f"[FISH] PID {pid} is CPU-only (LTTng only)")
 
-        for proc_info in current_nodes:
-            known_pids.add(proc_info["pid"])
-
-        # Start live collectors after first new-node scan completes
-        # (ensures GPU relaunch is done before we query node/topic info)
-        if not collector_started and (initial_nodes or new_node_found):
-            collector = LiveCollector()
-            collector.start()
-            collector_started = True
-            logger.log_daemon("live_collectors_started")
+            # Start live collectors after first batch
+            if not collector_started:
+                collector = LiveCollector()
+                collector.start()
+                collector_started = True
+                logger.log_daemon("live_collectors_started")
 
         time.sleep(poll_interval)
 

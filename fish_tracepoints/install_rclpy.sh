@@ -706,13 +706,16 @@ fi
 log "[+] Ensuring overlay is sourced in .bashrc and tmuxinator ..."
 
 BASHRC="/root/.bashrc"
-SETUP_LINE="source $OVERLAY_WS/install/setup.bash"
+SETUP_LINE="source $OVERLAY_WS/install/local_setup.bash"
 
 # Remove any stale tracetools overlay source lines, add the correct one
+# Uses local_setup.bash (not setup.bash) so that application workspaces
+# already in AMENT_PREFIX_PATH are preserved (e.g. Autoware, AAS).
 if [ -f "$BASHRC" ]; then
     # Remove old/wrong overlay paths
     sed -i '\|source.*/tracetools_ws/install/setup.bash|d' "$BASHRC"
     sed -i '\|source.*/trace_overlay_ws/install/setup.bash|d' "$BASHRC"
+    sed -i '\|source.*/trace_overlay_ws/install/local_setup.bash|d' "$BASHRC"
     # Add correct one at the end
     echo "$SETUP_LINE" >> "$BASHRC"
     log "  .bashrc updated: $SETUP_LINE"

@@ -108,7 +108,9 @@ stop_session() {
     fi
     TPID=\$(cat /tmp/fish_trace_pid 2>/dev/null)
     [[ -n "\$TPID" ]] && kill \$TPID 2>/dev/null
-    rm -f \$FISH_COUNTER \$FISH_SESSION_NAME_FILE \$FISH_SESSION_DIR_FILE /tmp/fish_trace_pid
+    rm -f \$FISH_COUNTER \$FISH_SESSION_NAME_FILE \$FISH_SESSION_DIR_FILE /tmp/fish_trace_pid \
+         /tmp/fish_launch_output.log /tmp/fish_system_stable \
+         /tmp/fish_gpu_handler_complete /tmp/fish_replay_complete
     if [[ -n "\$SESSION_DIR" ]]; then
         chmod -R a+rX "\$SESSION_DIR" 2>/dev/null
         echo "[FISH] Session stopped. Output: \$SESSION_DIR/"
@@ -207,7 +209,42 @@ if [[ "\$FISH_ENABLED" == "1" && ("\$1" == "run" || "\$1" == "launch") ]]; then
     trap "\$FISH_SCRIPTS/trace_session.sh stop; exit 0" SIGTERM SIGINT
     \$FISH_SCRIPTS/trace_session.sh inc
 
-    \$REAL_ROS2 "\$@" &
+    # Inspect the launch file to extract composable node specs.
+    # Only runs for 'ros2 launch' (skip 'ros2 run'). Output goes to
+    # \$SESSION_DIR/launch_components.json. Errors are non-fatal —
+    # the wrapper continues even if inspection fails.
+    if [[ "\$1" == "launch" ]]; then
+        SESSION_DIR=\$(cat /tmp/fish_session_dir 2>/dev/null)
+        if [[ -n "\$SESSION_DIR" && \$# -ge 3 ]]; then
+            LAUNCH_COMPONENTS_JSON="\$SESSION_DIR/launch_components.json"
+            echo "[FISH] Inspecting launch file: \$2 \$3"
+            PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.launch_inspect \\
+                "\$2" "\$3" "\${@:4}" \\
+                > "\$LAUNCH_COMPONENTS_JSON" \\
+                2> "\$SESSION_DIR/fishlog/launch_inspect.log" || true
+            if [[ -s "\$LAUNCH_COMPONENTS_JSON" ]]; then
+                N_CONT=\$(python3 -c "import json; d=json.load(open('\$LAUNCH_COMPONENTS_JSON')); print(len(d))" 2>/dev/null || echo "?")
+                echo "[FISH] Launch inspector: \$N_CONT containers captured"
+            else
+                echo "[FISH] Launch inspector produced no output (see fishlog/launch_inspect.log)"
+            fi
+        fi
+    fi
+
+    # Tee launch stdout for executor_started stability monitoring
+    FISH_LAUNCH_LOG=/tmp/fish_launch_output.log
+    > \$FISH_LAUNCH_LOG
+
+    # For 'ros2 launch' we route through fish.launch_wrap so that
+    # composable node containers are started with nsys from the very
+    # first moment (no kill/reload needed). For 'ros2 run' we fall back
+    # to the real ros2 binary unchanged.
+    if [[ "\$1" == "launch" ]]; then
+        PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.launch_wrap \\
+            "\${@:2}" > >( tee -a \$FISH_LAUNCH_LOG ) 2>&1 &
+    else
+        \$REAL_ROS2 "\$@" > >( tee -a \$FISH_LAUNCH_LOG ) 2>&1 &
+    fi
     NODE_PID=\$!
     wait \$NODE_PID 2>/dev/null
     EXIT_CODE=\$?

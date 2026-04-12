@@ -1,0 +1,243 @@
+GPU Profiling for Composable Node Containers — The Full Journey
+================================================================
+
+Date: 2026-04-12 (night session, ~00:00 - 05:30)
+Result: SUCCESS — 14,538 CUDA kernel events captured from Autoware's
+        pointcloud_container running under nsys, with zero pipeline disruption.
+
+
+The Problem
+-----------
+FISH profiles GPU processes by killing them and relaunching under nsys.
+This works for standalone GPU nodes (single binary, all args in cmdline).
+But ROS 2 composable node containers are different:
+
+  - A container (component_container_mt) is a single process hosting
+    multiple plugin nodes loaded at runtime via LoadComposableNodes
+  - Killing the container kills ALL hosted nodes
+  - The launch system does NOT retry LoadComposableNodes after container death
+  - Manually reloading components requires: package, plugin class, name,
+    namespace, parameters (from YAML files), and remappings
+  - This info is scattered across launch files with unresolved substitutions
+
+Autoware uses 20+ containers with 117+ components, 3 of which use GPU
+(TensorRT inference). Killing ANY container broke the perception pipeline,
+causing all downstream GPU nodes to idle — resulting in empty nsys reports.
+
+
+Approach 1: Kill + Reload (FAILED)
+-----------------------------------
+Attempts 1-8 over ~3 hours.
+
+Strategy: kill container → nsys relaunch → reload components via
+          `ros2 component load` CLI
+
+Problems encountered (each one fixed, leading to the next):
+
+1. BATCH DETECTION: 74 processes × 3s settle = 4 min wasted
+   Fix: collect all PIDs, settle once → O(settle_time)
+
+2. EMPTY CONTAINER BUG: _get_container_components() returned 0 components
+   because `ros2 component list <name>` output has NO header line (unlike
+   the no-args version). Parser expected a header → always returned empty.
+   Fix: detect both formats (with/without header)
+
+3. STABILIZATION TIMING: FISH killed containers at t≈6s, but launch system
+   loads components at t≈25-30s. Components lost before they existed.
+   Fix: dual stabilization polling (component_list + executor_started),
+   configurable intervals, wait for both before any kill
+
+4. WRONG CLI FLAGS: `ros2 component load` uses --parameter (not --param),
+   --remap-rule (not --remap), and has NO --params-file flag at all.
+   Fix: correct flags, expand YAML files into individual --parameter args
+
+5. SHELL ESCAPING: list values like [116.28, 103.53] broke shell parsing.
+   Fix: use subprocess list form (no shell=True)
+
+6. COMPONENT TYPE MATCHING: launch_inspect.py captured 85 specs for
+   /pointcloud_container (including mutually exclusive conditional variants
+   like bevfusion vs pointpainting). Loading all 85 caused conflicts.
+   Fix: intersection approach — only reload components that were LIVE
+   before the kill (matched by short name)
+
+7. NAMESPACE RESOLUTION: static launch inspection can't resolve
+   PushRosNamespace context. Live name=/localization/util/crop_box_filter
+   but spec name=crop_box_filter with ns=None.
+   Fix: fuzzy short-name matching for both container lookup and component
+   matching. Take namespace from live component, plugin from spec.
+
+8. LAUNCH SYSTEM RACE: even with all the above fixed, the launch system
+   occasionally sent SIGTERM to containers during reload, causing cascading
+   failures. 9/13 components loaded but pipeline still broke.
+
+9. COMPONENT RELOAD TIMEOUT: TensorRT engine compilation takes 60-120s
+   per component on first run (no cache). Sequential reload × 13 components
+   = 15+ minutes. Parallel reload still OOM'd.
+
+CONCLUSION: Kill+reload is fundamentally fragile for container-heavy
+systems. The launch system is not designed for mid-flight container
+replacement.
+
+
+Approach 2: launch_wrap — Prefix Injection (SUCCESS)
+-----------------------------------------------------
+Attempts 9-16 over ~2 hours.
+
+Strategy: monkey-patch ComposableNodeContainer so the container process
+          is started under nsys FROM THE VERY BEGINNING. No kill, no
+          reload. Launch system loads components normally into the
+          nsys-wrapped container.
+
+Key insight: ExecuteProcess (parent of ComposableNodeContainer) supports
+a `prefix` parameter that prepends a command to the process launch.
+Setting prefix="nsys profile ..." makes the container run as:
+  nsys profile ... component_container_mt --ros-args ...
+
+Problems encountered and fixed:
+
+1. NAME RESOLUTION AT __init__: Container name is often a
+   LaunchConfiguration("container_name") substitution that can't be
+   resolved without a LaunchContext. At __init__ time, no context exists.
+   Fix: patch execute(context) instead of __init__(). At execute time,
+   the context is available and substitutions resolve.
+
+2. PREFIX ATTRIBUTE LOCATION: Thought it was self._ExecuteProcess__prefix
+   but it's actually stored in:
+     self._ExecuteLocal__process_description._Executable__prefix
+   Fix: mutate the correct attribute path.
+
+3. FILENAME COLLISION: Multiple containers created in the same second got
+   the same nsys output path → nsys SIGSEGV (exit 139).
+   Fix: monotonic counter suffix (_001, _002, _003).
+
+4. WRAPPING NON-GPU CONTAINERS: When name couldn't be resolved, fail-open
+   logic wrapped everything. Non-GPU containers don't need nsys overhead.
+   Fix: fail-closed — only wrap containers whose resolved name appears in
+   __gpu_containers__ list from launch_inspect.py.
+
+5. nsys CRASH WITH FULL FLAGS: --stats=true, --sample=process-tree,
+   --cudabacktrace, --python-sampling caused nsys to SIGSEGV when wrapping
+   multi-threaded component_container_mt.
+   Fix: minimal flags for containers: --trace=cuda,nvtx --export=sqlite
+   --force-overwrite=true. Standalone nodes keep full flags.
+
+6. FOREIGN nsys REPORT NOT WRITTEN: launch_wrap'd nsys processes are
+   children of the launch system, not the FISH daemon. At auto_stop,
+   daemon only sent SIGINT to its own nsys children. Launch-wrap'd nsys
+   processes got SIGTERM from launch shutdown → died without writing reports.
+   Fix: _scan_session_nsys_pids() scans /proc for ALL nsys processes whose
+   --output path is in the current session dir. graceful_stop_nsys() sends
+   SIGINT to both daemon children AND foreign nsys PIDs, then waits for all.
+
+
+Final Working Architecture
+---------------------------
+
+  ros2 launch autoware_launch logging_simulator.launch.xml ...
+    |
+    +-- FISH wrapper intercepts
+    |
+    +-- launch_inspect.py (15s)
+    |     Walks launch description, captures ComposableNode instances
+    |     Detects GPU containers via plugin keyword matching
+    |     Writes launch_components.json with __gpu_containers__ list
+    |
+    +-- launch_wrap.py
+    |     Patches ComposableNodeContainer.execute()
+    |     For GPU containers: sets Executable.__prefix = "nsys profile ..."
+    |     For non-GPU containers: skip
+    |     Invokes real ros2 launch → containers start under nsys
+    |
+    +-- Launch system runs normally
+    |     LoadComposableNodes loads components into nsys-wrapped containers
+    |     TRT engines compile, nodes initialize, pipeline flows
+    |
+    +-- FISH daemon (stabilization → GPU handler → replay → auto_stop)
+    |     Stabilization: dual poll (component_list + executor_started)
+    |     GPU handler: SKIP containers (launch_wrap handled them)
+    |                  KILL+NSYS standalone GPU nodes (shape_estimation etc)
+    |     Replay: configurable command from fish_settings.ini
+    |     Auto_stop: SIGINT to ALL nsys (daemon + launch_wrap), wait for reports
+    |
+    +-- Output:
+          LTTng trace (all callbacks, all nodes)
+          nsys reports (GPU containers + standalone GPU nodes)
+          fishlog (stabilization, system_stable, gpu_handler, replay events)
+          snapshot (node_list, component_list, topic_info, topic_hz)
+
+
+Final Results (v16)
+--------------------
+Session: fish_20260412_032638
+
+nsys_pointcloud_container_20260412_032701_001.sqlite:
+  KERNEL  = 14,538
+  RUNTIME = 48,909
+  MEMCPY  = 3,587
+  Size    = 55 MB
+
+nsys_traffic_light_node_container (camera6):
+  RUNTIME = 17,806
+  MEMCPY  = 12
+  (No kernels — no traffic lights visible in sample rosbag scene)
+
+nsys_traffic_light_node_container (camera7):
+  RUNTIME = 17,806
+  MEMCPY  = 12
+  (Same reason)
+
+nsys_shape_estimation_node: (empty — standalone, kill+relaunch timing)
+nsys_detection_by_tracker_node: (empty — same)
+
+Pipeline: INTACT (pointcloud in RViz, vehicle moving, no crashes)
+Node count: same as no-FISH run
+Container components: all loaded normally by launch system
+
+
+GPU Plugin Detection Keywords
+-------------------------------
+Used by launch_inspect.py to identify GPU containers:
+  cuda, tensorrt, trt, centerpoint, bevfusion, yolox, yolo,
+  transfusion, pointpainting, fine_detector, traffic_light_classifier,
+  traffic_light_fine_detector, lidar_centerpoint, lidar_transfusion,
+  nvblox, image_projection_based_fusion, roi_cluster_fusion,
+  roi_pointcloud_fusion
+
+
+Files Created/Modified
+-----------------------
+New:
+  python/fish/launch_inspect.py  — static launch file analysis
+  python/fish/launch_wrap.py     — container nsys prefix injection
+
+Modified:
+  python/fish/gpu.py             — stabilization, batch detection,
+                                   container skip, foreign nsys signal
+  python/fish/settings.py        — new settings defaults
+  install_fish.sh                — wrapper calls launch_inspect + launch_wrap
+  fish_settings.ini              — stabilization + replay settings
+
+Documentation:
+  component_handling.txt         — container handling design
+  orchestration.txt              — signal pipeline design
+  gpu_profiling_journey.txt      — this file
+
+
+Known Remaining Issues
+-----------------------
+1. Standalone GPU nodes (shape_estimation, detection_by_tracker) have
+   empty nsys reports. They're killed and relaunched by daemon, but data
+   flow to them might be interrupted by the kill timing. Need to
+   investigate if they receive input during replay.
+
+2. nsys minimal flags for containers miss some data (no cudabacktrace,
+   no python sampling). Full flags cause SIGSEGV in component_container_mt.
+   May need nsys version update or bug report.
+
+3. Traffic light containers show RUNTIME but no KERNEL events because
+   sample rosbag scene has no traffic lights. Need a rosbag with traffic
+   light scenarios to verify.
+
+4. OOM risk: Autoware + FISH + nsys × 5 processes + LTTng uses ~28GB RAM
+   on 30GB system. Close to limit. Consider reducing LTTng buffer sizes
+   or limiting nsys trace buffer.
