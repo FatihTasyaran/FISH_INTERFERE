@@ -48,6 +48,7 @@ def load_settings() -> configparser.ConfigParser:
             "executor_started_stability_count": "3",
         },
         "replay": {
+            "replay_rosbag": "false",
             "command": "",
             "auto_stop": "true",
         },

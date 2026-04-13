@@ -2,470 +2,409 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>FISH Interactive Graph</title>
+<title>FISH — Hierarchical Expansion Explorer</title>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
-body { margin: 0; font-family: monospace; background: #ffffff; color: #222; overflow: hidden; }
-#controls { position: fixed; top: 10px; left: 10px; z-index: 10; background: rgba(240,240,240,0.95); padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
-#controls label { margin-right: 12px; font-size: 12px; cursor: pointer; }
-#controls select, #controls input { background: #fff; color: #222; border: 1px solid #aaa; padding: 2px 6px; font-size: 12px; }
-#info { position: fixed; top: 10px; right: 10px; z-index: 10; background: rgba(250,250,250,0.95); padding: 12px; border-radius: 8px; width: 320px; font-size: 11px; max-height: 90vh; overflow-y: auto; border: 1px solid #ccc; }
-#info h3 { margin: 0 0 8px 0; color: #0066cc; font-size: 13px; }
-#info .field { margin: 2px 0; }
-#info .key { color: #666; }
-#info .val { color: #111; }
-#stats { position: fixed; bottom: 10px; left: 10px; z-index: 10; background: rgba(240,240,240,0.9); padding: 6px 10px; border-radius: 6px; font-size: 11px; border: 1px solid #ccc; }
-svg { width: 100vw; height: 100vh; }
-.link { stroke-opacity: 0.5; cursor: pointer; }
-.link.highlight-path { stroke-opacity: 1; stroke-width: 4 !important; }
-.link.contains { stroke: #E74C3C; stroke-dasharray: 4,2; stroke-width: 1; }
-.link.msg { stroke: #3498DB; stroke-width: 2; }
-.link.comm { stroke: #2ECC71; stroke-width: 2; }
-.link.dep { stroke: #E74C3C; stroke-width: 2.5; }
-.link.external { stroke-dasharray: 6,3; stroke-opacity: 0.35; }
-.link.L3 { stroke-width: 1.5; }
-.node text { pointer-events: none; fill: #333; font-size: 9px; text-anchor: middle; }
-.node circle { stroke-width: 1.5; cursor: pointer; }
-.node.EX circle { fill: #5DADE2; stroke: #2E86C1; }
-.node.N circle { fill: #58D68D; stroke: #28B463; }
-.node.E circle { fill: #F4D03F; stroke: #D4AC0D; }
-.node.E.ext circle { fill: #AAB7B8; stroke: #808B96; stroke-dasharray: 3,2; }
-.node.F circle { fill: #F8F9FA; stroke: #BDC3C7; }
-.node.F.ext circle { fill: #BDC3C7; stroke: #808B96; stroke-dasharray: 3,2; }
-.node.highlight circle { stroke: #ff6600; stroke-width: 3; }
-.node.dim { opacity: 0.15; }
-.link.dim { opacity: 0.03; }
+body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;overflow:hidden}
+#controls{position:fixed;top:10px;left:10px;z-index:10;background:#fff;padding:12px 16px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.12);font-size:13px;line-height:2}
+#controls b{font-size:15px}
+#controls select,#controls button{padding:3px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;background:#fff;cursor:pointer}
+#controls button{background:#e8e8e8}
+#controls button:hover{background:#ddd}
+#info{position:fixed;top:10px;right:10px;z-index:10;background:#fff;padding:14px;border-radius:8px;width:320px;font-size:12px;max-height:85vh;overflow-y:auto;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+#info h3{margin:0 0 8px;font-size:14px;color:#333}
+.field{margin:2px 0}.key{color:#888;font-size:11px}.val{color:#222}
+#stats{position:fixed;bottom:10px;left:10px;z-index:10;background:rgba(255,255,255,.95);padding:6px 12px;border-radius:6px;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+#legend{position:fixed;bottom:10px;right:10px;z-index:10;background:rgba(255,255,255,.95);padding:6px 12px;border-radius:6px;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+.legend-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:3px;vertical-align:middle}
+svg{width:100vw;height:100vh}
+.link{fill:none;stroke-opacity:.45}
+.link.msg{stroke:#4A90D9}
+.link.comm{stroke:#27AE60}
+.link.dep{stroke:#E74C3C}
+.link.external{stroke-dasharray:5,3;stroke-opacity:.2}
+.link.dim{opacity:.02}
+.node circle{cursor:pointer;stroke-width:2}
+.node text{pointer-events:none;fill:#444;font-size:10px;text-anchor:middle}
+.node.EX circle{fill:#5DADE2;stroke:#2980B9}
+.node.N circle{fill:#58D68D;stroke:#27AE60}
+.node.E circle{fill:#F4D03F;stroke:#D4AC0D}
+.node.E.ext circle{fill:#CCC;stroke:#999;stroke-dasharray:3,2}
+.node.F circle{fill:#F0F0F0;stroke:#BBB}
+.node.F.ext circle{fill:#DDD;stroke:#999;stroke-dasharray:3,2}
+.node.has-children circle{cursor:zoom-in}
+.node.dim{opacity:.1}
+.tt{position:absolute;background:#333;color:#fff;padding:4px 8px;border-radius:4px;font-size:11px;pointer-events:none;z-index:20;white-space:nowrap}
 </style>
 </head>
 <body>
 <div id="controls">
-  <b>FISH Graph Explorer</b><br><br>
-  <label>Layout: <select id="layoutSelect">
-    <option value="force">Force</option>
-    <option value="tree-stair-3">Tree Stair-3</option>
-    <option value="tree-stair-inf">Tree Stair-Inf</option>
-    <option value="radial">Radial Tree</option>
+  <b>FISH Expansion Explorer</b><br>
+  <label>Expand to: <select id="expandLevel">
+    <option value="0" selected>L0 — Executors</option>
+    <option value="1">L1 — Nodes</option>
+    <option value="2">L2 — Entities</option>
+    <option value="3">L3 — Functions</option>
   </select></label>
-  <label>Layer: <select id="layerFilter">
-    <option value="all">All Layers</option>
-    <option value="L0">L0 (Executor)</option>
-    <option value="L1">L1 (Node)</option>
-    <option value="L2">L2 (Entity)</option>
-    <option value="L3">L3 (Function)</option>
-  </select></label>
-  <label><input type="checkbox" id="showExternal" checked> External</label>
-  <label><input type="checkbox" id="showContains" checked> Vertical</label>
+  <button id="collapseAll">Reset</button><br>
+  <label><input type="checkbox" id="showExternal"> External</label>
   <label><input type="checkbox" id="showLabels" checked> Labels</label>
+  <label>Stair step: <select id="stairMode">
+    <option value="3" selected>3-cycle</option>
+    <option value="0">Flat</option>
+    <option value="inf">Continuous</option>
+  </select></label>
 </div>
-<div id="info"><h3>Click a node</h3></div>
+<div id="info"><h3>FISH Graph</h3>
+<p style="color:#666;font-size:12px">
+<b>Click</b> a node to expand into children.<br>
+<b>Right-click</b> to collapse back to parent.<br>
+<b>Scroll</b> to zoom, <b>drag</b> background to pan.
+</p></div>
 <div id="stats"></div>
+<div id="legend">
+  <span class="legend-dot" style="background:#5DADE2"></span>Executor
+  <span class="legend-dot" style="background:#58D68D;margin-left:8px"></span>Node
+  <span class="legend-dot" style="background:#F4D03F;margin-left:8px"></span>Entity
+  <span class="legend-dot" style="background:#E0E0E0;margin-left:8px"></span>Function
+</div>
 <svg></svg>
+<div class="tt" id="tooltip" style="display:none"></div>
 <script>
-const RADIUS = {EX: 18, N: 14, E: 10, F: 7};
+const R = {EX:20,N:14,E:10,F:7};
+const LAYER_GAP = 180;
+const STAIR_STEP = 16;
+const NODE_SPACING = 90;
 
-fetch('fish_graph.json').then(r => r.json()).then(data => {
-  const nodeMap = {};
-  data.nodes.forEach(n => { nodeMap[n.id] = n; });
+fetch('fish_graph.json').then(r=>r.json()).then(raw=>{
+  const byId = {};
+  raw.nodes.forEach(n=>{ byId[n.id] = n; });
 
-  const svg = d3.select("svg");
-  const width = window.innerWidth, height = window.innerHeight;
-  const g = svg.append("g");
+  const parentOf = {};
+  const childrenOf = {};
+  raw.nodes.forEach(n=>{
+    (n.children||[]).forEach(c=>{
+      parentOf[c] = n.id;
+      (childrenOf[n.id] = childrenOf[n.id]||[]).push(c);
+    });
+  });
 
-  // Zoom
-  svg.call(d3.zoom().scaleExtent([0.1, 8]).on("zoom", e => g.attr("transform", e.transform)));
-
-  // Force simulation — semi-static: stabilizes quickly, nodes barely move after
-  const sim = d3.forceSimulation(data.nodes)
-    .velocityDecay(0.6)
-    .alphaDecay(0.05)
-    .force("link", d3.forceLink(data.edges).id(d => d.id).distance(d => {
-      if (d.rel === "contains") return 50;
-      if (d.level === "L3") return 150;
-      if (d.level === "L2") return 130;
-      return 110;
-    }).strength(d => d.rel === "contains" ? 1.0 : 0.15))
-    .force("charge", d3.forceManyBody().strength(d => d.type === "EX" ? -600 : d.type === "N" ? -200 : d.type === "F" ? -40 : -120))
-    .force("center", d3.forceCenter(width/2, height/2).strength(0.05))
-    .force("collide", d3.forceCollide().radius(d => RADIUS[d.type] + 8).strength(0.9))
-    .force("x", d3.forceX(width/2).strength(0.02))
-    .force("y", d3.forceY(height/2).strength(0.02));
-
-  // Links (path for orthogonal routing)
-  const link = g.append("g").selectAll("path")
-    .data(data.edges).enter().append("path")
-    .attr("class", d => {
-      let cls = "link";
-      if (d.rel === "contains") cls += " contains";
-      else {
-        cls += " " + (d.nature || "msg");
-        if (d.external) cls += " external";
-        if (d.level) cls += " " + d.level;
+  // Use deepest available comm edges: L3 for function-level detail, with L2
+  // fallback for entities without functions. visibleAncestor aggregates upward.
+  // Deduplicate: if an L2 edge has a corresponding L3 edge, skip the L2 one.
+  const l3pairs = new Set();
+  raw.edges.filter(e=>e.rel==="comm"&&e.level==="L3").forEach(e=>{
+    // L3 edge (F→F): find their parent entities and record the E→E pair
+    const pe = parentOf[e.source], qe = parentOf[e.target];
+    if(pe && qe) l3pairs.add(pe+"-"+qe);
+  });
+  const base = raw.edges
+    .filter(e=>{
+      if(e.rel!=="comm") return false;
+      if(e.level==="L3") return true;
+      if(e.level==="L2"){
+        // skip if L3 already covers this E→E pair
+        return !l3pairs.has(e.source+"-"+e.target);
       }
-      return cls;
+      return false;
     })
-    .attr("fill", "none")
-    .attr("marker-end", d => d.rel !== "contains" ? "url(#arrow)" : null);
+    .map(e=>({s:e.source, d:e.target, topic:e.topic||e.service||"",
+              nature:e.nature||"msg", msg_type:e.msg_type||"",
+              hz:e.avg_rate_hz||0, ext:!!e.external}));
 
-  // Arrow marker
-  svg.append("defs").append("marker")
-    .attr("id", "arrow").attr("viewBox", "0 -5 10 10")
-    .attr("refX", 20).attr("refY", 0).attr("markerWidth", 6).attr("markerHeight", 6)
-    .attr("orient", "auto")
-    .append("path").attr("d", "M0,-5L10,0L0,5").attr("fill", "#555");
+  const exp = new Set();
+  let showExt = false, showLbl = true, stairMode = "3";
 
-  // Nodes
-  const node = g.append("g").selectAll("g")
-    .data(data.nodes).enter().append("g")
-    .attr("class", d => {
-      let cls = "node " + d.type;
-      if (d.external) cls += " ext";
-      return cls;
-    })
-    .call(d3.drag()
-      .on("start", (e,d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
-      .on("drag", (e,d) => { d.fx = e.x; d.fy = e.y; })
-      .on("end", (e,d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
-
-  node.append("circle").attr("r", d => RADIUS[d.type] || 8);
-
-  node.append("text").attr("dy", d => RADIUS[d.type] + 12)
-    .text(d => {
-      let l = d.label || "";
-      if (l.startsWith("ext:")) l = l.slice(4);
-      if (l.length > 25) l = l.slice(0, 23) + "..";
-      const parts = l.split("/");
-      return parts[parts.length - 1] || l;
-    });
-
-  // Click → info panel
-  node.on("click", (e, d) => {
-    e.stopPropagation();
-    let html = `<h3>${d.type}: ${d.label}</h3>`;
-    html += `<div class="field"><span class="key">ID:</span> <span class="val">${d.id}</span></div>`;
-    html += `<div class="field"><span class="key">Level:</span> <span class="val">${d.level}</span></div>`;
-    if (d.pid) html += `<div class="field"><span class="key">PID:</span> <span class="val">${d.pid}</span></div>`;
-    if (d.etype) html += `<div class="field"><span class="key">Entity type:</span> <span class="val">${d.etype}</span></div>`;
-    if (d.ptype) html += `<div class="field"><span class="key">Func type:</span> <span class="val">${d.ptype}</span></div>`;
-    if (d.full_name) html += `<div class="field"><span class="key">Full name:</span> <span class="val">${d.full_name}</span></div>`;
-    if (d.external) html += `<div class="field"><span class="key">External:</span> <span class="val">yes</span></div>`;
-    if (d.aspects && d.aspects.length) {
-      html += `<div class="field"><span class="key">Aspects:</span></div>`;
-      d.aspects.forEach(a => {
-        const what = a.topic || a.service || "";
-        html += `<div class="field" style="margin-left:10px"><span class="val">${a.aspect}: ${what}</span></div>`;
-      });
-    }
-    if (d.children && d.children.length) {
-      html += `<div class="field"><span class="key">Children:</span> <span class="val">${d.children.length}</span></div>`;
-    }
-
-    // Connected edges
-    const incoming = data.edges.filter(e => e.target === d.id || (e.target && e.target.id === d.id));
-    const outgoing = data.edges.filter(e => e.source === d.id || (e.source && e.source.id === d.id));
-    const commIn = incoming.filter(e => e.rel === "comm");
-    const commOut = outgoing.filter(e => e.rel === "comm");
-    if (commIn.length) {
-      html += `<div class="field"><span class="key">Incoming comm:</span></div>`;
-      commIn.forEach(e => {
-        const t = e.topic || e.service || "";
-        const src = typeof e.source === "object" ? e.source.label : (nodeMap[e.source]||{}).label || e.source;
-        html += `<div class="field" style="margin-left:10px"><span class="val">${e.nature} ${t} from ${src}</span></div>`;
-      });
-    }
-    if (commOut.length) {
-      html += `<div class="field"><span class="key">Outgoing comm:</span></div>`;
-      commOut.forEach(e => {
-        const t = e.topic || e.service || "";
-        const tgt = typeof e.target === "object" ? e.target.label : (nodeMap[e.target]||{}).label || e.target;
-        html += `<div class="field" style="margin-left:10px"><span class="val">${e.nature} ${t} to ${tgt}</span></div>`;
-      });
-    }
-
-    document.getElementById("info").innerHTML = html;
-
-    // Highlight connected
-    const connectedIds = new Set([d.id]);
-    data.edges.forEach(e => {
-      const sid = typeof e.source === "object" ? e.source.id : e.source;
-      const tid = typeof e.target === "object" ? e.target.id : e.target;
-      if (sid === d.id) connectedIds.add(tid);
-      if (tid === d.id) connectedIds.add(sid);
-    });
-    node.classed("dim", n => !connectedIds.has(n.id));
-    node.classed("highlight", n => n.id === d.id);
-    link.classed("dim", e => {
-      const sid = typeof e.source === "object" ? e.source.id : e.source;
-      const tid = typeof e.target === "object" ? e.target.id : e.target;
-      return sid !== d.id && tid !== d.id;
-    });
-  });
-
-  // Edge click → trace full path (follow chain forward and backward)
-  link.on("click", (e, d) => {
-    e.stopPropagation();
-
-    const getId = x => typeof x === "object" ? x.id : x;
-    const srcId = getId(d.source);
-    const tgtId = getId(d.target);
-
-    // Build adjacency for comm edges only (same level)
-    const fwd = {};  // id → [{edge, target}]
-    const bwd = {};  // id → [{edge, source}]
-    data.edges.forEach(edge => {
-      if (edge.rel !== "comm") return;
-      if (d.level && edge.level !== d.level) return;
-      const s = getId(edge.source), t = getId(edge.target);
-      if (!fwd[s]) fwd[s] = [];
-      fwd[s].push({edge, target: t});
-      if (!bwd[t]) bwd[t] = [];
-      bwd[t].push({edge, source: s});
-    });
-
-    // BFS forward from target
-    const pathNodes = new Set([srcId, tgtId]);
-    const pathEdges = new Set();
-    pathEdges.add(d);
-
-    let queue = [tgtId];
-    let visited = new Set([tgtId, srcId]);
-    while (queue.length) {
-      const cur = queue.shift();
-      (fwd[cur] || []).forEach(({edge, target}) => {
-        if (!visited.has(target)) {
-          visited.add(target);
-          pathNodes.add(target);
-          pathEdges.add(edge);
-          queue.push(target);
-        }
-      });
-    }
-
-    // BFS backward from source
-    queue = [srcId];
-    visited = new Set([srcId, tgtId]);
-    while (queue.length) {
-      const cur = queue.shift();
-      (bwd[cur] || []).forEach(({edge, source}) => {
-        if (!visited.has(source)) {
-          visited.add(source);
-          pathNodes.add(source);
-          pathEdges.add(edge);
-          queue.push(source);
-        }
-      });
-    }
-
-    // Highlight path
-    node.classed("dim", n => !pathNodes.has(n.id));
-    node.classed("highlight", n => n.id === srcId || n.id === tgtId);
-    link.classed("dim", e => !pathEdges.has(e));
-    link.classed("highlight-path", e => pathEdges.has(e));
-
-    // Info panel
-    const pathNodeList = [...pathNodes].map(id => {
-      const n = nodeMap[id];
-      if (!n) return `ID ${id}`;
-      const label = (n.label || "").split("/").pop() || n.label;
-      return `[${n.type}] ${label}`;
-    });
-
-    let html = `<h3>Path (${d.level || "?"}: ${d.nature || d.rel})</h3>`;
-    if (d.topic) html += `<div class="field"><span class="key">Topic:</span> <span class="val">${d.topic}</span></div>`;
-    if (d.service) html += `<div class="field"><span class="key">Service:</span> <span class="val">${d.service}</span></div>`;
-    if (d.msg_type) html += `<div class="field"><span class="key">Type:</span> <span class="val">${d.msg_type}</span></div>`;
-    if (d.avg_rate_hz) html += `<div class="field"><span class="key">Rate:</span> <span class="val">${d.avg_rate_hz.toFixed(1)} Hz</span></div>`;
-    if (d.direction) html += `<div class="field"><span class="key">Direction:</span> <span class="val">${d.direction}</span></div>`;
-    if (d.external) html += `<div class="field"><span class="key">External:</span> <span class="val">yes</span></div>`;
-    html += `<div class="field"><span class="key">Path nodes (${pathNodes.size}):</span></div>`;
-    pathNodeList.forEach(n => {
-      html += `<div class="field" style="margin-left:10px"><span class="val">${n}</span></div>`;
-    });
-    html += `<div class="field"><span class="key">Path edges:</span> <span class="val">${pathEdges.size}</span></div>`;
-
-    document.getElementById("info").innerHTML = html;
-  });
-
-  svg.on("click", () => {
-    node.classed("dim", false).classed("highlight", false);
-    link.classed("dim", false).classed("highlight-path", false);
-    document.getElementById("info").innerHTML = "<h3>Click a node or edge</h3>";
-  });
-
-  // Tick — orthogonal edge routing when in tree/radial, direct in force
-  sim.on("tick", () => {
-    link.attr("d", d => {
-      const sx = d.source.x, sy = d.source.y;
-      const tx = d.target.x, ty = d.target.y;
-      if (currentLayout.startsWith("tree")) {
-        // Orthogonal: go down from source, then across, then down to target
-        const midY = (sy + ty) / 2;
-        return `M${sx},${sy} L${sx},${midY} L${tx},${midY} L${tx},${ty}`;
-      }
-      // Direct line for force/radial
-      return `M${sx},${sy} L${tx},${ty}`;
-    });
-    node.attr("transform", d => `translate(${d.x},${d.y})`);
-  });
-
-  // --- Layout functions ---
-  let currentLayout = "force";
-
-  function buildHierarchy() {
-    // Build tree from containment edges: find roots (EX nodes) and children via Z_v
-    const childMap = {};
-    data.edges.forEach(e => {
-      if (e.rel === "contains") {
-        const sid = typeof e.source === "object" ? e.source.id : e.source;
-        const tid = typeof e.target === "object" ? e.target.id : e.target;
-        if (!childMap[sid]) childMap[sid] = [];
-        childMap[sid].push(tid);
-      }
-    });
-
-    // Virtual root connecting all EX nodes + orphan externals
-    const exNodes = data.nodes.filter(n => n.type === "EX");
-    const allContained = new Set();
-    Object.values(childMap).forEach(arr => arr.forEach(id => allContained.add(id)));
-    Object.keys(childMap).forEach(id => allContained.add(parseInt(id) || id));
-    const orphans = data.nodes.filter(n => !allContained.has(n.id) && n.type !== "EX");
-
-    function makeTree(id) {
-      const n = nodeMap[id];
-      const result = {id: id, data: n, children: []};
-      if (childMap[id]) {
-        childMap[id].forEach(cid => {
-          result.children.push(makeTree(cid));
-        });
-      }
-      return result;
-    }
-
-    const rootChildren = exNodes.map(n => makeTree(n.id));
-    // Add orphan externals as direct children of root
-    orphans.forEach(n => {
-      rootChildren.push({id: n.id, data: n, children: []});
-    });
-
-    return {id: "root", data: null, children: rootChildren};
+  function isVis(id){
+    const n=byId[id]; if(!n) return false;
+    if(n.external) return showExt;
+    if(n.type==="EX") return !exp.has(id);
+    const p=parentOf[id];
+    return p!==undefined && exp.has(p) && !exp.has(id);
   }
 
-  function applyStairLayout(mode) {
-    // Group nodes by type (layer)
-    const layers = {EX: [], N: [], E: [], F: []};
-    data.nodes.forEach(n => {
-      if (layers[n.type]) layers[n.type].push(n);
+  function visAnc(id){
+    if(isVis(id)) return id;
+    const p=parentOf[id];
+    return p!==undefined ? visAnc(p) : null;
+  }
+
+  function getVisNodes(){ return raw.nodes.filter(n=>isVis(n.id)); }
+
+  function getVisEdges(){
+    const m={};
+    base.forEach(e=>{
+      if(e.ext && !showExt) return;
+      const s=visAnc(e.s), d=visAnc(e.d);
+      if(!s||!d||s===d) return;
+      const k=s+"-"+d;
+      if(!m[k]) m[k]={source:s,target:d,topics:new Set(),cnt:0,nature:e.nature,ext:e.ext};
+      m[k].cnt++; if(e.topic) m[k].topics.add(e.topic);
     });
+    return Object.values(m).map(e=>({...e,topics:[...e.topics]}));
+  }
+
+  function collapse(id){ exp.delete(id); (childrenOf[id]||[]).forEach(c=>{ if(exp.has(c)) collapse(c); }); }
+  function expandTo(lv){ exp.clear(); raw.nodes.forEach(n=>{ if(!n.external && n.level<lv && childrenOf[n.id]) exp.add(n.id); }); rebuild(); }
+
+  /* ── D3 setup ── */
+  const svg = d3.select("svg");
+  const W = window.innerWidth, H = window.innerHeight;
+  const g = svg.append("g");
+  svg.call(d3.zoom().scaleExtent([.03,12]).on("zoom",e=>g.attr("transform",e.transform)));
+  svg.append("defs").append("marker").attr("id","arr").attr("viewBox","0 -5 10 10")
+    .attr("refX",22).attr("refY",0).attr("markerWidth",5).attr("markerHeight",5)
+    .attr("orient","auto").append("path").attr("d","M0,-4L10,0L0,4").attr("fill","#999");
+
+  /* ── Stair layout: group by level, sort within level, stagger Y ── */
+  function computeStairPositions(vn){
+    // Group nodes by level (type)
+    const layers = {EX:[], N:[], E:[], F:[]};
+    const extNodes = [];
+    vn.forEach(n=>{
+      if(n.external){ extNodes.push(n); }
+      else if(layers[n.type]) layers[n.type].push(n);
+    });
+
+    // Sort within each layer: group by parent, then by label
+    for(const type of ["N","E","F"]){
+      layers[type].sort((a,b)=>{
+        const pa = parentOf[a.id]||0, pb = parentOf[b.id]||0;
+        if(pa!==pb) return pa-pb;
+        return (a.label||"").localeCompare(b.label||"");
+      });
+    }
+    // EX sorted by label
+    layers.EX.sort((a,b)=>(a.label||"").localeCompare(b.label||""));
 
     const margin = 60;
-    const stairStep = (mode === 3) ? 18 : 12;  // stair-3: cycle 3, stair-inf: every node descends
-    let layerGap = 200;
     let currentY = 80;
 
-    ["EX", "N", "E", "F"].forEach(type => {
+    for(const type of ["EX","N","E","F"]){
       const nodes = layers[type];
-      if (!nodes.length) return;
+      if(!nodes.length) continue;
 
-      const spacing = Math.max(80, (width - 2 * margin) / nodes.length);
-      let maxY = currentY;
+      const spacing = Math.max(NODE_SPACING, Math.min(200, (W - 2*margin) / nodes.length));
+      // Center the layer
+      const totalWidth = nodes.length * spacing;
+      const startX = Math.max(margin, (W - totalWidth) / 2);
 
-      nodes.forEach((n, i) => {
-        n.fx = margin + i * spacing;
-        if (mode === 3) {
-          n.fy = currentY + (i % 3) * stairStep;
+      nodes.forEach((n,i)=>{
+        n.x = startX + i * spacing;
+        if(stairMode === "inf"){
+          n.y = currentY + i * STAIR_STEP;
+        } else if(stairMode === "3"){
+          n.y = currentY + (i % 3) * STAIR_STEP;
         } else {
-          n.fy = currentY + i * stairStep;
+          n.y = currentY;  // flat
         }
-        if (n.fy > maxY) maxY = n.fy;
       });
 
-      currentY = maxY + layerGap;
-    });
+      const maxY = nodes.reduce((m,n)=>Math.max(m,n.y), currentY);
+      currentY = maxY + LAYER_GAP;
+    }
 
-    sim.alpha(0.3).restart();
-    setTimeout(() => {
-      data.nodes.forEach(n => { n.fx = null; n.fy = null; });
-    }, 3000);
+    // External nodes: place after the last layer
+    if(extNodes.length){
+      const spacing = Math.max(60, Math.min(150, (W - 2*margin) / extNodes.length));
+      const startX = Math.max(margin, (W - extNodes.length*spacing) / 2);
+      extNodes.forEach((n,i)=>{
+        n.x = startX + i * spacing;
+        n.y = currentY + (stairMode==="3" ? (i%3)*STAIR_STEP : stairMode==="inf" ? i*8 : 0);
+      });
+    }
   }
 
-  function applyRadialLayout() {
-    const root = d3.hierarchy(buildHierarchy());
-    const radialLayout = d3.tree().size([2 * Math.PI, Math.min(width, height) / 2 - 100]);
-    radialLayout(root);
+  function rebuild(){
+    const vn = getVisNodes(), ve = getVisEdges();
+    g.selectAll("*").remove();
 
-    const cx = width / 2, cy = height / 2;
-    const nodeById = {};
-    data.nodes.forEach(n => { nodeById[n.id] = n; });
+    // Compute stair positions
+    computeStairPositions(vn);
 
-    root.descendants().forEach(d => {
-      if (d.data.id !== "root" && nodeById[d.data.id]) {
-        const angle = d.x;
-        const radius = d.y;
-        nodeById[d.data.id].fx = cx + radius * Math.cos(angle - Math.PI / 2);
-        nodeById[d.data.id].fy = cy + radius * Math.sin(angle - Math.PI / 2);
+    // Build id→node lookup for edges
+    const vnMap = {};
+    vn.forEach(n=>{ vnMap[n.id]=n; });
+
+    // Edges — orthogonal routing (down from src, across, down to dst)
+    const link = g.append("g").selectAll("path").data(ve).enter().append("path")
+      .attr("class",d=>`link ${d.nature}${d.ext?" external":""}`)
+      .attr("stroke-width",d=>Math.min(1+Math.log2(d.cnt+1),5))
+      .attr("marker-end","url(#arr)")
+      .attr("d",d=>{
+        const sn=vnMap[d.source], dn=vnMap[d.target];
+        if(!sn||!dn) return "";
+        const sx=sn.x, sy=sn.y, tx=dn.x, ty=dn.y;
+        if(Math.abs(sy-ty)<5){
+          // Same layer: arc above
+          const midX=(sx+tx)/2, rise=Math.min(-40, -Math.abs(tx-sx)*0.15);
+          return `M${sx},${sy} Q${midX},${sy+rise} ${tx},${ty}`;
+        }
+        // Different layers: orthogonal routing
+        const midY = (sy+ty)/2;
+        return `M${sx},${sy} L${sx},${midY} L${tx},${midY} L${tx},${ty}`;
+      });
+
+    // Nodes
+    const node = g.append("g").selectAll("g").data(vn,d=>d.id).enter().append("g")
+      .attr("class",d=>{
+        let c="node "+d.type;
+        if(d.external) c+=" ext";
+        if(childrenOf[d.id] && !d.external) c+=" has-children";
+        return c;
+      })
+      .attr("transform",d=>`translate(${d.x},${d.y})`)
+      .call(d3.drag()
+        .on("drag",(e,d)=>{
+          d.x=e.x; d.y=e.y;
+          d3.select(e.sourceEvent.target.parentNode).attr("transform",`translate(${d.x},${d.y})`);
+          // Update connected edges
+          link.attr("d",ed=>{
+            const sn=vnMap[ed.source], dn=vnMap[ed.target];
+            if(!sn||!dn) return "";
+            const sx=sn.x,sy=sn.y,tx=dn.x,ty=dn.y;
+            if(Math.abs(sy-ty)<5){
+              const midX=(sx+tx)/2, rise=Math.min(-40,-Math.abs(tx-sx)*0.15);
+              return `M${sx},${sy} Q${midX},${sy+rise} ${tx},${ty}`;
+            }
+            const midY=(sy+ty)/2;
+            return `M${sx},${sy} L${sx},${midY} L${tx},${midY} L${tx},${ty}`;
+          });
+        }));
+
+    node.append("circle").attr("r",d=>R[d.type]||8);
+    node.append("text").attr("dy",d=>(R[d.type]||8)+13)
+      .text(d=>{
+        if(!showLbl) return "";
+        let l=d.label||""; if(l.startsWith("ext:")) l=l.slice(4);
+        const p=l.split("/"); l=p[p.length-1]||l;
+        return l.length>22?l.slice(0,20)+"..":l;
+      });
+
+    // Click → expand
+    node.on("click",(ev,d)=>{
+      ev.stopPropagation();
+      if(childrenOf[d.id] && !d.external){
+        exp.add(d.id); rebuild();
+      } else {
+        showInfo(d, ve); highlightNeighbors(d, node, link, ve);
       }
     });
 
-    sim.alpha(0.3).restart();
-    setTimeout(() => {
-      data.nodes.forEach(n => { n.fx = null; n.fy = null; });
-    }, 2000);
-  }
-
-  function applyForceLayout() {
-    data.nodes.forEach(n => { n.fx = null; n.fy = null; });
-    sim.alpha(1).restart();
-  }
-
-  function switchLayout(layout) {
-    currentLayout = layout;
-    if (layout === "tree-stair-3") applyStairLayout(3);
-    else if (layout === "tree-stair-inf") applyStairLayout("inf");
-    else if (layout === "radial") applyRadialLayout();
-    else applyForceLayout();
-  }
-
-  document.getElementById("layoutSelect").onchange = function() {
-    switchLayout(this.value);
-  };
-
-  // Filters
-  function applyFilters() {
-    const layer = document.getElementById("layerFilter").value;
-    const showExt = document.getElementById("showExternal").checked;
-    const showVert = document.getElementById("showContains").checked;
-    const showLbl = document.getElementById("showLabels").checked;
-
-    node.style("display", d => {
-      if (!showExt && d.external) return "none";
-      if (layer !== "all" && d.level !== parseInt(layer[1])) return "none";
-      return null;
+    // Right-click → collapse parent
+    node.on("contextmenu",(ev,d)=>{
+      ev.preventDefault(); ev.stopPropagation();
+      const p=parentOf[d.id];
+      if(p!==undefined && exp.has(p)){ collapse(p); rebuild(); }
     });
-    link.style("display", d => {
-      if (!showVert && d.rel === "contains") return "none";
-      if (!showExt && d.external) return "none";
-      if (layer !== "all") {
-        const lvl = layer;
-        if (d.rel === "contains") return showVert ? null : "none";
-        if (d.level !== lvl) return "none";
-      }
-      return null;
+
+    // Hover tooltip
+    node.on("mouseenter",(ev,d)=>{
+      const tt=document.getElementById("tooltip");
+      const ch=childrenOf[d.id]||[];
+      let txt=`[${d.type}] ${d.full_name||d.label||d.id}`;
+      if(ch.length) txt+=` — click to expand (${ch.length} children)`;
+      tt.textContent=txt; tt.style.display="block";
+      tt.style.left=(ev.pageX+12)+"px"; tt.style.top=(ev.pageY-10)+"px";
+    })
+    .on("mousemove",(ev)=>{
+      const tt=document.getElementById("tooltip");
+      tt.style.left=(ev.pageX+12)+"px"; tt.style.top=(ev.pageY-10)+"px";
+    })
+    .on("mouseleave",()=>document.getElementById("tooltip").style.display="none");
+
+    // Edge hover
+    link.on("mouseenter",(ev,d)=>{
+      const tt=document.getElementById("tooltip");
+      const t=d.topics.length<=3?d.topics.join(", "):d.topics.slice(0,3).join(", ")+` +${d.topics.length-3}`;
+      tt.textContent=`${d.nature} (${d.cnt} edges): ${t||"?"}`;
+      tt.style.display="block";
+      tt.style.left=(ev.pageX+12)+"px"; tt.style.top=(ev.pageY-10)+"px";
+    })
+    .on("mousemove",(ev)=>{
+      const tt=document.getElementById("tooltip");
+      tt.style.left=(ev.pageX+12)+"px"; tt.style.top=(ev.pageY-10)+"px";
+    })
+    .on("mouseleave",()=>document.getElementById("tooltip").style.display="none");
+
+    // Background click → clear
+    svg.on("click",()=>{
+      node.classed("dim",false); link.classed("dim",false);
+      document.getElementById("info").innerHTML="<h3>FISH Graph</h3><p style='color:#666;font-size:12px'><b>Click</b> to expand. <b>Right-click</b> to collapse.</p>";
     });
-    node.selectAll("text").style("display", showLbl ? null : "none");
+
+    // Stats
+    const tc={}; vn.forEach(n=>{ tc[n.type]=(tc[n.type]||0)+1; });
+    document.getElementById("stats").innerHTML=
+      `Visible: ${vn.length} nodes, ${ve.length} edges — `+
+      Object.entries(tc).map(([k,v])=>k+":"+v).join(" ");
   }
 
-  document.getElementById("layerFilter").onchange = applyFilters;
-  document.getElementById("showExternal").onchange = applyFilters;
-  document.getElementById("showContains").onchange = applyFilters;
-  document.getElementById("showLabels").onchange = applyFilters;
+  function highlightNeighbors(d, node, link, ve){
+    const connected = new Set([d.id]);
+    ve.forEach(e=>{
+      const s=typeof e.source==="object"?e.source.id:e.source;
+      const t=typeof e.target==="object"?e.target.id:e.target;
+      if(s===d.id) connected.add(t);
+      if(t===d.id) connected.add(s);
+    });
+    node.classed("dim",n=>!connected.has(n.id));
+    link.classed("dim",e=>{
+      const s=typeof e.source==="object"?e.source.id:e.source;
+      const t=typeof e.target==="object"?e.target.id:e.target;
+      return s!==d.id && t!==d.id;
+    });
+  }
 
-  // Stats
-  const nTypes = {};
-  data.nodes.forEach(n => { nTypes[n.type] = (nTypes[n.type]||0) + 1; });
-  const eTypes = {};
-  data.edges.forEach(e => { eTypes[e.rel + (e.nature ? ":" + e.nature : "")] = (eTypes[e.rel + (e.nature ? ":" + e.nature : "")]||0) + 1; });
-  let statsHtml = `Nodes: ${data.nodes.length} (${Object.entries(nTypes).map(([k,v])=>k+":"+v).join(", ")}) | `;
-  statsHtml += `Edges: ${data.edges.length} (${Object.entries(eTypes).map(([k,v])=>k+":"+v).join(", ")})`;
-  document.getElementById("stats").innerHTML = statsHtml;
+  function showInfo(d, ve){
+    let h=`<h3>[${d.type}] ${d.label||d.id}</h3>`;
+    h+=`<div class="field"><span class="key">ID:</span> <span class="val">${d.id}</span></div>`;
+    if(d.pid) h+=`<div class="field"><span class="key">PID:</span> <span class="val">${d.pid}</span></div>`;
+    if(d.full_name) h+=`<div class="field"><span class="key">Full name:</span> <span class="val">${d.full_name}</span></div>`;
+    if(d.etype) h+=`<div class="field"><span class="key">Entity type:</span> <span class="val">${d.etype}</span></div>`;
+    if(d.ptype) h+=`<div class="field"><span class="key">Func type:</span> <span class="val">${d.ptype}</span></div>`;
+    if(d.external) h+=`<div class="field"><span class="key">External:</span> <span class="val">yes</span></div>`;
+    const ch=childrenOf[d.id]||[];
+    if(ch.length) h+=`<div class="field"><span class="key">Children:</span> <span class="val">${ch.length}</span></div>`;
+    if(d.aspects && d.aspects.length){
+      h+=`<div class="field"><span class="key">Aspects (${d.aspects.length}):</span></div>`;
+      d.aspects.slice(0,20).forEach(a=>{
+        h+=`<div class="field" style="margin-left:10px"><span class="val">${a.aspect}: ${a.topic||a.service||""}</span></div>`;
+      });
+      if(d.aspects.length>20) h+=`<div class="field" style="margin-left:10px;color:#888">+${d.aspects.length-20} more</div>`;
+    }
+    const inc=[], out=[];
+    ve.forEach(e=>{
+      const s=typeof e.source==="object"?e.source.id:e.source;
+      const t=typeof e.target==="object"?e.target.id:e.target;
+      if(t===d.id) inc.push({from:byId[s],e});
+      if(s===d.id) out.push({to:byId[t],e});
+    });
+    if(inc.length){
+      h+=`<div class="field"><span class="key">← Incoming (${inc.length}):</span></div>`;
+      inc.slice(0,15).forEach(({from,e})=>{
+        const lbl=from?(from.label||"").split("/").pop():"?";
+        h+=`<div class="field" style="margin-left:10px"><span class="val">${e.nature} from [${from?.type}] ${lbl} (${e.cnt})</span></div>`;
+      });
+    }
+    if(out.length){
+      h+=`<div class="field"><span class="key">→ Outgoing (${out.length}):</span></div>`;
+      out.slice(0,15).forEach(({to,e})=>{
+        const lbl=to?(to.label||"").split("/").pop():"?";
+        h+=`<div class="field" style="margin-left:10px"><span class="val">${e.nature} to [${to?.type}] ${lbl} (${e.cnt})</span></div>`;
+      });
+    }
+    document.getElementById("info").innerHTML=h;
+  }
+
+  /* ── controls ── */
+  document.getElementById("expandLevel").onchange=function(){ expandTo(+this.value); };
+  document.getElementById("collapseAll").onclick=()=>{ exp.clear(); document.getElementById("expandLevel").value="0"; rebuild(); };
+  document.getElementById("showExternal").onchange=function(){ showExt=this.checked; rebuild(); };
+  document.getElementById("showLabels").onchange=function(){ showLbl=this.checked; rebuild(); };
+  document.getElementById("stairMode").onchange=function(){ stairMode=this.value; rebuild(); };
+
+  rebuild();
 });
 </script>
 </body>

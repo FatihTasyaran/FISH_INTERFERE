@@ -64,6 +64,7 @@ SKIP_PATTERNS = [
     "lttng",
     "tmuxinator",
     "tmux",
+    "AWSIM",
 ]
 
 CONTAINER_EXECUTABLES = {"component_container", "component_container_mt"}
@@ -1372,9 +1373,24 @@ def _handle_standalone_gpu_process(
 ) -> None:
     """Handle a standalone (non-container) GPU process."""
     pid = proc_info["pid"]
+    cmdline = proc_info["cmdline"]
+
+    # Check if already wrapped by launch_wrap (nsys in cmdline)
+    already_wrapped = "nsys" in cmdline.split()[:3] if cmdline else False
+    if already_wrapped:
+        print(
+            f"[FISH] GPU node PID={pid} {proc_info['process_name']} — "
+            f"already nsys-wrapped (launch_wrap), skipping kill"
+        )
+        logger.log_daemon(
+            f"standalone_launch_wrap_skip pid={pid} "
+            f"name={proc_info['process_name']}"
+        )
+        return
+
     print(f"[FISH] PID {pid} has CUDA ({', '.join(proc_info['cuda_libs'])}) → nsys relaunch")
     gpu_proc = GpuProcess(
-        pid=pid, cmdline=proc_info["cmdline"],
+        pid=pid, cmdline=cmdline,
         process_name=proc_info["process_name"], gpu_libs=proc_info["cuda_libs"],
     )
     nsys_proc = relaunch_with_nsys(gpu_proc, logger=logger)
@@ -1471,8 +1487,9 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
         logger.log_daemon("live_collectors_started")
 
     # Phase 4: Replay (optional — configured in fish_settings.ini [replay])
+    replay_rosbag = settings.getboolean("replay", "replay_rosbag")
     replay_cmd = settings.get("replay", "command").strip()
-    if replay_cmd:
+    if replay_rosbag and replay_cmd:
         print(f"[FISH] Starting replay: {replay_cmd}")
         logger.log_daemon(f"replay_start cmd={replay_cmd}")
         session_dir = get_session_dir()

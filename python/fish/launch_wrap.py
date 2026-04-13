@@ -68,22 +68,33 @@ def _get_session_dir() -> str:
         return os.path.expanduser("~/fish_traces/unsorted")
 
 
-def _load_gpu_containers() -> set:
-    """Return the set of full container ROS names that need nsys wrapping.
-
-    Read from launch_components.json's `__gpu_containers__` key, which is
-    populated by fish.launch_inspect. If not present, return an empty
-    set which the patch interprets as "wrap all containers".
-    """
+def _load_launch_components() -> dict:
+    """Load the full launch_components.json produced by launch_inspect."""
     path = os.path.join(_get_session_dir(), "launch_components.json")
     try:
         with open(path, "r") as f:
-            data = json.load(f)
+            return json.load(f)
     except (FileNotFoundError, ValueError, OSError):
-        return set()
+        return {}
+
+
+def _load_gpu_containers() -> set:
+    """Return the set of full container ROS names that need nsys wrapping."""
+    data = _load_launch_components()
     gpu = data.get("__gpu_containers__", [])
-    if isinstance(gpu, dict):
-        return set(gpu.keys())
+    if isinstance(gpu, list):
+        return set(gpu)
+    return set()
+
+
+def _load_gpu_nodes() -> set:
+    """Return the set of standalone node names that need nsys wrapping.
+
+    Read from launch_components.json's `__gpu_nodes__` key, which is
+    populated by fish.launch_inspect.
+    """
+    data = _load_launch_components()
+    gpu = data.get("__gpu_nodes__", [])
     if isinstance(gpu, list):
         return set(gpu)
     return set()
@@ -279,6 +290,105 @@ def _patch_composable_node_container(gpu_containers: set) -> None:
     ComposableNodeContainer.execute = patched_execute
 
 
+def _patch_standalone_node(gpu_nodes: set) -> None:
+    """Patch Node.execute() to wrap standalone GPU nodes with nsys.
+
+    Same approach as the container patch: at execute() time the context
+    is available, we resolve the node name, check against the GPU list,
+    and inject the nsys prefix into the Executable.
+
+    Skips ComposableNodeContainer instances (handled by the container patch).
+    """
+    from launch_ros.actions import Node, ComposableNodeContainer
+    from launch.utilities import normalize_to_list_of_substitutions
+
+    orig_execute = Node.execute
+
+    def _resolve_one(subs, context) -> str:
+        if subs is None:
+            return ""
+        if isinstance(subs, str):
+            return subs
+        if not isinstance(subs, (list, tuple)):
+            subs = [subs]
+        parts = []
+        for s in subs:
+            if isinstance(s, str):
+                parts.append(s)
+            elif hasattr(s, "perform"):
+                try:
+                    parts.append(s.perform(context))
+                except Exception:
+                    parts.append("")
+            else:
+                parts.append(str(s))
+        return "".join(parts)
+
+    def patched_execute(self, context):
+        # Skip containers — they have their own patch
+        if isinstance(self, ComposableNodeContainer):
+            return orig_execute(self, context)
+
+        if not gpu_nodes:
+            return orig_execute(self, context)
+
+        try:
+            name_subs = getattr(self, "_Node__node_name", None)
+            ns_subs = getattr(self, "_Node__node_namespace", None)
+            exec_subs = getattr(self, "_Node__node_executable", None)
+            pkg_subs = getattr(self, "_Node__package", None)
+
+            name = _resolve_one(name_subs, context)
+            ns = _resolve_one(ns_subs, context)
+            executable = _resolve_one(exec_subs, context)
+            package = _resolve_one(pkg_subs, context)
+
+            if ns and ns != "/":
+                full = f"{ns.rstrip('/')}/{name}" if name else ""
+            elif name:
+                full = f"/{name}"
+            else:
+                full = ""
+        except Exception:
+            return orig_execute(self, context)
+
+        # Check if this node is in the GPU list (match by full name, name, or executable)
+        wrap = False
+        for candidate in [full, name, executable]:
+            if candidate and candidate in gpu_nodes:
+                wrap = True
+                break
+
+        if wrap:
+            name_hint = name or executable or "node"
+            nsys_prefix = _make_nsys_prefix(name_hint)
+            new_prefix = normalize_to_list_of_substitutions(nsys_prefix)
+            exe = getattr(self, "_ExecuteLocal__process_description", None)
+            if exe is not None:
+                existing = getattr(exe, "_Executable__prefix", None)
+                if existing:
+                    combined = list(existing) + list(
+                        normalize_to_list_of_substitutions(" " + nsys_prefix)
+                    )
+                    exe._Executable__prefix = combined
+                else:
+                    exe._Executable__prefix = new_prefix
+                print(
+                    f"[FISH launch_wrap] wrapping standalone node '{name_hint}' "
+                    f"(pkg={package}) with nsys",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"[FISH launch_wrap] WARN: no process_description on node '{name_hint}'",
+                    file=sys.stderr,
+                )
+
+        return orig_execute(self, context)
+
+    Node.execute = patched_execute
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(
@@ -287,8 +397,10 @@ def main() -> int:
         )
         return 2
 
-    # Install the patch before importing any ros2 launch machinery
+    # Install patches before importing any ros2 launch machinery
     gpu_containers = _load_gpu_containers()
+    gpu_nodes = _load_gpu_nodes()
+
     if gpu_containers:
         print(
             f"[FISH launch_wrap] wrapping {len(gpu_containers)} GPU containers",
@@ -296,10 +408,23 @@ def main() -> int:
         )
     else:
         print(
-            "[FISH launch_wrap] no GPU-container list found; wrapping ALL",
+            "[FISH launch_wrap] no GPU-container list found; wrapping ALL containers",
             file=sys.stderr,
         )
     _patch_composable_node_container(gpu_containers)
+
+    if gpu_nodes:
+        print(
+            f"[FISH launch_wrap] wrapping {len(gpu_nodes)} standalone GPU nodes: "
+            f"{gpu_nodes}",
+            file=sys.stderr,
+        )
+        _patch_standalone_node(gpu_nodes)
+    else:
+        print(
+            "[FISH launch_wrap] no standalone GPU nodes to wrap",
+            file=sys.stderr,
+        )
 
     # Hand off to the real `ros2 launch` entry point with the user's args.
     # We use ros2cli.cli.main() which dispatches the 'launch' verb.

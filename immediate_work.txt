@@ -524,3 +524,33 @@ Approach:
 Priority: HIGH (required for complete system model in multi-container
   deployments — paper contribution: "FISH composes distributed traces
   into a unified scheduling hierarchy")
+
+
+11. Log active settings at daemon startup
+------------------------------------------
+Problem:
+  The daemon does not log which settings were active when it started.
+  fish_events only records stabilization parameters (cl_interval,
+  cl_count, ex_interval, ex_count). Other important settings like
+  replay_rosbag, replay command, settle_time, poll_interval, nsys flags,
+  and SKIP_PATTERNS are not recorded anywhere in the session output.
+
+  This makes it difficult to diagnose issues after the fact — e.g.
+  "was replay_rosbag true or false in this session?" requires checking
+  the container's fish_settings.ini, which may have changed since.
+
+Fix:
+  At daemon startup (after "started" log entry), dump all active settings
+  to fishlog as a single multi-line event or a separate settings snapshot
+  file. Two options:
+
+  A. fishlog event (compact):
+     <ts> daemon - - fish_daemon settings replay_rosbag=false replay_cmd= settle_time=3.0 poll_interval=1.0 ...
+
+  B. Separate file (complete):
+     Write fish_settings.ini contents to <session>/fishlog/active_settings.ini
+     This preserves the exact config used, including comments.
+
+  Option B is simpler and more useful for reproducibility.
+
+Priority: LOW (quality of life, not blocking functionality)

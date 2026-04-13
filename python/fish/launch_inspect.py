@@ -51,13 +51,14 @@ from typing import Any, Optional
 _captured_containers: list = []   # ComposableNodeContainer instances
 _captured_load_actions: list = [] # LoadComposableNodes instances
 _captured_nodes: list = []        # ComposableNode instances (top-level, may be container-attached)
+_captured_standalone_nodes: list = []  # Node (standalone executable) instances
 
 
 def _patch_captures() -> None:
     """Install __init__ hooks on ComposableNode, ComposableNodeContainer,
-    and LoadComposableNodes so every instance is recorded."""
+    LoadComposableNodes, and Node so every instance is recorded."""
     from launch_ros.descriptions import ComposableNode
-    from launch_ros.actions import ComposableNodeContainer, LoadComposableNodes
+    from launch_ros.actions import ComposableNodeContainer, LoadComposableNodes, Node
 
     cn_orig = ComposableNode.__init__
     def cn_patched(self, *args, **kwargs):
@@ -81,6 +82,15 @@ def _patch_captures() -> None:
         lcn_orig(self, *args, **kwargs)
         _captured_load_actions.append(self)
     LoadComposableNodes.__init__ = lcn_patched
+
+    # Capture standalone Node instances (not containers — those inherit
+    # from Node but are captured separately above).
+    node_orig = Node.__init__
+    def node_patched(self, *args, **kwargs):
+        node_orig(self, *args, **kwargs)
+        if not isinstance(self, ComposableNodeContainer):
+            _captured_standalone_nodes.append(self)
+    Node.__init__ = node_patched
 
 
 def _resolve(value: Any, context) -> Any:
@@ -365,6 +375,9 @@ GPU_PLUGIN_KEYWORDS = [
     "image_projection_based_fusion",
     "roi_cluster_fusion",
     "roi_pointcloud_fusion",
+    # Standalone GPU node executables/packages
+    "shape_estimation",
+    "detection_by_tracker",
 ]
 
 
@@ -472,11 +485,47 @@ def inspect_launch(package: str, launch_file: str, launch_args: list) -> dict:
     # Used by fish.launch_wrap to decide which containers to nsys-wrap.
     gpu_containers: list = []
     for cname, specs in result.items():
+        if cname.startswith("__"):
+            continue
         if any(
             _is_gpu_plugin(s.get("plugin"), s.get("package")) for s in specs
         ):
             gpu_containers.append(cname)
     result["__gpu_containers__"] = gpu_containers
+
+    # Derive standalone GPU nodes from captured Node instances.
+    # These are non-container executables that use GPU (e.g. shape_estimation).
+    # Used by fish.launch_wrap to nsys-wrap them at launch time.
+    gpu_nodes: list = []
+    standalone_nodes: list = []
+    for node in _captured_standalone_nodes:
+        try:
+            name = _resolve(
+                getattr(node, "_Node__node_name", None), context)
+            ns = _resolve(
+                getattr(node, "_Node__node_namespace", None), context)
+            executable = _resolve(
+                getattr(node, "_Node__node_executable", None), context)
+            package = _resolve(
+                getattr(node, "_Node__package", None), context)
+
+            full_name = f"{ns.rstrip('/')}/{name}" if ns and ns != "/" else f"/{name}" if name else None
+            spec = {
+                "name": name,
+                "namespace": ns,
+                "executable": executable,
+                "package": package,
+                "full_name": full_name,
+            }
+            standalone_nodes.append(spec)
+
+            if _is_gpu_plugin(executable, package):
+                gpu_nodes.append(full_name or name or executable)
+        except Exception:
+            continue
+
+    result["__standalone_nodes__"] = standalone_nodes
+    result["__gpu_nodes__"] = gpu_nodes
 
     return result
 

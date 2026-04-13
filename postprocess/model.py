@@ -29,7 +29,7 @@ MONGO_URI = "mongodb://localhost:27017"
 INFLUX_HOST = "http://127.0.0.1:8181"
 INFLUX_TOKEN_FILE = os.path.expanduser("~/inf.tok")
 
-TRACE_SESSION = "fish_20260330_234647"
+TRACE_SESSION = "fish_20260412_195042"
 vertex_counter = count(1)
 SKIP_DEBUG = True
 SKIP_RVIZ = True
@@ -192,10 +192,15 @@ def identify_executors(mongo):
 def identify_entities(mongo, nodes):
 
     entities = {}
-    for node_id in nodes:
+    total_nodes = len(nodes)
+    import time as _time
+    _t0 = _time.time()
+    for _idx, node_id in enumerate(nodes):
         node = nodes[node_id]
         full_name = node.A_v['full_name']
         node_handle = node.A_v['node_handle']
+        if _idx % 20 == 0:
+            print(f"  [identify_entities] {_idx}/{total_nodes} ({_time.time()-_t0:.1f}s)", flush=True)
 
         # Always call fallback (needed for timers, and as backup if node_info is missing, see known_bugs.txt BUG-001)
         fallback = entity_fallback_from_trace(mongo, node_handle)
@@ -275,11 +280,16 @@ def identify_entities(mongo, nodes):
         # Actions → mark component entities with action_name + action_role (no abstract entity)
         coll = mongo["ros2_trace"]
         action_type_map = {}
-        for action_name, action_info in info.get("Action_Servers", {}).items():
+        action_servers = info.get("Action_Servers", {})
+        if action_servers:
+            print(f"  [DEBUG] node={full_name} checking {len(action_servers)} action servers", flush=True)
+        for action_name, action_info in action_servers.items():
             action_type = action_info if isinstance(action_info, str) else action_info.get("type", "")
             short_name = action_name.rsplit('/', 1)[-1]
+            print(f"    [DEBUG] querying rclcpp_action_server_init for '{short_name}'...", end=" ", flush=True)
             act_init = coll.find_one({"event": "ros2:rclcpp_action_server_init",
                                       "payload.action_name": short_name})
+            print(f"{'found' if act_init else 'not found'}", flush=True)
 
             if act_init:
                 p = act_init["payload"]
@@ -318,101 +328,168 @@ def identify_entities(mongo, nodes):
 def identify_callbacks(mongo, nodes, entities, executors):
     """
     Layer 2→3: Trace callback chains for each entity and create Function vertices.
-    Chains (verified in mapping.txt):
-      rclcpp (C++ nodes):
-        sub:  rcl_subscription_init → rclcpp_subscription_init → rclcpp_subscription_callback_added → rclcpp_callback_register
-        serv: rcl_service_init → rclcpp_service_callback_added → rclcpp_callback_register
-        tmr:  rclcpp_timer_callback_added → rclcpp_callback_register
-      rclpy (Python nodes, fallback):
-        sub:  rcl_subscription_init → rclpy_subscription_callback_added → rclpy_callback_register
-        serv: rcl_service_init → rclpy_service_callback_added → rclpy_callback_register
-        tmr:  rclpy_timer_callback_added → rclpy_callback_register
-      act:  abstract entity — component services already get their own callbacks
-    Tries rclcpp path first, falls back to rclpy if not found.
-    nsys-profiled nodes are NOT skipped — their CPU-side callbacks (rclpy) are
-    extracted and marked with gpu_node=True. GPU function vertices (sm, ce) are
-    added separately by the GPU function layer extractor.
-    Returns dict {id_v: FishVertex} of Function vertices.
+
+    BULK LOAD approach: loads all init events (~13K docs) into memory once,
+    builds in-memory indexes, then resolves chains via dict lookups (O(1)).
+    This replaces the per-node find_one approach which was ~1450s for 297 nodes.
     """
+    import time as _time
     functions = {}
     coll = mongo["ros2_trace"]
+    print(f"[identify_callbacks] START (bulk) — {len(nodes)} nodes, {len(entities)} entities", flush=True)
+    _t0 = _time.time()
 
-    # Identify GPU-profiled PIDs from fishlog — these get functions from nsys, not rclcpp chains
+    # --- Phase 1: Bulk load all init events into memory ---
+    def _bulk(event_name):
+        docs = list(coll.find({"event": event_name}))
+        print(f"  loaded {event_name}: {len(docs)}", flush=True)
+        return docs
+
+    rcl_sub_init = _bulk("ros2:rcl_subscription_init")
+    rclcpp_sub_init = _bulk("ros2:rclcpp_subscription_init")
+    rclcpp_sub_cb_added = _bulk("ros2:rclcpp_subscription_callback_added")
+    rclcpp_cb_register = _bulk("ros2:rclcpp_callback_register")
+    rcl_srv_init = _bulk("ros2:rcl_service_init")
+    rclcpp_srv_cb_added = _bulk("ros2:rclcpp_service_callback_added")
+    rclcpp_tmr_cb_added = _bulk("ros2:rclcpp_timer_callback_added")
+    # rclpy fallbacks
+    rclpy_sub_cb_added = _bulk("ros2:rclpy_subscription_callback_added")
+    rclpy_srv_cb_added = _bulk("ros2:rclpy_service_callback_added")
+    rclpy_tmr_cb_added = _bulk("ros2:rclpy_timer_callback_added")
+    rclpy_cb_register = _bulk("ros2:rclpy_callback_register")
+
+    print(f"  Bulk load done in {_time.time()-_t0:.1f}s", flush=True)
+
+    # --- Phase 2: Build in-memory indexes ---
+    _t1 = _time.time()
+
+    # node_handle → [(sub_handle, topic_name), ...]
+    sub_init_by_node = {}
+    for d in rcl_sub_init:
+        p = d["payload"]
+        sub_init_by_node.setdefault(p["node_handle"], []).append(
+            (p["subscription_handle"], p["topic_name"]))
+
+    # subscription_handle → subscription (object pointer)
+    rclcpp_sub_by_handle = {}
+    for d in rclcpp_sub_init:
+        p = d["payload"]
+        rclcpp_sub_by_handle[p["subscription_handle"]] = p["subscription"]
+
+    # subscription → callback
+    rclcpp_sub_cb_by_sub = {}
+    for d in rclcpp_sub_cb_added:
+        p = d["payload"]
+        rclcpp_sub_cb_by_sub[p["subscription"]] = p["callback"]
+
+    # callback → symbol (rclcpp)
+    rclcpp_symbol_by_cb = {}
+    for d in rclcpp_cb_register:
+        p = d["payload"]
+        rclcpp_symbol_by_cb[p["callback"]] = p["symbol"]
+
+    # node_handle → [(srv_handle, srv_name), ...]
+    srv_init_by_node = {}
+    for d in rcl_srv_init:
+        p = d["payload"]
+        srv_init_by_node.setdefault(p["node_handle"], []).append(
+            (p["service_handle"], p["service_name"]))
+
+    # service_handle → callback (rclcpp)
+    rclcpp_srv_cb_by_handle = {}
+    for d in rclcpp_srv_cb_added:
+        p = d["payload"]
+        rclcpp_srv_cb_by_handle[p["service_handle"]] = p["callback"]
+
+    # timer_handle → callback (rclcpp)
+    rclcpp_tmr_cb_by_handle = {}
+    for d in rclcpp_tmr_cb_added:
+        p = d["payload"]
+        rclcpp_tmr_cb_by_handle[p["timer_handle"]] = p["callback"]
+
+    # rclpy fallback indexes
+    rclpy_sub_cb_by_handle = {}  # subscription_handle → callback
+    for d in rclpy_sub_cb_added:
+        p = d["payload"]
+        rclpy_sub_cb_by_handle[p["subscription_handle"]] = p["callback"]
+
+    rclpy_srv_cb_by_handle = {}  # service_handle → callback
+    for d in rclpy_srv_cb_added:
+        p = d["payload"]
+        rclpy_srv_cb_by_handle[p["service_handle"]] = p["callback"]
+
+    rclpy_tmr_cb_by_handle = {}  # timer_handle → callback
+    for d in rclpy_tmr_cb_added:
+        p = d["payload"]
+        rclpy_tmr_cb_by_handle[p["timer_handle"]] = p["callback"]
+
+    rclpy_symbol_by_cb = {}  # callback → symbol (rclpy)
+    for d in rclpy_cb_register:
+        p = d["payload"]
+        rclpy_symbol_by_cb[p["callback"]] = p["symbol"]
+
+    print(f"  Index build done in {_time.time()-_t1:.1f}s", flush=True)
+
+    # --- Phase 3: Resolve chains per node (all in-memory, O(1) lookups) ---
+    _t2 = _time.time()
     gpu_pids = nsys_profiled_pids(mongo)
 
-    # Build node_id → executor_pid map
     node_to_pid = {}
     for ex_id, ex in executors.items():
         for n_id in ex.Z_v:
             node_to_pid[n_id] = ex.A_v['pid']
 
+    def _resolve_cb(callback_ptr):
+        """Resolve callback pointer to (callback, symbol) via rclcpp then rclpy."""
+        sym = rclcpp_symbol_by_cb.get(callback_ptr)
+        if sym:
+            return {"callback": callback_ptr, "symbol": sym}
+        sym = rclpy_symbol_by_cb.get(callback_ptr)
+        if sym:
+            return {"callback": callback_ptr, "symbol": sym}
+        return None
+
     for node_id, node in nodes.items():
         is_gpu_node = node_to_pid.get(node_id) in gpu_pids
-
         node_handle = node.A_v['node_handle']
 
-        # --- Build per-node callback lookup maps from trace ---
-
-        # Subscription chain: topic_name → {callback, symbol}
+        # Subscription chain: topic → {callback, symbol}
         sub_chain = {}
-        for si in coll.find({"event": "ros2:rcl_subscription_init", "payload.node_handle": node_handle}):
-            sub_handle = si["payload"]["subscription_handle"]
-            topic = si["payload"]["topic_name"]
-
-            # Try rclcpp path first (C++ nodes)
-            csub = coll.find_one({"event": "ros2:rclcpp_subscription_init",
-                                  "payload.subscription_handle": sub_handle})
-            if csub:
-                subscription_obj = csub["payload"]["subscription"]
-                cb_added = coll.find_one({"event": "ros2:rclcpp_subscription_callback_added",
-                                          "payload.subscription": subscription_obj})
-                if cb_added:
-                    callback_ptr = cb_added["payload"]["callback"]
-                    cb_reg = coll.find_one({"event": "ros2:rclcpp_callback_register",
-                                            "payload.callback": callback_ptr})
-                    if cb_reg:
-                        sub_chain[topic] = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
+        for sub_handle, topic in sub_init_by_node.get(node_handle, []):
+            # rclcpp path: sub_handle → subscription → callback → symbol
+            sub_obj = rclcpp_sub_by_handle.get(sub_handle)
+            if sub_obj:
+                cb_ptr = rclcpp_sub_cb_by_sub.get(sub_obj)
+                if cb_ptr:
+                    info = _resolve_cb(cb_ptr)
+                    if info:
+                        sub_chain[topic] = info
                         continue
+            # rclpy fallback: sub_handle → callback → symbol
+            cb_ptr = rclpy_sub_cb_by_handle.get(sub_handle)
+            if cb_ptr:
+                info = _resolve_cb(cb_ptr)
+                if info:
+                    sub_chain[topic] = info
 
-            # Fallback: rclpy path (Python nodes)
-            py_cb = coll.find_one({"event": "ros2:rclpy_subscription_callback_added",
-                                   "payload.subscription_handle": sub_handle})
-            if py_cb:
-                callback_ptr = py_cb["payload"]["callback"]
-                cb_reg = coll.find_one({"event": "ros2:rclpy_callback_register",
-                                        "payload.callback": callback_ptr})
-                if cb_reg:
-                    sub_chain[topic] = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
-
-        # Service chain: service_name → {callback, symbol}
+        # Service chain: srv_name → {callback, symbol}
         srv_chain = {}
-        for si in coll.find({"event": "ros2:rcl_service_init", "payload.node_handle": node_handle}):
-            srv_handle = si["payload"]["service_handle"]
-            srv_name = si["payload"]["service_name"]
-
-            # Try rclcpp path first (C++ nodes)
-            srv_cb = coll.find_one({"event": "ros2:rclcpp_service_callback_added",
-                                    "payload.service_handle": srv_handle})
-            if srv_cb:
-                callback_ptr = srv_cb["payload"]["callback"]
-                cb_reg = coll.find_one({"event": "ros2:rclcpp_callback_register",
-                                        "payload.callback": callback_ptr})
-                if cb_reg:
-                    srv_chain[srv_name] = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
+        for srv_handle, srv_name in srv_init_by_node.get(node_handle, []):
+            # rclcpp path
+            cb_ptr = rclcpp_srv_cb_by_handle.get(srv_handle)
+            if cb_ptr:
+                info = _resolve_cb(cb_ptr)
+                if info:
+                    srv_chain[srv_name] = info
                     continue
+            # rclpy fallback
+            cb_ptr = rclpy_srv_cb_by_handle.get(srv_handle)
+            if cb_ptr:
+                info = _resolve_cb(cb_ptr)
+                if info:
+                    srv_chain[srv_name] = info
 
-            # Fallback: rclpy path (Python nodes)
-            py_cb = coll.find_one({"event": "ros2:rclpy_service_callback_added",
-                                   "payload.service_handle": srv_handle})
-            if py_cb:
-                callback_ptr = py_cb["payload"]["callback"]
-                cb_reg = coll.find_one({"event": "ros2:rclpy_callback_register",
-                                        "payload.callback": callback_ptr})
-                if cb_reg:
-                    srv_chain[srv_name] = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
-
-        # --- Match entities to their callbacks ---
-
+        # Match entities to their callbacks
         for e_id in node.Z_v:
             entity = entities.get(e_id)
             if not entity or entity.t_v != "E":
@@ -426,8 +503,6 @@ def identify_callbacks(mongo, nodes, entities, executors):
 
             elif etype == "serv":
                 cb_info = srv_chain.get(entity.A_v["label"])
-                # Action component services: rclcpp_service_callback_added doesn't fire,
-                # create function from action role instead
                 if not cb_info and entity.A_v.get("action_role"):
                     action_role = entity.A_v["action_role"]
                     action_label = entity.A_v["label"].rsplit("/_action/", 1)[0].rsplit("/", 1)[-1]
@@ -437,26 +512,15 @@ def identify_callbacks(mongo, nodes, entities, executors):
             elif etype == "tmr":
                 timer_handle = entity.A_v.get("timer_handle")
                 if timer_handle:
-                    # Try rclcpp path first
-                    tmr_cb = coll.find_one({"event": "ros2:rclcpp_timer_callback_added",
-                                            "payload.timer_handle": timer_handle})
-                    if tmr_cb:
-                        callback_ptr = tmr_cb["payload"]["callback"]
-                        cb_reg = coll.find_one({"event": "ros2:rclcpp_callback_register",
-                                                "payload.callback": callback_ptr})
-                        if cb_reg:
-                            cb_info = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
-
-                    # Fallback: rclpy path
+                    # rclcpp path
+                    cb_ptr = rclcpp_tmr_cb_by_handle.get(timer_handle)
+                    if cb_ptr:
+                        cb_info = _resolve_cb(cb_ptr)
+                    # rclpy fallback
                     if not cb_info:
-                        py_cb = coll.find_one({"event": "ros2:rclpy_timer_callback_added",
-                                               "payload.timer_handle": timer_handle})
-                        if py_cb:
-                            callback_ptr = py_cb["payload"]["callback"]
-                            cb_reg = coll.find_one({"event": "ros2:rclpy_callback_register",
-                                                    "payload.callback": callback_ptr})
-                            if cb_reg:
-                                cb_info = {"callback": callback_ptr, "symbol": cb_reg["payload"]["symbol"]}
+                        cb_ptr = rclpy_tmr_cb_by_handle.get(timer_handle)
+                        if cb_ptr:
+                            cb_info = _resolve_cb(cb_ptr)
 
             if cb_info:
                 entity.A_v["cb_addr"] = cb_info["callback"]
@@ -467,6 +531,9 @@ def identify_callbacks(mongo, nodes, entities, executors):
                 f = FishVertex("F", next(vertex_counter), f_A, [], 3)
                 entity.Z_v.append(f.id_v)
                 functions[f.id_v] = f
+
+    print(f"[identify_callbacks] DONE in {_time.time()-_t0:.1f}s — {len(functions)} functions "
+          f"(bulk load: {_time.time()-_t0:.1f}s, chain resolve: {_time.time()-_t2:.1f}s)", flush=True)
 
     return functions
 
@@ -480,28 +547,92 @@ def attribute_aspects(mongo, executors, nodes, entities):
     Transfer pub/cli aspects from node level to entity level using
     callback window scanning.
 
-    For each node's executor PID:
-      1. Load all callback_start/end + rcl_publish + client_request_sent events
-      2. For each rcl_publish inside a callback window → attribute pub aspect to entity
-      3. For each client_request_sent inside a callback window → attribute cli aspect to entity
-      4. Remove attributed aspects from node, warn about unattributed remainder
+    BULK LOAD approach: loads all runtime events once (~2.8M docs),
+    groups by vpid in memory, then processes per-node.
     """
+    import time as _time
     coll = mongo["ros2_trace"]
+    print(f"[attribute_aspects] START (bulk)", flush=True)
+    _t0 = _time.time()
 
     # Build callback_addr → entity mapping
-    cb_to_entity = {}  # callback_addr → (entity_id, entity)
+    cb_to_entity = {}
     for e_id, e in entities.items():
         cb = e.A_v.get("cb_addr")
         if cb and cb != "NA":
             cb_to_entity[cb] = (e_id, e)
 
-    # Build node_id → (node, vpid) mapping
+    # Build node_id → vpid mapping
     node_to_pid = {}
     for ex_id, ex in executors.items():
         pid = ex.A_v['pid']
         for n_id in ex.Z_v:
             node_to_pid[n_id] = pid
 
+    # Collect PIDs that need attribution
+    pids_needing_work = set()
+    for node_id, node in nodes.items():
+        pub_aspects = node.A_v.get("pub_aspects", [])
+        cli_aspects = node.A_v.get("cli_aspects", [])
+        if pub_aspects or cli_aspects:
+            pid = node_to_pid.get(node_id)
+            if pid is not None:
+                pids_needing_work.add(pid)
+
+    print(f"  PIDs needing attribution: {len(pids_needing_work)}", flush=True)
+
+    # --- Bulk load publisher_init and client_init (small, ~1.5K + ~260) ---
+    pub_handle_to_topic_by_pid = {}  # pid → {pub_handle: topic}
+    for doc in coll.find({"event": "ros2:rcl_publisher_init"}):
+        pid = doc["vpid"]
+        if pid in pids_needing_work:
+            pub_handle_to_topic_by_pid.setdefault(pid, {})[
+                doc["payload"]["publisher_handle"]] = doc["payload"]["topic_name"]
+
+    cli_handle_to_service_by_pid = {}  # pid → {client_handle: service}
+    for doc in coll.find({"event": "ros2:rcl_client_init"}):
+        pid = doc["vpid"]
+        if pid in pids_needing_work:
+            cli_handle_to_service_by_pid.setdefault(pid, {})[
+                doc["payload"]["client_handle"]] = doc["payload"]["service_name"]
+
+    print(f"  Loaded publisher/client init in {_time.time()-_t0:.1f}s", flush=True)
+
+    # --- Bulk load runtime events, grouped by vpid ---
+    _t1 = _time.time()
+    events_by_pid = {}  # pid → list of (ns, type, vtid, cb_or_handle)
+
+    def _full_ns(doc):
+        return int(doc["ts"].timestamp() * 1e9) + doc["ts_nanos"]
+
+    loaded = 0
+    for evt_name, evt_type, handle_key in [
+        ("ros2:callback_start", "cb_start", "callback"),
+        ("ros2:callback_end", "cb_end", "callback"),
+        ("ros2:rcl_publish", "publish", "publisher_handle"),
+        ("ros2:rclcpp_client_request_sent", "cli_req", "client_handle"),
+    ]:
+        t_evt = _time.time()
+        for doc in coll.find({"event": evt_name}):
+            pid = doc["vpid"]
+            if pid not in pids_needing_work:
+                continue
+            ns = _full_ns(doc)
+            events_by_pid.setdefault(pid, []).append(
+                (ns, evt_type, doc["vtid"], doc["payload"][handle_key]))
+            loaded += 1
+        print(f"  Loaded {evt_name}: {_time.time()-t_evt:.1f}s", flush=True)
+
+    print(f"  Total runtime events loaded: {loaded:,} in {_time.time()-_t1:.1f}s", flush=True)
+
+    # Sort each PID's events by timestamp
+    for pid in events_by_pid:
+        events_by_pid[pid].sort(key=lambda x: x[0])
+
+    print(f"  Sorted in {_time.time()-_t1:.1f}s", flush=True)
+
+    # --- Per-node attribution using in-memory events ---
+    _t2 = _time.time()
     total_attributed_pub = 0
     total_attributed_cli = 0
     total_unattributed = 0
@@ -516,78 +647,21 @@ def attribute_aspects(mongo, executors, nodes, entities):
         if pid is None:
             continue
 
-        # Build publisher_handle → topic map for this pid
-        pub_handle_to_topic = {}
-        for doc in coll.find({"event": "ros2:rcl_publisher_init", "vpid": pid}):
-            pub_handle_to_topic[doc["payload"]["publisher_handle"]] = doc["payload"]["topic_name"]
+        pub_handle_to_topic = pub_handle_to_topic_by_pid.get(pid, {})
+        cli_handle_to_service = cli_handle_to_service_by_pid.get(pid, {})
 
-        # Build client_handle → service_name map for this pid
-        cli_handle_to_service = {}
-        for doc in coll.find({"event": "ros2:rcl_client_init", "vpid": pid}):
-            cli_handle_to_service[doc["payload"]["client_handle"]] = doc["payload"]["service_name"]
-
-        # Load callback_start events for this pid (sorted by time)
-        cb_starts = []
-        for doc in coll.find({"event": "ros2:callback_start", "vpid": pid}).sort("ts", 1):
-            full_ns = int(doc["ts"].timestamp() * 1e9) + doc["ts_nanos"]
-            cb_starts.append({
-                "ns": full_ns, "vtid": doc["vtid"],
-                "cb": doc["payload"]["callback"]
-            })
-
-        # Load callback_end events
-        cb_ends = []
-        for doc in coll.find({"event": "ros2:callback_end", "vpid": pid}).sort("ts", 1):
-            full_ns = int(doc["ts"].timestamp() * 1e9) + doc["ts_nanos"]
-            cb_ends.append({
-                "ns": full_ns, "vtid": doc["vtid"],
-                "cb": doc["payload"]["callback"]
-            })
-
-        # Load rcl_publish events
-        publishes = []
-        for doc in coll.find({"event": "ros2:rcl_publish", "vpid": pid}).sort("ts", 1):
-            full_ns = int(doc["ts"].timestamp() * 1e9) + doc["ts_nanos"]
-            publishes.append({
-                "ns": full_ns, "vtid": doc["vtid"],
-                "ph": doc["payload"]["publisher_handle"]
-            })
-
-        # Load client_request_sent events
-        cli_requests = []
-        for doc in coll.find({"event": "ros2:rclcpp_client_request_sent", "vpid": pid}).sort("ts", 1):
-            full_ns = int(doc["ts"].timestamp() * 1e9) + doc["ts_nanos"]
-            cli_requests.append({
-                "ns": full_ns, "vtid": doc["vtid"],
-                "ch": doc["payload"]["client_handle"]
-            })
-
-        # Track active callbacks per thread
-        # For each publish/client_request, find enclosing callback_start/end
-        active_cbs = {}  # vtid → (cb_addr, start_ns)
+        # Scan timeline for this PID
+        active_cbs = {}  # vtid → cb_addr
         entity_pub_topics = {}  # cb_addr → set of topics
         entity_cli_services = {}  # cb_addr → set of services
 
-        # Merge all events into timeline
-        events = []
-        for e in cb_starts:
-            events.append(("cb_start", e["ns"], e["vtid"], e["cb"], None))
-        for e in cb_ends:
-            events.append(("cb_end", e["ns"], e["vtid"], e["cb"], None))
-        for e in publishes:
-            events.append(("publish", e["ns"], e["vtid"], None, e["ph"]))
-        for e in cli_requests:
-            events.append(("cli_req", e["ns"], e["vtid"], None, e["ch"]))
-        events.sort(key=lambda x: x[1])
-
-        for evt_type, ns, vtid, cb, handle in events:
+        for ns, evt_type, vtid, handle in events_by_pid.get(pid, []):
             if evt_type == "cb_start":
-                active_cbs[vtid] = cb
+                active_cbs[vtid] = handle  # handle = callback addr
             elif evt_type == "cb_end":
                 if vtid in active_cbs:
                     del active_cbs[vtid]
             elif evt_type == "publish":
-                # Try same thread first, then any active callback in same process
                 cb_addr = active_cbs.get(vtid)
                 if cb_addr is None and active_cbs:
                     cb_addr = next(iter(active_cbs.values()))
@@ -604,19 +678,19 @@ def attribute_aspects(mongo, executors, nodes, entities):
                     if service:
                         entity_cli_services.setdefault(cb_addr, set()).add(service)
 
-        # Transfer attributed pub aspects to entities (deduplicated)
+        # Transfer attributed pub aspects to entities
         attributed_pub_topics = set()
         for cb_addr, topics in entity_pub_topics.items():
             if cb_addr in cb_to_entity:
                 e_id, entity = cb_to_entity[cb_addr]
-                existing_pub_topics = {a["topic"] for a in entity.A_v["aspects"]
-                                       if a.get("aspect") == "pub"}
+                existing_pub_topics = {a.get("topic") for a in entity.A_v["aspects"]
+                                       if a.get("aspect") == "pub" and a.get("topic")}
                 for topic in topics:
                     if topic in existing_pub_topics:
                         continue
                     msg_type = ""
                     for pa in pub_aspects:
-                        if pa["topic"] == topic:
+                        if pa.get("topic") == topic:
                             msg_type = pa.get("msg_type", "")
                             break
                     entity.A_v["aspects"].append({
@@ -626,13 +700,13 @@ def attribute_aspects(mongo, executors, nodes, entities):
                     attributed_pub_topics.add(topic)
                     total_attributed_pub += 1
 
-        # Transfer attributed cli aspects to entities (deduplicated)
+        # Transfer attributed cli aspects
         attributed_cli_services = set()
         for cb_addr, services in entity_cli_services.items():
             if cb_addr in cb_to_entity:
                 e_id, entity = cb_to_entity[cb_addr]
-                existing_cli_services = {a["service"] for a in entity.A_v["aspects"]
-                                          if a.get("aspect") == "cli"}
+                existing_cli_services = {a.get("service") for a in entity.A_v["aspects"]
+                                          if a.get("aspect") == "cli" and a.get("service")}
                 for service in services:
                     if service in existing_cli_services:
                         continue
@@ -643,17 +717,16 @@ def attribute_aspects(mongo, executors, nodes, entities):
                     attributed_cli_services.add(service)
                     total_attributed_cli += 1
 
-        # Remove attributed aspects from node, keep unattributed
+        # Remove attributed, keep unattributed
         remaining_pub = [a for a in pub_aspects
-                         if a["topic"] not in attributed_pub_topics]
+                         if a.get("topic") not in attributed_pub_topics]
         remaining_cli = [a for a in cli_aspects
-                         if a["service"] not in attributed_cli_services]
+                         if a.get("service") not in attributed_cli_services]
         node.A_v["pub_aspects"] = remaining_pub
         node.A_v["cli_aspects"] = remaining_cli
 
         if remaining_pub or remaining_cli:
-            # Filter out /rosout — always unattributed (published from many places)
-            real_remaining = [a for a in remaining_pub if a["topic"] != "/rosout"]
+            real_remaining = [a for a in remaining_pub if a.get("topic") != "/rosout"]
             real_remaining += remaining_cli
             if real_remaining:
                 total_unattributed += len(real_remaining)
@@ -661,8 +734,14 @@ def attribute_aspects(mongo, executors, nodes, entities):
                       f"{len(real_remaining)} unattributed aspects: "
                       f"{[a.get('topic', a.get('service')) for a in real_remaining]}")
 
+    # Free bulk-loaded events to reclaim memory before visualization
+    del events_by_pid, pub_handle_to_topic_by_pid, cli_handle_to_service_by_pid
+    import gc; gc.collect()
+
     print(f"[attribute_aspects] Attributed: {total_attributed_pub} pub, "
           f"{total_attributed_cli} cli. Unattributed: {total_unattributed}")
+    print(f"[attribute_aspects] DONE in {_time.time()-_t0:.1f}s "
+          f"(load: {_t2-_t0:.1f}s, scan: {_time.time()-_t2:.1f}s)")
 
 
 # ---------------------------------------------------------------------------
@@ -838,7 +917,7 @@ def _aggregate_l0(G, executors, nodes):
     return count
 
 
-def add_horizontal_relations(G, node_infos, executors, nodes, entities, functions):
+def add_horizontal_relations(G, node_infos, executors, nodes, entities, functions, mongo=None):
     """Add horizontal edges using entity aspects, then aggregate upward.
 
     Phase 2 edge construction — all vertices and vertical edges must be complete.
@@ -886,13 +965,13 @@ def add_horizontal_relations(G, node_infos, executors, nodes, entities, function
                 continue
             entity_to_node[e_id] = n.id_v
             for aspect in e.A_v.get("aspects", []):
-                if aspect["aspect"] == "sub":
+                if aspect["aspect"] == "sub" and aspect.get("topic"):
                     topic = aspect["topic"]
                     sub_index.setdefault(topic, []).append((e_id, n.id_v))
                 elif aspect["aspect"] == "sub" and aspect.get("service"):
                     srv = aspect["service"]
                     srv_index.setdefault(srv, []).append((e_id, n.id_v))
-                elif aspect["aspect"] == "pub":
+                elif aspect["aspect"] == "pub" and aspect.get("topic"):
                     topic = aspect["topic"]
                     pub_entity_index.setdefault(topic, []).append((e_id, n.id_v))
 
@@ -1138,21 +1217,22 @@ if __name__ == "__main__":
     # Phase 2: Edge construction (horizontal edges)
     G = create_graph_add_vertical_relations(executors, nodes, entities, functions)
     node_infos = get_node_infos(mongo)
-    G = add_horizontal_relations(G, node_infos, executors, nodes, entities, functions)
+    G = add_horizontal_relations(G, node_infos, executors, nodes, entities, functions, mongo=mongo)
 
     create_graph_summary(G)
     metrics = print_graph_metrics(G)
 
-    # Visualization
-    export_fish_overview(G, "fish_overview", fmt="png")
-    export_fish_overview(G, "fish_overview", fmt="pdf")
-    for ex_id, ex in executors.items():
-        label = ex.A_v.get("label", str(ex_id))
-        export_fish_detail(G, ex_id, f"fish_detail_{label}", fmt="png")
-        export_fish_detail(G, ex_id, f"fish_detail_{label}", fmt="pdf")
-    export_fish_radial(G, "fish_radial", fmt="png")
-    export_fish_matrix(G, executors, nodes, entities, "fish_matrix", fmt="png")
-    export_fish_staircase(G, "fish_staircase", fmt="png")
-    export_fish_l3_chains(G, "fish_l3_chains", fmt="png")
-    export_fish_l3_chains(G, "fish_l3_chains", fmt="pdf")
+    # Visualization — JSON (D3 interactive) is the primary output
     export_fish_json(G)
+    # Static exports (optional, can be memory-heavy for large graphs)
+    # export_fish_overview(G, "fish_overview", fmt="png")
+    # export_fish_overview(G, "fish_overview", fmt="pdf")
+    # for ex_id, ex in executors.items():
+    #     label = ex.A_v.get("label", str(ex_id))
+    #     export_fish_detail(G, ex_id, f"fish_detail_{label}", fmt="png")
+    #     export_fish_detail(G, ex_id, f"fish_detail_{label}", fmt="pdf")
+    # export_fish_radial(G, "fish_radial", fmt="png")
+    # export_fish_matrix(G, executors, nodes, entities, "fish_matrix", fmt="png")
+    # export_fish_staircase(G, "fish_staircase", fmt="png")
+    # export_fish_l3_chains(G, "fish_l3_chains", fmt="png")
+    # export_fish_l3_chains(G, "fish_l3_chains", fmt="pdf")
