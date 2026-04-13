@@ -57,7 +57,13 @@ FISH_SESSION_NAME_FILE=/tmp/fish_session_name
 FISH_SESSION_DIR_FILE=/tmp/fish_session_dir
 FISH_ROOT=/opt/ros/humble/fish
 FISH_PYTHON=\$FISH_ROOT/python
-REAL_ROS2=\$(which -a ros2 | grep -v /fish/bin | head -1)
+REAL_ROS2=\$(which -a ros2 2>/dev/null | grep -v /fish/bin | head -1)
+if [[ -z "\$REAL_ROS2" ]]; then
+    # Fallback: source ROS setup if not in PATH
+    source /opt/ros/humble/setup.bash 2>/dev/null
+    REAL_ROS2=\$(which -a ros2 2>/dev/null | grep -v /fish/bin | head -1)
+    REAL_ROS2=\${REAL_ROS2:-/opt/ros/humble/bin/ros2}
+fi
 
 start_session() {
     SESSION=\$(cat \$FISH_SESSION_NAME_FILE 2>/dev/null)
