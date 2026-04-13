@@ -1,0 +1,166 @@
+Tracepoint Implementation Plan
+================================
+
+Date: 2026-04-13
+Status: Ready to implement
+
+
+1. What Exists (13 tracepoints, DO NOT BREAK)
+-----------------------------------------------
+
+install.sh (C++ side, 4 tracepoints):
+  - rclcpp_action_server_init(action_server_handle, action_name,
+      goal_service_handle, cancel_service_handle, result_service_handle)
+  - rclcpp_action_execute_goal(action_server_handle)
+  - rclcpp_action_execute_cancel(action_server_handle)
+  - rclcpp_action_execute_result(action_server_handle)
+
+install_rclpy.sh (Python side, 9 tracepoints):
+  - rclpy_subscription_callback_added
+  - rclpy_service_callback_added
+  - rclpy_timer_callback_added
+  - rclpy_timer_link_node
+  - rclpy_callback_register
+  - rclcpp_client_request_sent (rclcpp client.hpp patch)
+  - rclcpp_client_response_received (rclcpp client.hpp patch)
+  - rclcpp_client_request_sent (rclpy ctypes bridge)
+  - rclcpp_client_response_received (rclpy ctypes bridge)
+
+
+2. Changes to install.sh (REWRITE)
+-------------------------------------
+
+The file will be rewritten to include everything from section 1's
+install.sh PLUS the following changes. install_rclpy.sh is NOT rewritten.
+
+A. New tracepoint definitions in tracetools (tp_call.h, tracetools.h, tracetools.c):
+
+  fish_publish_link(const void* publisher_handle, const void* callback)
+  fish_client_link(const void* client_handle, const void* callback)
+
+B. Modified tracepoint signatures (add callback parameter):
+
+  rclcpp_action_execute_goal(action_server_handle, callback)   ← was (action_server_handle)
+  rclcpp_action_execute_cancel(action_server_handle, callback) ← was (action_server_handle)
+  rclcpp_action_execute_result(action_server_handle, callback) ← was (action_server_handle)
+
+C. New rclcpp packages to clone and patch:
+
+  Currently cloned: tracetools, rclcpp_action, rcl
+  Add: rclcpp (for executor.cpp and publisher.hpp)
+
+D. Thread-local in executor:
+
+  File: rclcpp/src/rclcpp/executor.cpp (or wherever callback_start fires)
+  Add: extern thread_local const void* __fish_active_callback;
+  Set: before callback_start, clear after callback_end
+
+E. fish_publish_link fire point:
+
+  File: rclcpp publisher.hpp or rcl/src/rcl/publisher.c
+  Location: inside publish(), after rcl_publish tracepoint
+  Code: if (__fish_active_callback) tracepoint(fish_publish_link, handle, __fish_active_callback)
+  Optimization: fire once per unique (handle, callback) pair
+
+F. fish_client_link fire point (rclcpp side):
+
+  File: rclcpp client.hpp (already patched by install_rclpy.sh for client_request_sent)
+  Location: next to rclcpp_client_request_sent
+  Code: tracepoint(fish_client_link, client_handle, __fish_active_callback)
+
+G. Action server callback_register:
+
+  File: rclcpp_action/src/server.cpp (already patched)
+  Location: after action_server_init tracepoint, in constructor
+  Code: 3x rclcpp_callback_register for goal/cancel/result user callbacks
+  Label: "action:<action_name>/goal", "action:<action_name>/cancel", etc.
+
+H. Action server execute with callback parameter:
+
+  File: rclcpp_action/src/server.cpp (already patched)
+  Location: in execute_goal/cancel/result_request_received
+  Code: pass user callback address as second parameter
+
+
+3. Changes to install_rclpy.sh (SMALL ADDITIONS)
+---------------------------------------------------
+
+Keep all existing patches. Add fish_client_link fire points:
+
+A. rclpy/client.py call_async():
+   Next to existing trace_client_request_sent call, add:
+   fish_rclpy_trace.trace_client_link(client_handle, active_callback)
+
+B. rclpy/action/client.py send_goal_async():
+   Next to existing trace_client_request_sent call, add:
+   fish_rclpy_trace.trace_client_link(client_handle, active_callback)
+
+C. fish_rclpy_trace.py:
+   Add trace_client_link() function using ctypes LTTng bridge
+
+
+4. Changes to install_fish_tracepoints (MINIMAL)
+---------------------------------------------------
+
+Update the unified wrapper to mention new tracepoints in help text.
+No structural changes needed.
+
+
+5. Changes to names.py patch
+-------------------------------
+
+Add to DEFAULT_EVENTS_ROS:
+  "ros2:fish_publish_link",
+  "ros2:fish_client_link",
+
+The 4 action events are already there.
+
+
+6. Build order
+----------------
+
+  1. Clone tracetools, rclcpp, rclcpp_action, rcl (if not cached)
+  2. Patch tracetools (tp_call.h, tracetools.h, tracetools.c)
+  3. Build tracetools
+  4. Patch rclcpp (executor.cpp, publisher.hpp or publisher.c)
+  5. Patch rclcpp_action (server.cpp)
+  6. Build rclcpp (needed for executor + publisher)
+  7. Build rclcpp_action
+  8. Patch names.py
+  9. Verify symbols exported
+
+
+7. Files to read before implementing
+---------------------------------------
+
+  Source code (ROS 2):
+    /home/tue037807/source/ros2/src/ros2/rclcpp/rclcpp/src/rclcpp/executor.cpp
+      — find where callback_start fires, add thread-local
+    /home/tue037807/source/ros2/src/ros2/rclcpp/rclcpp/include/rclcpp/publisher.hpp
+      — find publish() method, add fish_publish_link
+    /home/tue037807/source/ros2/src/ros2/rclcpp/rclcpp_action/src/server.cpp
+      — already patched, update for callback param
+    /home/tue037807/source/ros2/src/ros2/ros2_tracing/tracetools/
+      — tp_call.h, tracetools.h, tracetools.c structure
+
+  Existing FISH patches:
+    fish_tracepoints/install.sh — current C++ patch (rewrite this)
+    fish_tracepoints/install_rclpy.sh — current Python patch (add to this)
+
+  Design docs:
+    notes/extra_tracepoints.txt — full specification
+    notes/callback_association.txt — rationale and fallback strategy
+    notes/action_resolve_improved.txt — entity model design
+
+
+8. Verification after implementation
+---------------------------------------
+
+  A. Symbol check: nm -D libtracetools.so | grep fish_publish_link
+  B. Event count: DEFAULT_EVENTS_ROS should have 34 events (was 32)
+  C. Trace test: run AAS session, check for fish_publish_link events
+  D. Model test: run model_improved.py with new trace, verify:
+     - pub aspects attributed via tracepoint (not runtime fallback)
+     - cli aspects attributed
+     - action server callbacks resolved (not synthetic)
+     - split callbacks created for cli aspect entities
