@@ -1,0 +1,280 @@
+Action Resolution — Improved Model
+====================================
+
+Date: 2026-04-13
+Status: Design complete, pending implementation in model_improved.py
+
+
+1. Problem with Current Approach
+---------------------------------
+
+The current model.py creates an abstract "action entity" (etype="act") that
+groups 5 component entities. This leads to:
+
+  - Duplicate entities: action component services are created twice — once
+    from the Service_Servers loop and again from the action detection loop
+  - Abstract entity has no callback of its own
+  - Artificial separation between the action abstraction and the actual
+    schedulable units (services, subscriptions)
+
+Additionally, entity types include "cli" (service client) and "pub"
+(publisher) as entity types, when in reality these have no callbacks and
+are not schedulable — they are communication aspects of other entities.
+
+
+2. Fundamental ROS 2 Entity Types
+-----------------------------------
+
+In ROS 2, the executor dispatches callbacks for exactly 3 primitive types:
+
+  sub   — Subscription callback, fired when a message arrives on a topic
+  tmr   — Timer callback, fired periodically
+  serv  — Service server callback, fired when a service request arrives
+
+These are the ONLY entity types in the FISH model because they are the
+only things the executor schedules. Each entity has exactly one callback
+(1:1 mapping between entity and function vertex).
+
+Publishers and service clients are NOT entity types because they have no
+callbacks — they are output mechanisms used WITHIN a callback:
+
+  pub   — Publish to a topic (aspect of the calling entity)
+  cli   — Send a service request (aspect of the calling entity)
+
+Entity types determine the FIRING MECHANISM (how/when the callback runs).
+Aspects determine the COMMUNICATION PATTERN (what the callback does),
+which forms the edges of the FISH graph.
+
+
+3. Action Server Internals (from ROS 2 source)
+------------------------------------------------
+
+Source: rclcpp_action/src/server.cpp, rclcpp_action/include/rclcpp_action/server.hpp
+
+An ActionServer is implemented as a Waitable (not as individual service
+callbacks). Internally it creates:
+
+  3 × service server:
+    /<action_name>/_action/send_goal      — receives goal requests
+    /<action_name>/_action/cancel_goal    — receives cancel requests
+    /<action_name>/_action/get_result     — receives result requests
+
+  2 × publisher:
+    /<action_name>/_action/feedback       — publishes execution feedback
+    /<action_name>/_action/status         — publishes goal status updates
+
+  1 × timer:
+    expiration timer                      — manages goal result timeout
+
+The Waitable multiplexes all entities through a single execute() method.
+When the executor calls Waitable.execute(), it checks which entity is
+ready and dispatches to the appropriate user callback:
+
+  GoalService ready    → handle_goal()      user decides ACCEPT/REJECT
+  CancelService ready  → handle_cancel()    user decides ACCEPT/REJECT
+  ResultService ready  → handle_result()    sends result to client
+  Expired ready        → check_expired()    internal cleanup
+
+IMPORTANT: Because the Waitable pattern is used, rclcpp_service_callback_added
+does NOT fire for action service components. Instead, FISH custom tracepoints
+fire: rclcpp_action_execute_goal, rclcpp_action_execute_cancel,
+rclcpp_action_execute_result.
+
+However, rcl_service_init DOES fire for each of the 3 services (this
+happens in the rcl layer, below the Waitable abstraction).
+
+
+4. Action Client Internals (from ROS 2 source)
+------------------------------------------------
+
+Source: rclcpp_action/src/client.cpp, rclcpp_action/include/rclcpp_action/client.hpp
+
+An ActionClient is also a Waitable. Internally it creates:
+
+  3 × service client:
+    /<action_name>/_action/send_goal      — sends goal requests
+    /<action_name>/_action/cancel_goal    — sends cancel requests
+    /<action_name>/_action/get_result     — requests results
+
+  2 × subscription:
+    /<action_name>/_action/feedback       — receives feedback messages
+    /<action_name>/_action/status         — receives status updates
+
+The Waitable dispatches:
+
+  FeedbackSubscription ready → feedback callback fires
+  StatusSubscription ready   → status callback fires
+  GoalClient ready           → goal response callback fires
+  CancelClient ready         → cancel response callback fires
+  ResultClient ready         → result response callback fires
+
+send_goal_async() execution:
+  1. Synchronous: request is sent immediately in the calling thread
+  2. Asynchronous: response callback fires in executor context via Waitable
+
+The 3 service client calls (send_goal, cancel_goal, get_result) are made
+FROM WITHIN some other entity's callback — e.g., a timer callback in the
+mission controller, or another subscription callback. In ROS 2, nothing
+executes outside of callbacks at runtime.
+
+
+5. Improved FISH Model for Actions
+-------------------------------------
+
+Action Server node:
+  [serv] /_action/send_goal          action_name=X, action_role=goal
+    callback: handle_goal()
+    aspects: pub(/_action/feedback), pub(/_action/status)
+
+  [serv] /_action/cancel_goal        action_name=X, action_role=cancel
+    callback: handle_cancel()
+
+  [serv] /_action/get_result         action_name=X, action_role=result
+    callback: handle_result()
+
+  [tmr] expiration_timer             action_name=X, action_role=expiry
+    callback: check_expired()
+
+Action Client node:
+  [sub] /_action/feedback            action_name=X, action_role=feedback
+    callback: on_feedback()
+
+  [sub] /_action/status              action_name=X, action_role=status
+    callback: on_status()
+
+  [tmr/sub/serv] <calling entity>    (whatever entity initiates the action)
+    callback: <user callback>
+    aspects: cli(/_action/send_goal),
+             cli(/_action/cancel_goal),
+             cli(/_action/get_result)
+
+There is NO abstract action entity. Each component is a regular entity
+(sub/tmr/serv) with an action_name and action_role property that marks
+it as part of an action.
+
+
+6. Communication Edges for Actions
+------------------------------------
+
+  pub aspect → sub entity  (nature: msg)
+    Server send_goal entity  ──pub:feedback──►  Client feedback sub entity
+    Server send_goal entity  ──pub:status────►  Client status sub entity
+
+  cli aspect → serv entity  (nature: dep)
+    Client calling entity  ──cli:send_goal────►  Server send_goal serv entity
+    Client calling entity  ──cli:cancel_goal──►  Server cancel_goal serv entity
+    Client calling entity  ──cli:get_result───►  Server get_result serv entity
+
+
+7. Detection from Trace Events
+--------------------------------
+
+Action detection does not require special handling. The components are
+detected through standard init chains:
+
+  Server side:
+    rcl_service_init [node_handle, service_handle, "/_action/send_goal"]
+    rcl_service_init [node_handle, service_handle, "/_action/cancel_goal"]
+    rcl_service_init [node_handle, service_handle, "/_action/get_result"]
+    rcl_publisher_init [node_handle, publisher_handle, "/_action/feedback"]
+    rcl_publisher_init [node_handle, publisher_handle, "/_action/status"]
+
+  Client side:
+    rcl_client_init [node_handle, client_handle, "/_action/send_goal"]
+    rcl_client_init [node_handle, client_handle, "/_action/cancel_goal"]
+    rcl_client_init [node_handle, client_handle, "/_action/get_result"]
+    rcl_subscription_init [node_handle, sub_handle, "/_action/feedback"]
+    rcl_subscription_init [node_handle, sub_handle, "/_action/status"]
+
+After entity creation, scan all entities for the "/_action/" pattern in
+their label. Group by base name (everything before "/_action/"). If a
+group has the expected components, add action_name and action_role
+properties to each entity.
+
+Publisher → entity attribution comes from fish_publish_link tracepoint
+(or runtime callback window scan as fallback). Client → entity
+attribution comes from fish_client_link tracepoint (or runtime scan).
+
+
+8. Callback Matching for Action Components
+--------------------------------------------
+
+Standard service callback chain does NOT work for action components
+because rclcpp_service_callback_added does not fire (Waitable pattern).
+
+Instead, use FISH custom tracepoints:
+  rclcpp_action_server_init → links action_server_handle to service handles
+  rclcpp_action_execute_goal → fires when goal handler dispatched
+  rclcpp_action_execute_cancel → fires when cancel handler dispatched
+  rclcpp_action_execute_result → fires when result handler dispatched
+
+These provide the action_server_handle which can be linked back to the
+service entities via rcl_service_init handles stored in
+rclcpp_action_server_init payload (goal_service_handle,
+cancel_service_handle, result_service_handle).
+
+
+9. Service Client Continuation Function (Split Callback)
+-----------------------------------------------------------
+
+When an entity has a cli aspect, its callback execution is split into
+two phases by the service call:
+
+  callback_start(callback_ptr)
+    ... part1: code before request ...
+    rclcpp_client_request_sent(client_handle, sequence_number)
+    ... server processes request ...
+    rclcpp_client_response_received(client_handle, sequence_number, response_type)
+    ... part2: code after response ...
+  callback_end(callback_ptr)
+
+This creates a precedence chain in the scheduling model:
+
+  [F] entity_cb_part1 ──request──► [F] server_cb ──response──► [F] entity_cb_part2
+
+Both tracepoints already exist as FISH custom tracepoints (see
+client_tracepoint_status.txt). They carry sequence_number for matching
+request to response across concurrent service calls.
+
+Timing extraction:
+  part1_duration = client_request_sent.ts - callback_start.ts
+  server_duration = client_response_received.ts - client_request_sent.ts
+  part2_duration = callback_end.ts - client_response_received.ts
+
+This split is critical for scheduling analysis because:
+  - part1 and part2 have different execution time characteristics
+  - The server execution is a blocking dependency between them
+  - Response time of the entity = part1 + server + part2
+  - Without the split, the model would show the entity's callback as
+    one monolithic function with no dependency on the server
+
+Implementation in model_improved.py:
+  - For each entity with cli aspect, check if rclcpp_client_request_sent
+    events exist within its callback windows
+  - If found: create two function vertices (part1 + part2 = continuation)
+  - Connect: part1 → server entity → part2 (precedence edges)
+  - If not found (tracepoint not firing): keep single function vertex
+
+
+10. Summary of Changes from Current Model
+-------------------------------------------
+
+Removed:
+  - etype "act" (abstract action entity)
+  - etype "cli" (service client entity type → becomes aspect)
+  - etype "pub" (publisher entity type → becomes aspect)
+  - Duplicate entity creation for action components
+  - attribute_aspects runtime scan for pub/cli (replaced by tracepoints)
+
+Added:
+  - action_name, action_role properties on component entities
+  - fish_publish_link(publisher_handle, callback) custom tracepoint
+  - fish_client_link(client_handle, callback) custom tracepoint
+
+Preserved:
+  - FishVertex, FishEdge, FishMessage dataclasses
+  - Entity types: sub, tmr, serv (with 1:1 callback mapping)
+  - Aspects: pub, cli (communication patterns on entities)
+  - External boundary mechanism
+  - Bulk load approach for model extraction
+  - Expansion operator (G) for visualization

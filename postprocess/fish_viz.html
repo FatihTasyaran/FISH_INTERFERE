@@ -104,6 +104,7 @@ fetch('fish_graph.json').then(r=>r.json()).then(raw=>{
   const base = raw.edges
     .filter(e=>{
       if(e.rel!=="comm") return false;
+      if(e.level==="L-1") return true;  // cross-container
       if(e.level==="L3") return true;
       if(e.level==="L2"){
         // skip if L3 already covers this E→E pair
@@ -167,14 +168,16 @@ fetch('fish_graph.json').then(r=>r.json()).then(raw=>{
   /* ── Stair layout: group by level, sort within level, stagger Y ── */
   function computeStairPositions(vn){
     // Group nodes by level (type)
-    const layers = {EX:[], N:[], E:[], F:[]};
+    const layers = {CN:[], EX:[], N:[], E:[], F:[]};
     const extNodes = [];
     vn.forEach(n=>{
       if(n.external){ extNodes.push(n); }
       else if(layers[n.type]) layers[n.type].push(n);
     });
 
-    // Sort within each layer: group by parent, then by label
+    // Sort: CN by label, EX by label, others by parent then label
+    layers.CN.sort((a,b)=>(a.label||"").localeCompare(b.label||""));
+
     for(const type of ["N","E","F"]){
       layers[type].sort((a,b)=>{
         const pa = parentOf[a.id]||0, pb = parentOf[b.id]||0;
@@ -188,7 +191,7 @@ fetch('fish_graph.json').then(r=>r.json()).then(raw=>{
     const margin = 60;
     let currentY = 80;
 
-    for(const type of ["EX","N","E","F"]){
+    for(const type of ["CN","EX","N","E","F"]){
       const nodes = layers[type];
       if(!nodes.length) continue;
 
