@@ -24,11 +24,13 @@ set -euo pipefail
 DO_ACTION=false
 DO_RCLPY=false
 DO_CLIENT=false
+DO_LINK=false
 
 if [ $# -eq 0 ]; then
     DO_ACTION=true
     DO_RCLPY=true
     DO_CLIENT=true
+    DO_LINK=true
 fi
 
 while [ $# -gt 0 ]; do
@@ -36,13 +38,15 @@ while [ $# -gt 0 ]; do
         --action) DO_ACTION=true ;;
         --rclpy)  DO_RCLPY=true ;;
         --client) DO_CLIENT=true ;;
-        --all)    DO_ACTION=true; DO_RCLPY=true; DO_CLIENT=true ;;
+        --link)   DO_LINK=true ;;
+        --all)    DO_ACTION=true; DO_RCLPY=true; DO_CLIENT=true; DO_LINK=true ;;
         --help|-h)
-            echo "Usage: $0 [--action] [--rclpy] [--client] [--all] [--help]"
+            echo "Usage: $0 [--action] [--rclpy] [--client] [--link] [--all] [--help]"
             echo ""
             echo "  --action  Install 4 action server dispatch tracepoints"
             echo "  --rclpy   Install 5 rclpy callback chain tracepoints"
             echo "  --client  Install 2 service client tracepoints"
+            echo "  --link    Install 2 callback-link tracepoints (fish_publish_link, fish_client_link)"
             echo "  --all     Install all (default if no flag given)"
             exit 0
             ;;
@@ -127,7 +131,7 @@ clone_repos() {
         "https://github.com/ros2/ros2_tracing.git" \
         "$TRACETOOLS_TAG" "$CLONE_DIR/ros2_tracing"
 
-    if $DO_ACTION; then
+    if $DO_ACTION || $DO_LINK; then
         clone_if_needed \
             "https://github.com/ros2/rclcpp.git" \
             "$RCLCPP_TAG" "$CLONE_DIR/rclcpp"
@@ -156,6 +160,15 @@ copy_sources() {
         cp "$CLONE_DIR/rcl/rcl_action/src/rcl_action/action_server_impl.h" \
            "$OVERLAY_WS/src/rclcpp_action/src/action_server_impl.h"
         log "  Copied action_server_impl.h from rcl source"
+    fi
+
+    if $DO_LINK; then
+        if [ -d "$OVERLAY_WS/src/rcl" ]; then
+            warn "  $OVERLAY_WS/src/rcl exists, removing for clean state"
+            rm -rf "$OVERLAY_WS/src/rcl"
+        fi
+        cp -r "$CLONE_DIR/rcl/rcl" "$OVERLAY_WS/src/rcl"
+        log "  Copied rcl into workspace (for publish/client fire points)"
     fi
 }
 
@@ -723,6 +736,277 @@ print("  Done.")
 PATCH_CLIENT_C
 }
 
+# ─── Tracetools: callback-link tracepoints ───────────────────────────────────
+patch_tracetools_link() {
+    log "  Patching tracetools for callback-link tracepoints ..."
+
+    python3 <<'PATCH_LINK_C'
+OVERLAY = "/root/trace_overlay_ws/src/tracetools"
+
+# ── tp_call.h ──
+path = f"{OVERLAY}/include/tracetools/tp_call.h"
+with open(path) as f:
+    content = f.read()
+
+if "fish_publish_link" in content:
+    print("    tp_call.h already has link events, skipping")
+else:
+    INSERT_BEFORE = "#endif  // _TRACETOOLS__TP_CALL_H_"
+    new_events = """
+/* FISH callback-link tracepoints */
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_publish_link,
+  TP_ARGS(
+    const void *, publisher_handle_arg,
+    const void *, callback_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, publisher_handle, publisher_handle_arg)
+    ctf_integer_hex(const void *, callback, callback_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_client_link,
+  TP_ARGS(
+    const void *, client_handle_arg,
+    const void *, callback_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, client_handle, client_handle_arg)
+    ctf_integer_hex(const void *, callback, callback_arg)
+  )
+)
+
+"""
+    content = content.replace(INSERT_BEFORE, new_events + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tp_call.h patched — 2 link TRACEPOINT_EVENT added")
+
+# ── tracetools.h ──
+path = f"{OVERLAY}/include/tracetools/tracetools.h"
+with open(path) as f:
+    content = f.read()
+
+if "fish_publish_link" in content:
+    print("    tracetools.h already has link events, skipping")
+else:
+    INSERT_BEFORE = "#ifdef __cplusplus\n}\n#endif\n\n#endif  // TRACETOOLS__TRACETOOLS_H_"
+    new_decls = """/* FISH callback-link tracepoints */
+
+/// `fish_publish_link` — associates publisher_handle to active callback
+DECLARE_TRACEPOINT(
+  fish_publish_link,
+  const void * publisher_handle,
+  const void * callback)
+
+/// `fish_client_link` — associates client_handle to active callback
+DECLARE_TRACEPOINT(
+  fish_client_link,
+  const void * client_handle,
+  const void * callback)
+
+/// Thread-local: the callback currently being dispatched by the executor.
+extern __thread const void * __fish_active_callback;
+
+"""
+    content = content.replace(INSERT_BEFORE, new_decls + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tracetools.h patched — 2 link DECLARE_TRACEPOINT + extern thread-local")
+
+# ── tracetools.c ──
+path = f"{OVERLAY}/src/tracetools.c"
+with open(path) as f:
+    content = f.read()
+
+if "fish_publish_link" in content:
+    print("    tracetools.c already has link events, skipping")
+else:
+    # 1. Modify callback_start to set __fish_active_callback
+    old_cb_start = """void TRACEPOINT(
+  callback_start,
+  const void * callback,
+  const bool is_intra_process)
+{
+  CONDITIONAL_TP(
+    callback_start,
+    callback,
+    is_intra_process);
+}"""
+    new_cb_start = """void TRACEPOINT(
+  callback_start,
+  const void * callback,
+  const bool is_intra_process)
+{
+  __fish_active_callback = callback;
+  CONDITIONAL_TP(
+    callback_start,
+    callback,
+    is_intra_process);
+}"""
+    if old_cb_start in content:
+        content = content.replace(old_cb_start, new_cb_start)
+        print("    callback_start modified — sets __fish_active_callback")
+    else:
+        print("    WARNING: callback_start pattern not found")
+
+    # 2. Modify callback_end to clear __fish_active_callback
+    old_cb_end = """void TRACEPOINT(
+  callback_end,
+  const void * callback)
+{
+  CONDITIONAL_TP(
+    callback_end,
+    callback);
+}"""
+    new_cb_end = """void TRACEPOINT(
+  callback_end,
+  const void * callback)
+{
+  CONDITIONAL_TP(
+    callback_end,
+    callback);
+  __fish_active_callback = NULL;
+}"""
+    if old_cb_end in content:
+        content = content.replace(old_cb_end, new_cb_end)
+        print("    callback_end modified — clears __fish_active_callback")
+    else:
+        print("    WARNING: callback_end pattern not found")
+
+    # 3. Insert thread-local, dedup cache, and link functions before #ifndef _WIN32
+    INSERT_BEFORE = "#ifndef _WIN32\n# pragma GCC diagnostic pop"
+    new_code = """/* FISH thread-local active callback */
+__thread const void * __fish_active_callback = NULL;
+
+/* FISH dedup cache — fire each (handle, callback) pair only once */
+#define FISH_LINK_CACHE_SIZE 128
+typedef struct { const void * handle; const void * callback; } fish_link_pair_t;
+static __thread fish_link_pair_t fish_pub_cache[FISH_LINK_CACHE_SIZE];
+static __thread int fish_pub_cache_n = 0;
+static __thread fish_link_pair_t fish_cli_cache[FISH_LINK_CACHE_SIZE];
+static __thread int fish_cli_cache_n = 0;
+
+static int
+fish_link_seen(fish_link_pair_t * cache, int * n,
+               const void * handle, const void * callback)
+{
+  int i;
+  for (i = 0; i < *n; i++) {
+    if (cache[i].handle == handle && cache[i].callback == callback) {
+      return 1;
+    }
+  }
+  if (*n < FISH_LINK_CACHE_SIZE) {
+    cache[*n].handle = handle;
+    cache[*n].callback = callback;
+    (*n)++;
+  }
+  return 0;
+}
+
+void TRACEPOINT(
+  fish_publish_link,
+  const void * publisher_handle,
+  const void * callback)
+{
+  if (callback == NULL) { return; }
+  if (fish_link_seen(fish_pub_cache, &fish_pub_cache_n,
+                     publisher_handle, callback)) { return; }
+  CONDITIONAL_TP(
+    fish_publish_link,
+    publisher_handle,
+    callback);
+}
+
+void TRACEPOINT(
+  fish_client_link,
+  const void * client_handle,
+  const void * callback)
+{
+  if (callback == NULL) { return; }
+  if (fish_link_seen(fish_cli_cache, &fish_cli_cache_n,
+                     client_handle, callback)) { return; }
+  CONDITIONAL_TP(
+    fish_client_link,
+    client_handle,
+    callback);
+}
+
+"""
+    content = content.replace(INSERT_BEFORE, new_code + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tracetools.c patched — thread-local + dedup + 2 link functions")
+
+print("  Done.")
+PATCH_LINK_C
+}
+
+# ─── Patch and build rcl (link fire points) ──────────────────────────────────
+patch_and_build_rcl() {
+    step "Patching and building rcl (publisher.c, client.c) ..."
+
+    python3 <<'PATCH_RCL'
+OVERLAY = "/root/trace_overlay_ws/src/rcl"
+
+# ── publisher.c: add fish_publish_link after rcl_publish tracepoint ──
+path = f"{OVERLAY}/src/rcl/publisher.c"
+with open(path) as f:
+    content = f.read()
+
+if "fish_publish_link" in content:
+    print("    publisher.c already patched, skipping")
+else:
+    old = "  TRACEPOINT(rcl_publish, (const void *)publisher, (const void *)ros_message);"
+    new = old + "\n  TRACEPOINT(fish_publish_link, (const void *)publisher, __fish_active_callback);"
+    if old in content:
+        content = content.replace(old, new)
+        with open(path, "w") as f:
+            f.write(content)
+        print("    publisher.c patched — fish_publish_link after rcl_publish")
+    else:
+        print("    WARNING: rcl_publish tracepoint not found in publisher.c")
+
+# ── client.c: add fish_client_link in rcl_send_request ──
+path = f"{OVERLAY}/src/rcl/client.c"
+with open(path) as f:
+    content = f.read()
+
+if "fish_client_link" in content:
+    print("    client.c already patched, skipping")
+else:
+    old = "  rcutils_atomic_exchange_int64_t(&client->impl->sequence_number, *sequence_number);"
+    new = old + "\n  TRACEPOINT(fish_client_link, (const void *)client, __fish_active_callback);"
+    if old in content:
+        content = content.replace(old, new)
+        with open(path, "w") as f:
+            f.write(content)
+        print("    client.c patched — fish_client_link in rcl_send_request")
+    else:
+        print("    WARNING: rcl_send_request pattern not found in client.c")
+
+print("  Done.")
+PATCH_RCL
+
+    # Build rcl
+    set +u && source "$OVERLAY_WS/install/setup.bash" && set -u
+    cd "$OVERLAY_WS"
+    colcon build \
+        --packages-select rcl \
+        --cmake-args \
+            -DBUILD_TESTING=OFF \
+            "-Dtracetools_DIR=$OVERLAY_WS/install/tracetools/share/tracetools/cmake" \
+        2>&1 | tail -5
+
+    log "  rcl built with link fire points"
+}
+
 # ─── Patch and build rclcpp (client tracepoints) ────────────────────────────
 patch_and_build_rclcpp_client() {
     step "Patching rclcpp client.hpp and building ..."
@@ -870,6 +1154,14 @@ build_tracetools() {
             log "  rclpy symbols: OK"
         else
             err "  rclpy symbols: FAILED"
+            exit 1
+        fi
+    fi
+    if $DO_LINK; then
+        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_fish_publish_link"; then
+            log "  Link symbols: OK"
+        else
+            err "  Link symbols: FAILED"
             exit 1
         fi
     fi
@@ -1048,6 +1340,17 @@ def _init():
             ctypes.c_void_p, ctypes.c_int64, ctypes.c_int]
         _lib.ros_trace_rclcpp_client_response_received.restype = None
 
+        # Link tracepoints (v2)
+        try:
+            _lib.ros_trace_fish_publish_link.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p]
+            _lib.ros_trace_fish_publish_link.restype = None
+            _lib.ros_trace_fish_client_link.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p]
+            _lib.ros_trace_fish_client_link.restype = None
+        except AttributeError:
+            pass  # link tracepoints not installed yet
+
         _enabled = True
     except (OSError, AttributeError):
         _enabled = False
@@ -1112,6 +1415,7 @@ def trace_tmr_node(tmr_handle_ptr, node_handle_ptr):
 def trace_cb_start(callback):
     if not _enabled:
         return
+    _active_cb.value = id(callback)
     _lib.ros_trace_callback_start(ctypes.c_void_p(id(callback)), False)
 
 
@@ -1119,6 +1423,7 @@ def trace_cb_end(callback):
     if not _enabled:
         return
     _lib.ros_trace_callback_end(ctypes.c_void_p(id(callback)))
+    _active_cb.value = None
 
 
 def trace_client_request_sent(client_handle_ptr, sequence_number):
@@ -1136,6 +1441,37 @@ def trace_client_response_received(client_handle_ptr, sequence_number, response_
         ctypes.c_void_p(client_handle_ptr),
         ctypes.c_int64(sequence_number),
         ctypes.c_int(response_type))
+
+
+# ── Link tracepoints (v2) ──
+import threading
+_active_cb = threading.local()
+
+
+def trace_client_link(client_handle_ptr):
+    """Fire fish_client_link — associates client handle to active callback."""
+    if not _enabled:
+        return
+    cb = getattr(_active_cb, 'value', None)
+    if cb is not None:
+        try:
+            _lib.ros_trace_fish_client_link(
+                ctypes.c_void_p(client_handle_ptr), ctypes.c_void_p(cb))
+        except (OSError, AttributeError):
+            pass
+
+
+def trace_publish_link(publisher_handle_ptr):
+    """Fire fish_publish_link — associates publisher handle to active callback."""
+    if not _enabled:
+        return
+    cb = getattr(_active_cb, 'value', None)
+    if cb is not None:
+        try:
+            _lib.ros_trace_fish_publish_link(
+                ctypes.c_void_p(publisher_handle_ptr), ctypes.c_void_p(cb))
+        except (OSError, AttributeError):
+            pass
 PYBRIDGE
 
     log "    Created $RCLPY_DIR/fish_rclpy_trace.py"
@@ -1449,6 +1785,7 @@ print(os.path.abspath(m.__file__))
 do_action = $( $DO_ACTION && echo "True" || echo "False" )
 do_rclpy  = $( $DO_RCLPY  && echo "True" || echo "False" )
 do_client = $( $DO_CLIENT && echo "True" || echo "False" )
+do_link   = $( $DO_LINK   && echo "True" || echo "False" )
 
 with open("$NAMES_PY") as f:
     content = f.read()
@@ -1515,6 +1852,32 @@ if do_client and "rclcpp_client_request_sent" not in content:
 elif do_client:
     print("  Client events already present")
 
+# Link events
+if do_link and "fish_publish_link" not in content:
+    link_entries = '''    "ros2:fish_publish_link",
+    "ros2:fish_client_link",'''
+
+    if '"ros2:rclcpp_client_response_received",' in content:
+        anchor = '    "ros2:rclcpp_client_response_received",\n]'
+        content = content.replace(anchor,
+            '    "ros2:rclcpp_client_response_received",\n' + link_entries + '\n]')
+    elif '"ros2:rclpy_callback_register",' in content:
+        anchor = '    "ros2:rclpy_callback_register",\n]'
+        content = content.replace(anchor,
+            '    "ros2:rclpy_callback_register",\n' + link_entries + '\n]')
+    elif '"ros2:rclcpp_action_execute_result",' in content:
+        anchor = '    "ros2:rclcpp_action_execute_result",\n]'
+        content = content.replace(anchor,
+            '    "ros2:rclcpp_action_execute_result",\n' + link_entries + '\n]')
+    else:
+        anchor = "    tracepoints.rclcpp_executor_execute,\n]"
+        content = content.replace(anchor,
+            "    tracepoints.rclcpp_executor_execute,\n" + link_entries + "\n]")
+    changed = True
+    print("  Added 2 link events")
+elif do_link:
+    print("  Link events already present")
+
 if changed:
     with open("$NAMES_PY", "w") as f:
         f.write(content)
@@ -1546,6 +1909,18 @@ verify() {
         log "Client symbols in libtracetools.so: $client_syms (expected: 2)"
     fi
 
+    if $DO_LINK; then
+        local link_syms
+        link_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_fish_" || true)
+        log "Link symbols in libtracetools.so: $link_syms (expected: 2)"
+
+        if nm -D "$so" 2>/dev/null | grep -q "__fish_active_callback"; then
+            log "Thread-local __fish_active_callback: OK"
+        else
+            warn "Thread-local __fish_active_callback: NOT FOUND"
+        fi
+    fi
+
     if $DO_RCLPY; then
         local rclpy_syms
         rclpy_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_rclpy_" || true)
@@ -1570,6 +1945,7 @@ print(len(DEFAULT_EVENTS_ROS))
     $DO_ACTION && expected=$((expected + 4))
     $DO_RCLPY  && expected=$((expected + 5))
     $DO_CLIENT && expected=$((expected + 2))
+    $DO_LINK   && expected=$((expected + 2))
     log "Events in DEFAULT_EVENTS_ROS: $event_count (expected: $expected)"
 
     if [ "${FISH_SETUP_PARENT:-}" != "1" ]; then
@@ -1606,6 +1982,7 @@ main() {
     log "FISH Tracepoint Installer"
     log "  action: $DO_ACTION"
     log "  rclpy:  $DO_RCLPY"
+    log "  link:   $DO_LINK"
     log ""
 
     preflight_checks
@@ -1613,17 +1990,19 @@ main() {
     clone_repos
     copy_sources
 
-    # Patch tracetools C source (action first, then rclpy, then client)
+    # Patch tracetools C source (action first, then rclpy, then client, then link)
     step "Patching tracetools C source ..."
     $DO_ACTION && patch_tracetools_action
     $DO_RCLPY  && patch_tracetools_rclpy
     $DO_CLIENT && patch_tracetools_client
+    $DO_LINK   && patch_tracetools_link
 
     build_tracetools
 
     # Feature-specific post-build work
     $DO_ACTION && patch_and_build_rclcpp_action
     $DO_CLIENT && patch_and_build_rclcpp_client
+    $DO_LINK   && patch_and_build_rcl
     if $DO_RCLPY; then
         install_rclpy_tracepoints
     fi

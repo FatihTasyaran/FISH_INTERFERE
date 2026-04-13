@@ -12,6 +12,10 @@
 #   ros2:rclpy_timer_link_node             — timer handle → node handle
 #   ros2:rclpy_callback_register           — callback → symbol string
 #
+# Ctypes bridge also exposes (defined in install.sh v2):
+#   ros2:fish_publish_link  — publisher handle → active callback
+#   ros2:fish_client_link   — client handle → active callback
+#
 # Reuses existing (no modification):
 #   ros2:callback_start, ros2:callback_end
 #
@@ -368,6 +372,15 @@ def _init():
             ctypes.c_void_p, ctypes.c_char_p]
         _lib.ros_trace_rclpy_callback_register.restype = None
 
+        # FISH link tracepoints (v2)
+        _lib.ros_trace_fish_client_link.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p]
+        _lib.ros_trace_fish_client_link.restype = None
+
+        _lib.ros_trace_fish_publish_link.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p]
+        _lib.ros_trace_fish_publish_link.restype = None
+
         # Existing tracepoints (reused for runtime)
         _lib.ros_trace_callback_start.argtypes = [
             ctypes.c_void_p, ctypes.c_bool]
@@ -383,6 +396,10 @@ def _init():
         _enabled = False
 
 _init()
+
+# Thread-local active callback tracker (mirrors C-level __fish_active_callback)
+import threading
+_active_cb = threading.local()
 
 
 def _get_symbol(callback):
@@ -450,6 +467,7 @@ def trace_cb_start(callback):
     """Fire callback_start (reused from existing tracetools)."""
     if not _enabled:
         return
+    _active_cb.value = id(callback)
     _lib.ros_trace_callback_start(ctypes.c_void_p(id(callback)), False)
 
 
@@ -458,6 +476,27 @@ def trace_cb_end(callback):
     if not _enabled:
         return
     _lib.ros_trace_callback_end(ctypes.c_void_p(id(callback)))
+    _active_cb.value = None
+
+
+def trace_client_link(client_handle_ptr):
+    """Fire fish_client_link — associates client handle to active callback."""
+    if not _enabled:
+        return
+    cb = getattr(_active_cb, 'value', None)
+    if cb is not None:
+        _lib.ros_trace_fish_client_link(
+            ctypes.c_void_p(client_handle_ptr), ctypes.c_void_p(cb))
+
+
+def trace_publish_link(publisher_handle_ptr):
+    """Fire fish_publish_link — associates publisher handle to active callback."""
+    if not _enabled:
+        return
+    cb = getattr(_active_cb, 'value', None)
+    if cb is not None:
+        _lib.ros_trace_fish_publish_link(
+            ctypes.c_void_p(publisher_handle_ptr), ctypes.c_void_p(cb))
 PYBRIDGE
 
 log "  Created $RCLPY_DIR/fish_rclpy_trace.py"
@@ -662,11 +701,30 @@ new_entries = '''    "ros2:rclpy_subscription_callback_added",
     "ros2:rclpy_timer_link_node",
     "ros2:rclpy_callback_register",'''
 
-# Insert after the last action tracepoint entry
-content = content.replace(
-    '    "ros2:rclcpp_action_execute_result",\n]',
-    '    "ros2:rclcpp_action_execute_result",\n' + new_entries + '\n]'
-)
+# Insert after the last FISH tracepoint entry (fish_client_link from install.sh v2)
+# Fall back to action_execute_result if link events not present yet
+if '    "ros2:fish_client_link",\n]' in content:
+    content = content.replace(
+        '    "ros2:fish_client_link",\n]',
+        '    "ros2:fish_client_link",\n' + new_entries + '\n]'
+    )
+elif '    "ros2:rclcpp_action_execute_result",\n]' in content:
+    content = content.replace(
+        '    "ros2:rclcpp_action_execute_result",\n]',
+        '    "ros2:rclcpp_action_execute_result",\n' + new_entries + '\n]'
+    )
+else:
+    # Fallback: find DEFAULT_EVENTS_ROS closing bracket
+    import re
+    lines = content.split('\n')
+    for i, line in enumerate(lines):
+        if 'DEFAULT_EVENTS_ROS' in line:
+            for j in range(i+1, len(lines)):
+                if lines[j].strip() == ']':
+                    lines.insert(j, new_entries)
+                    content = '\n'.join(lines)
+                    break
+            break
 
 with open("$NAMES_PY", "w") as f:
     f.write(content)
@@ -693,7 +751,7 @@ try:
 except:
     print(0)
 " 2>/dev/null || echo "0")
-log "Total events in DEFAULT_EVENTS_ROS: $EVENT_COUNT (expected: 37)"
+log "Total events in DEFAULT_EVENTS_ROS: $EVENT_COUNT (expected: 39)"
 
 # Python module check
 if python3 -c "from rclpy.fish_rclpy_trace import trace_sub_cb; print('  ctypes bridge: OK')" 2>/dev/null; then

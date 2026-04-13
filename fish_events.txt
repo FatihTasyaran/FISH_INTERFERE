@@ -44,3 +44,6 @@ ros2:rclpy_callback_register
 # Service client tracing (FISH custom)
 ros2:rclcpp_client_request_sent
 ros2:rclcpp_client_response_received
+# Callback-link tracing (FISH custom)
+ros2:fish_publish_link
+ros2:fish_client_link
