@@ -37,6 +37,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 _log_lines = []
+_interrupted = False
 
 
 def log(msg, level="INFO"):
@@ -88,6 +89,8 @@ def wait_for_containers(names, timeout=120):
     """Block until all named containers are running."""
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if _interrupted:
+            return False
         missing = [n for n in names if not container_running(n)]
         if not missing:
             return True
@@ -101,21 +104,44 @@ def wait_for_containers(names, timeout=120):
 # ---------------------------------------------------------------------------
 
 def wait_fish_stable(container, timeout=180):
-    """Wait for FISH daemon to signal system stability."""
+    """Wait for FISH daemon to signal system stability.
+
+    Checks for /tmp/fish_system_stable (launch mode) or
+    /tmp/fish_gpu_handler_complete (run mode). If neither appears
+    but the daemon process is running, considers it ready after
+    the timeout with a warning.
+    """
     deadline = time.time() + timeout
+    daemon_seen = False
     while time.time() < deadline:
-        rc, _, _ = docker_exec(container, "test -f /tmp/fish_system_stable", timeout=5)
+        if _interrupted:
+            return False
+        # Check signal files (launch mode creates fish_system_stable,
+        # daemon creates fish_gpu_handler_complete after GPU handling)
+        rc, _, _ = docker_exec(container,
+            "test -f /tmp/fish_system_stable -o -f /tmp/fish_gpu_handler_complete",
+            timeout=5)
         if rc == 0:
             return True
-        # Also check if FISH is even running
-        rc2, out, _ = docker_exec(container, "pgrep -f fish_daemon", timeout=5)
-        if rc2 != 0:
-            log(f"  FISH daemon not running in {container}", "WARN")
-        time.sleep(3)
+        # Check if daemon is running at all
+        rc2, _, _ = docker_exec(container,
+            "pgrep -f 'fish.cli.*daemon'", timeout=5)
+        if rc2 == 0:
+            if not daemon_seen:
+                daemon_seen = True
+                log(f"  FISH daemon detected in {container}, waiting for stable signal...")
+        else:
+            if time.time() - (deadline - timeout) > 30:  # only warn after 30s
+                log(f"  FISH daemon not running in {container}", "WARN")
+        time.sleep(5)
+
+    if daemon_seen:
+        log(f"  FISH daemon running but no stable signal — proceeding anyway", "WARN")
+        return True  # daemon is there, just no signal file
     return False
 
 
-def fish_stop(container, timeout=30):
+def fish_stop(container, timeout=120):
     """Send FISH stop signal to a container."""
     rc, out, err = docker_exec(
         container,
@@ -248,6 +274,9 @@ def run_mission(config, dry_run=False):
     action_log = []
 
     for i, action in enumerate(config.get("actions", [])):
+        if _interrupted:
+            log("Skipping remaining actions due to interrupt", "WARN")
+            break
         t0 = time.time()
 
         if "sleep" in action:
@@ -342,12 +371,35 @@ def run_mission(config, dry_run=False):
             local_dir = os.path.join(session_dir, c["role"])
 
             if c["fish"]:
-                session_name = find_latest_session(
-                    c["docker_name"], c["trace_path"])
+                # Find latest session — prefer host path (volume mount) over docker cp
+                host_trace = c.get("host_trace_path")
+                if host_trace:
+                    host_trace = os.path.expanduser(host_trace)
+
+                session_name = None
+                if host_trace and os.path.isdir(host_trace):
+                    # Find latest fish_* dir on host
+                    sessions = sorted(
+                        [d for d in os.listdir(host_trace) if d.startswith("fish_")],
+                        reverse=True)
+                    if sessions:
+                        session_name = sessions[0]
+                if not session_name:
+                    session_name = find_latest_session(
+                        c["docker_name"], c["trace_path"])
+
                 if session_name:
                     log(f"Collecting {alias}: {session_name}")
-                    remote = f"{c['trace_path']}/{session_name}"
-                    collect_traces(c["docker_name"], remote, local_dir)
+                    if host_trace and os.path.isdir(os.path.join(host_trace, session_name)):
+                        # Copy from host filesystem (faster, no docker cp)
+                        src = os.path.join(host_trace, session_name)
+                        log(f"  Host copy: {src} -> {local_dir}")
+                        os.makedirs(local_dir, exist_ok=True)
+                        subprocess.run(["cp", "-a", src + "/.", local_dir],
+                                       capture_output=True)
+                    else:
+                        remote = f"{c['trace_path']}/{session_name}"
+                        collect_traces(c["docker_name"], remote, local_dir)
                     manifest_containers[alias] = {
                         "docker_name": c["docker_name"],
                         "fish": True,
@@ -442,13 +494,14 @@ Examples:
     with open(args.mission) as f:
         config = yaml.safe_load(f)
 
-    # Graceful interrupt: still try to collect traces
-    interrupted = [False]
+    # Graceful interrupt: first Ctrl+C skips to cleanup, second force quits
     def handle_sigint(sig, frame):
-        if interrupted[0]:
-            sys.exit(1)  # second Ctrl+C = force quit
-        interrupted[0] = True
-        log("Interrupted — stopping FISH and collecting traces...", "WARN")
+        global _interrupted
+        if _interrupted:
+            log("Force quit.", "ERROR")
+            sys.exit(1)
+        _interrupted = True
+        log("Interrupted — skipping to cleanup...", "WARN")
 
     signal.signal(signal.SIGINT, handle_sigint)
 

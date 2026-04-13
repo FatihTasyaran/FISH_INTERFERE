@@ -65,6 +65,11 @@ SKIP_PATTERNS = [
     "tmuxinator",
     "tmux",
     "AWSIM",
+    # Simulation/infrastructure GPU processes (not ROS nodes)
+    "QGroundControl", "qgc", "QGC",
+    "gzserver", "gz sim", "gazebo",
+    "rviz2", "rviz",
+    "Xorg", "Xwayland", "gnome-shell",
 ]
 
 CONTAINER_EXECUTABLES = {"component_container", "component_container_mt"}
@@ -940,8 +945,10 @@ def _get_component_list_snapshot() -> Optional[str]:
     they don't reset the stability counter.  Returns sorted, joined lines.
     """
     output = _ros2_cmd_gpu("ros2 component list", timeout=15.0)
-    if not output:
+    if output is None:
         return None
+    if not output.strip():
+        return ""  # empty but valid (no composable node containers = run mode)
     lines = []
     for line in output.splitlines():
         stripped = line.strip()
@@ -1030,10 +1037,20 @@ def _wait_for_stable(logger: FishLogger) -> None:
             snapshot = _get_component_list_snapshot()
             tick += 1
 
-            if snapshot is None:
-                cl_prev = None
-                cl_count = 0
-                print(f"[FISH]   CL poll #{tick}: no response")
+            if snapshot is None or snapshot == "":
+                # No components → ros2 run mode or no composable node containers.
+                # Treat empty as stable after cl_required consecutive polls.
+                if cl_prev == "" or cl_prev is None:
+                    cl_count += 1
+                else:
+                    cl_count = 1
+                cl_prev = ""
+                if cl_count >= cl_required:
+                    cl_ok = True
+                    logger.log_daemon("component_list_stable containers=0 components=0 mode=run")
+                    print(f"[FISH]   CL poll #{tick}: no components → run mode, OK ({cl_count}/{cl_required})")
+                else:
+                    print(f"[FISH]   CL poll #{tick}: no components ({cl_count}/{cl_required})")
             else:
                 n_cont = sum(1 for ln in snapshot.splitlines()
                              if ln.startswith("/"))
@@ -1069,10 +1086,17 @@ def _wait_for_stable(logger: FishLogger) -> None:
             ex_next = now + ex_interval
             proc_count = _count_executor_started()
 
-            if proc_count is None:
-                ex_prev = None
-                ex_count = 0
-                print(f"[FISH]   EX: launch log not found yet")
+            if proc_count is None or proc_count == 0:
+                # No launch log or empty → likely ros2 run mode (no launch system).
+                # Count consecutive 0/None results; after ex_required polls
+                # assume no launch system and pass this check.
+                ex_count += 1
+                if ex_count >= ex_required:
+                    ex_ok = True
+                    logger.log_daemon(f"executor_started_stable count={proc_count or 0} mode=run")
+                    print(f"[FISH]   EX: no launch processes → run mode, OK ({ex_count}/{ex_required})")
+                else:
+                    print(f"[FISH]   EX: no launch processes ({ex_count}/{ex_required})")
             else:
                 if proc_count == ex_prev:
                     ex_count += 1
@@ -1479,6 +1503,16 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
     print(f"[FISH] GPU handler complete ({gpu_count} GPU, "
           f"{len(initial_nodes) - gpu_count} CPU)")
 
+    # Run-mode stabilization: if we found nodes, system is stable now
+    scan_stable_required = settings.getint("daemon", "scan_stable_count")
+    post_relaunch_settle = settings.getfloat("daemon", "post_relaunch_settle")
+    no_new_count = 0  # consecutive polls with no new GPU processes
+
+    if initial_nodes:
+        # We already scanned and handled all processes → stable
+        _write_signal("system_stable", logger)
+        print(f"[FISH] System stable (initial scan complete)")
+
     # Phase 3: Start live collectors (system is stable, GPU relaunch done)
     if initial_nodes:
         collector = LiveCollector()
@@ -1571,6 +1605,9 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
             known_pids.add(p["pid"])
 
         if new_procs:
+            no_new_count = 0  # reset stable counter
+            had_gpu = False
+
             for p in new_procs:
                 logger.log_detect(p["pid"], p["process_name"], p["cmdline"])
                 print(f"[FISH] New: PID={p['pid']} {p['process_name']}")
@@ -1594,6 +1631,7 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
                 proc_info["cuda_libs"] = check_pid_has_cuda(pid)
 
                 if proc_info["cuda_libs"]:
+                    had_gpu = True
                     _handle_gpu_process(
                         proc_info, known_pids, nsys_children, logger, settle_time,
                     )
@@ -1606,6 +1644,26 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
                 collector.start()
                 collector_started = True
                 logger.log_daemon("live_collectors_started")
+
+            # Re-signal stable after handling new GPU processes
+            if had_gpu:
+                print(f"[FISH] Post-relaunch settle ({post_relaunch_settle}s)...")
+                time.sleep(post_relaunch_settle)
+                _write_signal("system_stable", logger)
+                print(f"[FISH] System stable (post-relaunch)")
+
+        else:
+            no_new_count += 1
+            # Write stable signal once after N consecutive polls with no new processes
+            if no_new_count == scan_stable_required:
+                _write_signal("system_stable", logger)
+                print(f"[FISH] System stable ({scan_stable_required} clean polls)")
+                # Start live collectors if not yet started
+                if not collector_started:
+                    collector = LiveCollector()
+                    collector.start()
+                    collector_started = True
+                    logger.log_daemon("live_collectors_started")
 
         time.sleep(poll_interval)
 

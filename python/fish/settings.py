@@ -46,6 +46,8 @@ def load_settings() -> configparser.ConfigParser:
             "component_list_stability_count": "3",
             "executor_started_stability_interval": "10.0",
             "executor_started_stability_count": "3",
+            "scan_stable_count": "5",
+            "post_relaunch_settle": "5.0",
         },
         "replay": {
             "replay_rosbag": "false",
