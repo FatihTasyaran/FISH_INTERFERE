@@ -1,0 +1,265 @@
+Extra Tracepoints for model_improved.py
+=========================================
+
+Date: 2026-04-13
+Status: Design complete, pending implementation
+
+
+1. Overview
+------------
+
+model_improved.py requires complete callback association for all entity
+types and aspects. The existing 13 FISH custom tracepoints cover most
+cases but leave three gaps:
+
+  Gap 1: Publisher → callback association (pub aspect attribution)
+  Gap 2: Client → callback association (cli aspect attribution)
+  Gap 3: Action server callback → entity association
+
+This document specifies the tracepoint changes needed to close all gaps.
+Total changes: 2 new tracepoints, 3 parameter additions, 3 new fire
+points, 1 thread-local variable.
+
+
+2. Gap 1: Publisher → Callback (pub aspect)
+---------------------------------------------
+
+Problem:
+  rcl_publisher_init gives us publisher_handle → topic_name → node_handle.
+  But we don't know WHICH callback in that node uses this publisher.
+  Without this, we cannot attribute pub aspects to specific entities.
+
+Solution: New tracepoint fish_publish_link
+
+  Signature:
+    fish_publish_link(publisher_handle, callback)
+
+  Fire location:
+    Inside the publish path, when rcl_publish is called.
+    The active callback is known from a thread-local variable set by
+    the executor during callback dispatch.
+
+  Implementation:
+    a. Thread-local variable (see section 5)
+    b. In rcl_publish() or rclcpp Publisher::publish():
+       if (__fish_active_callback != NULL)
+           tracepoint(ros2, fish_publish_link, publisher_handle, __fish_active_callback)
+
+  Patch file:
+    fish_tracepoints/install.sh — add tracepoint definition to tracetools
+    One of:
+      - rcl/src/rcl/publisher.c (C level, next to existing rcl_publish tp)
+      - rclcpp/include/rclcpp/publisher.hpp (C++ level)
+
+  Model extraction usage:
+    fish_publish_link events bulk loaded once (~100s of events).
+    Build map: publisher_handle → callback → entity (via init chain).
+    Each (publisher_handle, callback) pair needs only one event.
+
+  Optimization:
+    Fire only once per unique (publisher_handle, callback) pair using
+    a small thread-local hash set. Reduces trace volume from millions
+    (every publish) to ~100 (one per association).
+
+
+3. Gap 2: Client → Callback (cli aspect)
+-------------------------------------------
+
+Problem:
+  rcl_client_init gives us client_handle → service_name → node_handle.
+  But we don't know WHICH callback calls this service client.
+  Without this, we cannot attribute cli aspects to specific entities.
+
+Solution: New tracepoint fish_client_link
+
+  Signature:
+    fish_client_link(client_handle, callback)
+
+  Fire location:
+    Inside the service client request path, when a request is sent.
+    Immediately before or after the existing rclcpp_client_request_sent.
+
+  Implementation:
+    a. Thread-local variable (same as fish_publish_link, section 5)
+    b. In rclcpp client.hpp async_send_request_impl():
+       // existing:
+       tracepoint(ros2, rclcpp_client_request_sent, client_handle, seq)
+       // add:
+       tracepoint(ros2, fish_client_link, client_handle, __fish_active_callback)
+
+    c. In rclpy client.py call_async() and action/client.py send_goal_async():
+       Via ctypes bridge (same mechanism as existing rclpy tracepoints)
+
+  Patch files:
+    fish_tracepoints/install.sh — tracepoint definition
+    fish_tracepoints/install.sh — rclcpp client.hpp patch
+    fish_tracepoints/install_rclpy.sh — rclpy patches
+
+  Model extraction usage:
+    fish_client_link events bulk loaded. Build map:
+    client_handle → callback → entity.
+    Also enables the callback split (continuation function):
+    entity with cli aspect → 2 function vertices.
+
+
+4. Gap 3: Action Server Callback → Entity
+--------------------------------------------
+
+Problem:
+  Action server uses the Waitable pattern. The 3 component services
+  (send_goal, cancel_goal, get_result) have callbacks dispatched through
+  Waitable.execute(), NOT through the standard service callback path.
+  Therefore rclcpp_service_callback_added does NOT fire for these services.
+
+  Existing tracepoints:
+    rclcpp_action_server_init — gives structural mapping:
+      action_server_handle → goal_service_handle
+      action_server_handle → cancel_service_handle
+      action_server_handle → result_service_handle
+    rclcpp_action_execute_goal(action_server_handle) — fires at dispatch
+    rclcpp_action_execute_cancel(action_server_handle)
+    rclcpp_action_execute_result(action_server_handle)
+
+  Gap: execute tracepoints give action_server_handle but NOT callback_ptr.
+  And the user callbacks (handle_goal, handle_cancel, handle_result) are
+  never registered with rclcpp_callback_register.
+
+Solution A: Add callback parameter to execute tracepoints
+
+  Modified signatures:
+    rclcpp_action_execute_goal(action_server_handle, callback)
+    rclcpp_action_execute_cancel(action_server_handle, callback)
+    rclcpp_action_execute_result(action_server_handle, callback)
+
+  The callback parameter is the address of the user-provided std::function
+  stored in the ActionServer (goal_callback_, cancel_callback_, etc.).
+
+  Patch file:
+    fish_tracepoints/install.sh — update tracepoint signatures
+    Patch in rclcpp_action/src/server.cpp execute() method:
+      Before: tracepoint(ros2, rclcpp_action_execute_goal, action_server_handle)
+      After:  tracepoint(ros2, rclcpp_action_execute_goal, action_server_handle,
+                          (const void*)&goal_callback_)
+
+Solution B: Register action callbacks at init time
+
+  Fire rclcpp_callback_register for each user callback when the action
+  server is constructed. The callback addresses come from the stored
+  std::function objects.
+
+  Fire points (in ActionServer constructor or create_server()):
+    rclcpp_callback_register(&goal_callback_, "<demangled_goal_handler>")
+    rclcpp_callback_register(&cancel_callback_, "<demangled_cancel_handler>")
+    rclcpp_callback_register(&result_callback_, "<demangled_result_handler>")
+
+  Note: getting the demangled symbol name from a std::function is
+  non-trivial. Alternative: use the action name + role as label:
+    rclcpp_callback_register(&goal_callback_, "action:takeoff/goal")
+    rclcpp_callback_register(&cancel_callback_, "action:takeoff/cancel")
+    rclcpp_callback_register(&result_callback_, "action:takeoff/result")
+
+  Patch file:
+    fish_tracepoints/install.sh — patch rclcpp_action server constructor
+
+  Model extraction chain (complete):
+    rcl_service_init [goal_service_handle] → serv entity
+    rclcpp_action_server_init [action_server_handle → goal_service_handle]
+    rclcpp_callback_register [&goal_callback_ → symbol]
+    rclcpp_action_execute_goal [action_server_handle, &goal_callback_]
+    → action_server_handle links entity ↔ callback → function vertex
+
+
+5. Thread-Local: __fish_active_callback
+-----------------------------------------
+
+Both fish_publish_link and fish_client_link need to know which callback
+is currently executing. This information is available in the executor
+dispatch path, which already fires callback_start/callback_end.
+
+Implementation:
+
+  Declaration (in tracetools or a FISH header):
+    extern thread_local const void* __fish_active_callback;
+
+  Set point (in executor, where callback_start fires):
+    // rclcpp/src/rclcpp/executor.cpp or similar
+    __fish_active_callback = callback_handle;
+    TRACEPOINT(callback_start, callback_handle);
+    entity->execute(...);
+    TRACEPOINT(callback_end, callback_handle);
+    __fish_active_callback = nullptr;
+
+  Read points:
+    - fish_publish_link reads __fish_active_callback
+    - fish_client_link reads __fish_active_callback
+
+  Thread safety:
+    thread_local ensures each executor thread has its own copy.
+    Single-threaded executor: one thread, one active callback.
+    Multi-threaded executor: each worker thread tracks its own callback.
+
+  Patch file:
+    fish_tracepoints/install.sh — patch executor dispatch
+
+
+6. Summary of All Changes
+---------------------------
+
+  New tracepoint definitions (tp_call.h / tracetools.h / tracetools.c):
+    fish_publish_link(const void* publisher_handle, const void* callback)
+    fish_client_link(const void* client_handle, const void* callback)
+
+  Modified tracepoint signatures:
+    rclcpp_action_execute_goal(const void* action_server_handle, const void* callback)
+    rclcpp_action_execute_cancel(const void* action_server_handle, const void* callback)
+    rclcpp_action_execute_result(const void* action_server_handle, const void* callback)
+
+  New fire points:
+    rclcpp_callback_register for 3 action server user callbacks (init time)
+    fish_publish_link in rcl_publish or rclcpp publish (runtime)
+    fish_client_link in rclcpp async_send_request + rclpy patches (runtime)
+
+  Thread-local:
+    __fish_active_callback set in executor dispatch
+
+  Patch files to modify:
+    fish_tracepoints/install.sh:
+      - tracetools tp_call.h: add fish_publish_link, fish_client_link definitions
+      - tracetools tracetools.h/c: add wrapper functions
+      - rclcpp executor: set __fish_active_callback thread-local
+      - rclcpp publisher: fire fish_publish_link
+      - rclcpp client.hpp: fire fish_client_link
+      - rclcpp_action server.cpp: add callback param to execute tracepoints
+      - rclcpp_action server constructor: fire rclcpp_callback_register
+    fish_tracepoints/install_rclpy.sh:
+      - rclpy client.py: fire fish_client_link via ctypes
+      - rclpy action/client.py: fire fish_client_link via ctypes
+
+
+7. Complete Callback Association After Changes
+------------------------------------------------
+
+  Entity type    | Callback chain                           | Status
+  ---------------|------------------------------------------|--------
+  sub (rclcpp)   | rcl_sub_init → rclcpp_sub_init →         | EXISTING
+                 | rclcpp_sub_cb_added → cb_register         |
+  sub (rclpy)    | rcl_sub_init → rclpy_sub_cb_added →       | EXISTING
+                 | rclpy_cb_register                         |
+  serv (rclcpp)  | rcl_srv_init → rclcpp_srv_cb_added →      | EXISTING
+                 | cb_register                               |
+  serv (rclpy)   | rcl_srv_init → rclpy_srv_cb_added →       | EXISTING
+                 | rclpy_cb_register                         |
+  serv (action)  | rcl_srv_init → action_server_init →       | NEW
+                 | cb_register → action_execute              | (gap 3)
+  tmr (rclcpp)   | rcl_tmr_init → tmr_link_node →            | EXISTING
+                 | tmr_cb_added → cb_register                |
+  tmr (rclpy)    | rcl_tmr_init → rclpy_tmr_cb_added →       | EXISTING
+                 | rclpy_tmr_link → rclpy_cb_register        |
+  pub aspect     | rcl_pub_init + fish_publish_link →         | NEW
+                 | callback → entity                         | (gap 1)
+  cli aspect     | rcl_cli_init + fish_client_link →          | NEW
+                 | callback → entity                         | (gap 2)
+
+  After these changes: ALL entity-callback associations are covered.
+  No runtime callback window scanning needed (deterministic attribution).
+  Runtime fallback preserved for traces without the new tracepoints.
