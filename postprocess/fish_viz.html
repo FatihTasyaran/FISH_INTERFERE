@@ -26,6 +26,7 @@ svg{width:100vw;height:100vh}
 .link.dim{opacity:.02}
 .node circle{cursor:pointer;stroke-width:2}
 .node text{pointer-events:none;fill:#444;font-size:10px;text-anchor:middle}
+.node.CN circle{fill:#E8DAEF;stroke:#8E44AD}
 .node.EX circle{fill:#5DADE2;stroke:#2980B9}
 .node.N circle{fill:#58D68D;stroke:#27AE60}
 .node.E circle{fill:#F4D03F;stroke:#D4AC0D}
@@ -41,7 +42,8 @@ svg{width:100vw;height:100vh}
 <div id="controls">
   <b>FISH Expansion Explorer</b><br>
   <label>Expand to: <select id="expandLevel">
-    <option value="0" selected>L0 — Executors</option>
+    <option value="-1" selected>L-1 — Containers</option>
+    <option value="0">L0 — Executors</option>
     <option value="1">L1 — Nodes</option>
     <option value="2">L2 — Entities</option>
     <option value="3">L3 — Functions</option>
@@ -63,7 +65,8 @@ svg{width:100vw;height:100vh}
 </p></div>
 <div id="stats"></div>
 <div id="legend">
-  <span class="legend-dot" style="background:#5DADE2"></span>Executor
+  <span class="legend-dot" style="background:#E8DAEF"></span>Container
+  <span class="legend-dot" style="background:#5DADE2;margin-left:8px"></span>Executor
   <span class="legend-dot" style="background:#58D68D;margin-left:8px"></span>Node
   <span class="legend-dot" style="background:#F4D03F;margin-left:8px"></span>Entity
   <span class="legend-dot" style="background:#E0E0E0;margin-left:8px"></span>Function
@@ -71,7 +74,7 @@ svg{width:100vw;height:100vh}
 <svg></svg>
 <div class="tt" id="tooltip" style="display:none"></div>
 <script>
-const R = {EX:20,N:14,E:10,F:7};
+const R = {CN:24,EX:20,N:14,E:10,F:7};
 const LAYER_GAP = 180;
 const STAIR_STEP = 16;
 const NODE_SPACING = 90;
@@ -118,7 +121,12 @@ fetch('fish_graph.json').then(r=>r.json()).then(raw=>{
   function isVis(id){
     const n=byId[id]; if(!n) return false;
     if(n.external) return showExt;
-    if(n.type==="EX") return !exp.has(id);
+    if(n.type==="CN") return !exp.has(id);  // L-1 container
+    if(n.type==="EX") {
+      const p=parentOf[id];
+      if(p!==undefined) return exp.has(p) && !exp.has(id);  // has CN parent
+      return !exp.has(id);  // standalone EX (no compose)
+    }
     const p=parentOf[id];
     return p!==undefined && exp.has(p) && !exp.has(id);
   }
@@ -145,7 +153,7 @@ fetch('fish_graph.json').then(r=>r.json()).then(raw=>{
   }
 
   function collapse(id){ exp.delete(id); (childrenOf[id]||[]).forEach(c=>{ if(exp.has(c)) collapse(c); }); }
-  function expandTo(lv){ exp.clear(); raw.nodes.forEach(n=>{ if(!n.external && n.level<lv && childrenOf[n.id]) exp.add(n.id); }); rebuild(); }
+  function expandTo(lv){ exp.clear(); raw.nodes.forEach(n=>{ if(!n.external && n.level<lv && childrenOf[n.id] && childrenOf[n.id].length) exp.add(n.id); }); rebuild(); }
 
   /* ── D3 setup ── */
   const svg = d3.select("svg");
