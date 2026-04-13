@@ -1,0 +1,218 @@
+Callback Association — Custom Tracepoints for Aspect Attribution
+==================================================================
+
+Date: 2026-04-13
+Status: Design complete, pending implementation
+
+
+1. The Problem
+---------------
+
+In the current FISH model, we know:
+
+  From init chains:
+    callback_ptr → symbol          (rclcpp_callback_register)
+    callback_ptr → entity          (subscription/service/timer chain)
+    publisher_handle → topic_name  (rcl_publisher_init)
+    client_handle → service_name   (rcl_client_init)
+
+  Missing link:
+    callback_ptr → publisher_handle   (which callback publishes to which topic?)
+    callback_ptr → client_handle      (which callback calls which service?)
+
+Without these links, pub and cli aspects cannot be attributed to entities
+using init chains alone. The current model.py uses runtime trace analysis:
+load all callback_start/end + rcl_publish events (~2.8M), build timeline,
+scan for publishes inside callback windows. This approach:
+
+  - Requires loading millions of events into memory
+  - Achieves only ~25% attribution accuracy on Autoware (297 nodes)
+  - Fails when publish occurs outside a callback window
+  - Cannot attribute client calls at all (not implemented)
+
+
+2. Solution: Two Custom Tracepoints
+--------------------------------------
+
+Add two FISH-specific LTTng tracepoints that fire at runtime and directly
+record which callback is active when a publish or client call happens.
+
+  A. fish_publish_link(publisher_handle, callback)
+  B. fish_client_link(client_handle, callback)
+
+These provide the missing callback → publisher/client handle association.
+Combined with existing init chains, the full attribution path becomes:
+
+  For pub aspects:
+    rcl_publisher_init [publisher_handle → topic_name, node_handle]
+    fish_publish_link  [publisher_handle → callback]
+    callback → entity  (from subscription/service/timer init chain)
+    ∴ entity has pub aspect for topic_name
+
+  For cli aspects:
+    rcl_client_init    [client_handle → service_name, node_handle]
+    fish_client_link   [client_handle → callback]
+    callback → entity  (from subscription/service/timer init chain)
+    ∴ entity has cli aspect for service_name
+
+
+3. Implementation: fish_publish_link
+--------------------------------------
+
+Location: rclcpp publish path, just before or after rcl_publish is called.
+
+The active callback pointer is available via the executor's dispatch
+context. When the executor dispatches a callback, it calls:
+
+  tracepoint(ros2, callback_start, callback_ptr)
+  ... user callback runs, may call publish() ...
+  tracepoint(ros2, callback_end, callback_ptr)
+
+Inside the callback, when publish() is called, we need to capture the
+active callback_ptr. Two approaches:
+
+  Approach A: Thread-local variable
+    - Set thread-local in callback_start, clear in callback_end
+    - Read thread-local in publish hook
+    - Pro: zero overhead when not tracing
+    - Con: requires patching both executor and publisher code
+
+  Approach B: Patch rclcpp::Publisher::publish()
+    - In the publish() method, the publisher already knows its handle
+    - Read the active callback from a thread-local set by callback_start
+    - Fire: tracepoint(ros2, fish_publish_link, publisher_handle, active_callback)
+    - Pro: single patch point
+    - Con: needs thread-local access
+
+Recommended: Approach B with thread-local.
+
+Patch location in rclcpp:
+  rclcpp/include/rclcpp/publisher.hpp → publish() method
+  OR
+  rcl/src/rcl/publisher.c → rcl_publish() (C level, closer to existing tracepoint)
+
+Since rcl_publish already has a tracepoint:
+  tracepoint(TRACEPOINT_PROVIDER, rcl_publish, publisher_handle, message)
+
+We can extend this or add a new tracepoint immediately after:
+  tracepoint(TRACEPOINT_PROVIDER, fish_publish_link, publisher_handle, __fish_active_callback)
+
+Where __fish_active_callback is a thread-local set by the executor.
+
+Thread-local setup (in rclcpp executor or tracetools):
+  extern thread_local const void* __fish_active_callback;
+
+  // In executor dispatch (already fires callback_start):
+  __fish_active_callback = callback_ptr;
+  tracepoint(ros2, callback_start, callback_ptr);
+  callback->execute();
+  tracepoint(ros2, callback_end, callback_ptr);
+  __fish_active_callback = nullptr;
+
+Frequency: fires on EVERY publish call. For high-frequency topics this
+produces many events, but model extraction only needs one occurrence per
+(publisher_handle, callback) pair — the first event establishes the link.
+
+Optimization: fire only once per unique (publisher_handle, callback) pair
+using a small hash set. This reduces trace volume to ~N events where N is
+the number of publisher-callback associations (typically < 100 per node).
+
+
+4. Implementation: fish_client_link
+--------------------------------------
+
+Identical pattern to fish_publish_link, but for service client calls.
+
+Patch location:
+  rclcpp/include/rclcpp/client.hpp → async_send_request_impl()
+  OR
+  rclpy/rclpy/client.py → call_async()
+
+The existing rclcpp_client_request_sent tracepoint already fires here:
+  tracepoint(ros2, rclcpp_client_request_sent, client_handle, sequence_number)
+
+Add immediately after:
+  tracepoint(ros2, fish_client_link, client_handle, __fish_active_callback)
+
+Same thread-local mechanism as fish_publish_link.
+
+For rclpy action clients (Waitable pattern), the patch goes in:
+  rclpy/action/client.py → send_goal_async()
+
+Using the ctypes bridge to fire the tracepoint, same as existing
+rclpy tracepoint patches in fish_tracepoints/.
+
+Frequency: fires on every client request. Much lower volume than publish
+(service calls are infrequent compared to topic publishes). Optimization
+is less critical but can be applied identically.
+
+
+5. Fallback: Runtime Attribution
+-----------------------------------
+
+Until the custom tracepoints are implemented, model_improved.py should
+fall back to the existing runtime attribution method:
+
+  1. Load callback_start/end + rcl_publish events
+  2. Build per-PID timeline
+  3. For each rcl_publish inside a callback window, attribute pub aspect
+  4. For each rclcpp_client_request_sent inside a callback window, attribute cli aspect
+
+This is the current attribute_aspects() function with bulk load optimization.
+It works but has lower accuracy due to:
+  - Callback windows not aligning perfectly with publish timestamps
+  - Multi-threaded executors causing cross-thread publish attribution
+  - Timer callbacks publishing outside explicit callback windows
+
+When fish_publish_link and fish_client_link tracepoints are available,
+the attribution becomes deterministic and 100% accurate.
+
+
+6. Integration with model_improved.py
+----------------------------------------
+
+In model_improved.py, the aspect attribution logic should:
+
+  1. Check if fish_publish_link events exist in the trace
+  2. If yes: build callback → publisher_handle map from these events
+     (one find_one per unique pair, or bulk load all events)
+  3. If no: fall back to runtime callback window attribution
+
+This allows model_improved.py to work with both old traces (no custom
+tracepoints) and new traces (with fish_publish_link/fish_client_link).
+
+The bulk load approach applies to both paths:
+  - fish_publish_link events are small in number (~100s), instant to load
+  - Runtime attribution events are large (~2.8M), but already optimized
+    with bulk load in the current model.py
+
+
+7. Tracepoint Summary
+------------------------
+
+  Existing FISH custom tracepoints (already implemented):
+    rclcpp_action_server_init          — action server structure
+    rclcpp_action_execute_goal         — action goal dispatch
+    rclcpp_action_execute_cancel       — action cancel dispatch
+    rclcpp_action_execute_result       — action result dispatch
+    rclcpp_client_request_sent         — client request timing
+    rclcpp_client_response_received    — client response timing
+    rclpy_subscription_callback_added  — rclpy sub callback chain
+    rclpy_service_callback_added       — rclpy service callback chain
+    rclpy_timer_callback_added         — rclpy timer callback chain
+    rclpy_timer_link_node              — rclpy timer → node link
+    rclpy_callback_register            — rclpy callback → symbol
+    rclcpp_client_request_sent (rclpy) — rclpy client request (ctypes)
+    rclcpp_client_response_received (rclpy) — rclpy client response (ctypes)
+
+  New tracepoints needed for model_improved.py:
+    fish_publish_link(publisher_handle, callback)   — pub aspect attribution
+    fish_client_link(client_handle, callback)        — cli aspect attribution
+
+  Implementation files to modify:
+    fish_tracepoints/install.sh      — add tracepoint definitions to tracetools
+    Executor patch (thread-local)     — set __fish_active_callback
+    rcl_publish patch or rclcpp hook  — fire fish_publish_link
+    rclcpp client.hpp patch           — fire fish_client_link
+    rclpy client.py patch             — fire fish_client_link (ctypes)
+    rclpy action/client.py patch      — fire fish_client_link (ctypes)
