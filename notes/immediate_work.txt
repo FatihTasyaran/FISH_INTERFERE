@@ -554,3 +554,51 @@ Fix:
   Option B is simpler and more useful for reproducibility.
 
 Priority: LOW (quality of life, not blocking functionality)
+
+
+12. Evaluate alternative graph layout engines for fish_viz
+-----------------------------------------------------------
+Problem:
+  D3 force layout struggles with large graphs (3000+ nodes). The current
+  tree-stair layout with hierarchical expansion (G operator) solves the
+  node count problem, but the layout itself is simplistic — horizontal
+  positioning is just sequential, no edge crossing minimization, no
+  grouping by communication density.
+
+Candidates to evaluate:
+
+  A. ELK.js (Eclipse Layout Kernel):
+     - Java-based layout engine compiled to JS via GWT
+     - Excellent hierarchical/layered layout (Sugiyama-style)
+     - Built-in support for compound nodes (parent-child grouping)
+     - Edge crossing minimization, port-based routing
+     - Used by Eclipse IDE, JetBrains, and many EDA tools
+     - npm: elkjs
+     - Would replace the stair layout computation, keep D3 for rendering
+
+  B. Cytoscape.js:
+     - Full graph visualization library (not just layout)
+     - Native compound node support (parent contains children visually)
+     - Multiple layout algorithms: dagre, klay (ELK-based), cose-bilkent
+     - Better performance than D3 for large graphs
+     - Would replace both layout AND rendering (D3 no longer needed)
+     - Has built-in expand/collapse for compound nodes
+
+  C. Dagre (dagre-d3):
+     - Lightweight directed graph layout
+     - Sugiyama-style layered layout with edge routing
+     - Works with D3 for rendering
+     - Simpler than ELK but less features
+
+  Evaluation criteria:
+    - Layout quality for hierarchical ROS 2 graphs
+    - Support for the G expansion operator (compound nodes)
+    - Edge routing clarity (orthogonal, crossing minimization)
+    - Performance with 300-3000 nodes
+    - Integration effort with existing fish_viz.html
+
+  Approach: build a small prototype with each, compare on the same
+  fish_graph.json. Pick the best one and rewrite fish_viz.html.
+
+Priority: MEDIUM (current stair layout works, but better layout would
+  significantly improve readability for paper figures)

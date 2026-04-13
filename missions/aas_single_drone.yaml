@@ -1,0 +1,96 @@
+# FISH Mission: AAS single-drone simulation
+#
+# Traces a full takeoff → orbit → land mission on the Aerial Autonomy Stack
+# with FISH running in the aircraft container. Ground and simulation containers
+# are defined but not FISH-instrumented (yet).
+#
+# Prerequisites:
+#   1. Start the AAS system:  cd ~/aerial-autonomy-stack/scripts && ./sim_run.sh
+#   2. Wait for all containers to be up and Gazebo loaded
+#   3. Run this mission:  python3 fish_orchestrator.py missions/aas_single_drone.yaml
+#
+# To trace all 3 containers, install FISH in ground-image and simulation-image,
+# set fish: true for each, and add them to finish.fish_stop.
+
+name: aas_single_drone_mission
+
+containers:
+  simulation:
+    docker_name: simulation-container-inst0
+    fish: false
+    role: simulation
+
+  ground:
+    docker_name: ground-container-inst0
+    fish: false          # set true after FISH is installed in ground-image
+    trace_path: /root/fish_traces
+    role: ground
+
+  aircraft:
+    docker_name: aircraft-container-inst0_1
+    fish: true
+    trace_path: /root/fish_traces
+    role: aircraft
+
+# No launch command — start sim_run.sh manually first
+# launch:
+#   command: "cd ~/aerial-autonomy-stack/scripts && ./sim_run.sh"
+#   timeout: 120
+
+ready:
+  fish_stable:
+    - aircraft
+  timeout: 180
+
+actions:
+  - log: "Mission start"
+
+  - log: "Takeoff"
+  - exec:
+      container: aircraft
+      run: >
+        source /opt/ros/humble/setup.bash &&
+        source /aas/aircraft_ws/install/setup.bash &&
+        ros2 action send_goal /Drone1/takeoff_action
+        aas_command_msgs/action/Takeoff "{}"
+      wait: true
+      timeout: 60
+
+  - sleep: 5
+
+  - log: "Orbit for observation"
+  - exec:
+      container: aircraft
+      run: >
+        source /opt/ros/humble/setup.bash &&
+        source /aas/aircraft_ws/install/setup.bash &&
+        ros2 action send_goal /Drone1/orbit_action
+        aas_command_msgs/action/Orbit "{}"
+      wait: true
+      timeout: 120
+
+  - sleep: 5
+
+  - log: "Land"
+  - exec:
+      container: aircraft
+      run: >
+        source /opt/ros/humble/setup.bash &&
+        source /aas/aircraft_ws/install/setup.bash &&
+        ros2 action send_goal /Drone1/land_action
+        aas_command_msgs/action/Land "{}"
+      wait: true
+      timeout: 60
+
+  - log: "Mission complete — waiting for data to settle"
+  - sleep: 5
+
+finish:
+  fish_stop:
+    - aircraft
+    # - ground       # uncomment when FISH installed
+  wait_after_stop: 15
+  collect_traces: true
+  stop_containers: false   # let sim_run.sh handle container lifecycle
+
+output: ~/fish_traces

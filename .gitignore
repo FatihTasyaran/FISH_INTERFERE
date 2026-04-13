@@ -4,3 +4,8 @@ __pycache__/
 *~
 \#*\#
 docs/_build/
+
+# Generated visualization outputs (reproducible from model.py)
+postprocess/png/
+postprocess/pdf/
+postprocess/dot/
