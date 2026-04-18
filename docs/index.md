@@ -14,7 +14,9 @@ installation
 tracepoints
 usage
 mission
+graph_store
 dependencies
+api
 ```
 
 ## Links

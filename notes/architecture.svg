@@ -1,0 +1,261 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1580" width="1200" height="1580" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif">
+
+  <defs>
+    <!-- Arrow marker for data flow -->
+    <marker id="arrowDark" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#444"/>
+    </marker>
+    <!-- Rounded rect filter for subtle shadow -->
+    <filter id="shadow" x="-2%" y="-2%" width="104%" height="104%">
+      <feDropShadow dx="1" dy="1" stdDeviation="2" flood-color="#00000020"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="1580" fill="#FAFAFA" rx="8"/>
+
+  <!-- Title -->
+  <text x="600" y="40" text-anchor="middle" font-size="22" font-weight="700" fill="#222">FISH Software Architecture</text>
+
+  <!-- ============================================================ -->
+  <!-- LAYER 1: Installation (purple band) -->
+  <!-- ============================================================ -->
+  <rect x="30" y="60" width="1140" height="310" rx="12" fill="#E8DAEF" stroke="#7D3C98" stroke-width="1.5"/>
+  <text x="50" y="90" font-size="16" font-weight="700" fill="#4A235A">Layer 1 -- Installation (runs once)</text>
+
+  <!-- setup_fish.sh -->
+  <rect x="60" y="110" width="220" height="70" rx="10" fill="#fff" stroke="#7D3C98" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="170" y="138" text-anchor="middle" font-size="13" font-weight="600" fill="#333">setup_fish.sh</text>
+  <text x="170" y="156" text-anchor="middle" font-size="11" fill="#555">(entry point)</text>
+
+  <!-- install_fish_tracepoints -->
+  <rect x="340" y="105" width="240" height="80" rx="10" fill="#fff" stroke="#7D3C98" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="460" y="130" text-anchor="middle" font-size="12" font-weight="600" fill="#333">install_fish_tracepoints</text>
+  <text x="460" y="148" text-anchor="middle" font-size="10" fill="#555">Patch: tracetools, rcl,</text>
+  <text x="460" y="162" text-anchor="middle" font-size="10" fill="#555">rclcpp_action, rclpy</text>
+
+  <!-- install_fish.sh -->
+  <rect x="340" y="200" width="240" height="80" rx="10" fill="#fff" stroke="#7D3C98" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="460" y="225" text-anchor="middle" font-size="12" font-weight="600" fill="#333">install_fish.sh</text>
+  <text x="460" y="243" text-anchor="middle" font-size="10" fill="#555">ros2 wrapper (bash),</text>
+  <text x="460" y="257" text-anchor="middle" font-size="10" fill="#555">trace_session.sh, python/fish/</text>
+
+  <!-- Arrows from setup_fish to children -->
+  <line x1="280" y1="140" x2="340" y2="140" stroke="#7D3C98" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+  <line x1="280" y1="150" x2="310" y2="235" stroke="#7D3C98" stroke-width="1.5"/>
+  <line x1="310" y1="235" x2="340" y2="235" stroke="#7D3C98" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+
+  <!-- Multi-container path -->
+  <rect x="640" y="105" width="250" height="80" rx="10" fill="#fff" stroke="#7D3C98" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="765" y="128" text-anchor="middle" font-size="12" font-weight="600" fill="#333">Multi-container</text>
+  <text x="765" y="146" text-anchor="middle" font-size="10" fill="#555">install_all.sh</text>
+  <text x="765" y="160" text-anchor="middle" font-size="10" fill="#555">&#8594; container_install.sh</text>
+  <text x="765" y="174" text-anchor="middle" font-size="10" fill="#555">&#8594; setup_fish.sh (per container)</text>
+
+  <!-- build_fish_image.sh -->
+  <rect x="640" y="200" width="250" height="55" rx="10" fill="#fff" stroke="#7D3C98" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="765" y="223" text-anchor="middle" font-size="12" font-weight="600" fill="#333">build_fish_image.sh</text>
+  <text x="765" y="241" text-anchor="middle" font-size="10" fill="#555">Bake FISH into Docker image</text>
+
+  <!-- Config -->
+  <rect x="640" y="270" width="250" height="55" rx="10" fill="#fff" stroke="#7D3C98" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="765" y="293" text-anchor="middle" font-size="12" font-weight="600" fill="#333">Configuration</text>
+  <text x="765" y="311" text-anchor="middle" font-size="10" fill="#555">fish_settings.ini, fish_events.txt</text>
+
+  <!-- ============================================================ -->
+  <!-- DATA FLOW: Layer 1 -> Layer 2 -->
+  <!-- ============================================================ -->
+  <line x1="600" y1="370" x2="600" y2="410" stroke="#444" stroke-width="2.5" marker-end="url(#arrowDark)" stroke-dasharray="6,3"/>
+  <rect x="440" y="375" width="320" height="24" rx="6" fill="#F5F0FA" stroke="#7D3C98" stroke-width="0.8"/>
+  <text x="600" y="392" text-anchor="middle" font-size="11" font-weight="600" fill="#4A235A">Patched ROS 2 system + FISH tools installed</text>
+
+  <!-- ============================================================ -->
+  <!-- LAYER 2: Runtime (blue band) -->
+  <!-- ============================================================ -->
+  <rect x="30" y="410" width="1140" height="330" rx="12" fill="#D6EAF8" stroke="#2E86C1" stroke-width="1.5"/>
+  <text x="50" y="440" font-size="16" font-weight="700" fill="#1B4F72">Layer 2 -- Runtime (while app runs)</text>
+
+  <!-- ros2 wrapper -->
+  <rect x="60" y="460" width="200" height="65" rx="10" fill="#fff" stroke="#2E86C1" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="160" y="487" text-anchor="middle" font-size="13" font-weight="600" fill="#333">ros2 wrapper</text>
+  <text x="160" y="505" text-anchor="middle" font-size="10" fill="#555">(bash, intercepts commands)</text>
+
+  <!-- ros2 launch path -->
+  <rect x="310" y="455" width="260" height="80" rx="10" fill="#fff" stroke="#2E86C1" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="440" y="478" text-anchor="middle" font-size="12" font-weight="600" fill="#333">ros2 launch path</text>
+  <text x="440" y="496" text-anchor="middle" font-size="10" fill="#555">launch_inspect.py (dry-run capture)</text>
+  <text x="440" y="510" text-anchor="middle" font-size="10" fill="#555">&#8594; launch_wrap.py (nsys injection)</text>
+  <text x="440" y="524" text-anchor="middle" font-size="10" fill="#555">for GPU profiling</text>
+
+  <!-- ros2 run path -->
+  <rect x="310" y="545" width="260" height="55" rx="10" fill="#fff" stroke="#2E86C1" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="440" y="568" text-anchor="middle" font-size="12" font-weight="600" fill="#333">ros2 run path</text>
+  <text x="440" y="586" text-anchor="middle" font-size="10" fill="#555">Direct execution with LTTng active</text>
+
+  <!-- CLI -->
+  <rect x="310" y="610" width="260" height="55" rx="10" fill="#fff" stroke="#2E86C1" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="440" y="633" text-anchor="middle" font-size="12" font-weight="600" fill="#333">ros2 run fish &lt;cmd&gt;</text>
+  <text x="440" y="651" text-anchor="middle" font-size="10" fill="#555">CLI: stop / snapshot / gpu / status</text>
+
+  <!-- Arrows from wrapper to paths -->
+  <line x1="260" y1="480" x2="310" y2="490" stroke="#2E86C1" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+  <line x1="260" y1="495" x2="310" y2="570" stroke="#2E86C1" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+  <line x1="260" y1="500" x2="310" y2="635" stroke="#2E86C1" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+
+  <!-- trace_session.sh -->
+  <rect x="630" y="455" width="240" height="80" rx="10" fill="#fff" stroke="#2E86C1" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="750" y="480" text-anchor="middle" font-size="12" font-weight="600" fill="#333">trace_session.sh</text>
+  <text x="750" y="498" text-anchor="middle" font-size="10" fill="#555">LTTng start/stop</text>
+  <text x="750" y="512" text-anchor="middle" font-size="10" fill="#555">auto-starts gpu.py + snapshot.py</text>
+  <text x="750" y="526" text-anchor="middle" font-size="10" fill="#555">daemon</text>
+
+  <!-- Tracepoints -->
+  <rect x="630" y="550" width="500" height="115" rx="10" fill="#fff" stroke="#2E86C1" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="880" y="575" text-anchor="middle" font-size="12" font-weight="600" fill="#333">Tracepoints in Patched ROS 2</text>
+  <text x="880" y="595" text-anchor="middle" font-size="10" fill="#555">Standard: callback_start/end, rcl_publish, rcl_take, ...</text>
+  <text x="880" y="615" text-anchor="middle" font-size="10" fill="#555">FISH custom: fish_publish_link, fish_client_link,</text>
+  <text x="880" y="635" text-anchor="middle" font-size="10" fill="#555">action_server_init, action_execute_*</text>
+  <text x="880" y="655" text-anchor="middle" font-size="10" fill="#555">rclpy: rclpy_callback_start/end, rclpy_publish, ...</text>
+
+  <!-- ============================================================ -->
+  <!-- DATA FLOW: Layer 2 -> Layer 3 -->
+  <!-- ============================================================ -->
+  <line x1="600" y1="740" x2="600" y2="780" stroke="#444" stroke-width="2.5" marker-end="url(#arrowDark)" stroke-dasharray="6,3"/>
+  <rect x="380" y="745" width="440" height="24" rx="6" fill="#EBF5FB" stroke="#2E86C1" stroke-width="0.8"/>
+  <text x="600" y="762" text-anchor="middle" font-size="11" font-weight="600" fill="#1B4F72">~/fish_traces/&lt;session&gt;/ : ros2/ (CTF), nsys/ (SQLite), snapshot/</text>
+
+  <!-- ============================================================ -->
+  <!-- LAYER 3: Orchestration (green band) -->
+  <!-- ============================================================ -->
+  <rect x="30" y="780" width="1140" height="260" rx="12" fill="#D5F5E3" stroke="#1E8449" stroke-width="1.5"/>
+  <text x="50" y="810" font-size="16" font-weight="700" fill="#145A32">Layer 3 -- Orchestration (mission time)</text>
+
+  <!-- Mission YAML -->
+  <rect x="60" y="830" width="180" height="55" rx="10" fill="#fff" stroke="#1E8449" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="150" y="855" text-anchor="middle" font-size="13" font-weight="600" fill="#333">Mission YAML</text>
+  <text x="150" y="873" text-anchor="middle" font-size="10" fill="#555">(mission definition)</text>
+
+  <!-- fish_orchestrator.py -->
+  <rect x="300" y="825" width="280" height="65" rx="10" fill="#fff" stroke="#1E8449" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="440" y="852" text-anchor="middle" font-size="13" font-weight="600" fill="#333">fish_orchestrator.py</text>
+  <text x="440" y="870" text-anchor="middle" font-size="10" fill="#555">(main orchestration engine)</text>
+
+  <!-- Arrow: YAML -> orchestrator -->
+  <line x1="240" y1="857" x2="300" y2="857" stroke="#1E8449" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+
+  <!-- Orchestrator steps -->
+  <rect x="640" y="825" width="490" height="170" rx="10" fill="#fff" stroke="#1E8449" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="885" y="850" text-anchor="middle" font-size="12" font-weight="600" fill="#333">Orchestration Steps</text>
+  <text x="660" y="875" font-size="11" fill="#555">1. Read mission YAML</text>
+  <text x="660" y="895" font-size="11" fill="#555">2. Start Docker containers</text>
+  <text x="660" y="915" font-size="11" fill="#555">3. Wait for FISH-stable signal (SIGUSR1) from each</text>
+  <text x="660" y="935" font-size="11" fill="#555">4. Execute mission actions (takeoff &#8594; orbit &#8594; land)</text>
+  <text x="660" y="955" font-size="11" fill="#555">5. Stop FISH in each container (shutdown snapshot)</text>
+  <text x="660" y="975" font-size="11" fill="#555">6. Collect traces into session directory</text>
+
+  <!-- Arrow: orchestrator -> steps -->
+  <line x1="580" y1="857" x2="640" y2="857" stroke="#1E8449" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+
+  <!-- Arrow: orchestrator -> containers (down to L2 conceptual) -->
+  <rect x="300" y="910" width="280" height="55" rx="10" fill="#fff" stroke="#1E8449" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="440" y="933" text-anchor="middle" font-size="12" font-weight="600" fill="#333">Docker Containers</text>
+  <text x="440" y="951" text-anchor="middle" font-size="10" fill="#555">(each runs Layer 2 stack)</text>
+
+  <line x1="440" y1="890" x2="440" y2="910" stroke="#1E8449" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+
+  <!-- ============================================================ -->
+  <!-- DATA FLOW: Layer 3 -> Layer 4 -->
+  <!-- ============================================================ -->
+  <line x1="600" y1="1040" x2="600" y2="1080" stroke="#444" stroke-width="2.5" marker-end="url(#arrowDark)" stroke-dasharray="6,3"/>
+  <rect x="380" y="1045" width="440" height="24" rx="6" fill="#EAFAF1" stroke="#1E8449" stroke-width="0.8"/>
+  <text x="600" y="1062" text-anchor="middle" font-size="11" font-weight="600" fill="#145A32">fish_compose_&lt;timestamp&gt;/ : per-container collected traces</text>
+
+  <!-- ============================================================ -->
+  <!-- LAYER 4: Postprocess (yellow band) -->
+  <!-- ============================================================ -->
+  <rect x="30" y="1080" width="1140" height="370" rx="12" fill="#FEF9E7" stroke="#B7950B" stroke-width="1.5"/>
+  <text x="50" y="1110" font-size="16" font-weight="700" fill="#7D6608">Layer 4 -- Postprocess (after trace collection)</text>
+
+  <!-- ingest.py -->
+  <rect x="60" y="1130" width="250" height="100" rx="10" fill="#fff" stroke="#B7950B" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="185" y="1155" text-anchor="middle" font-size="13" font-weight="600" fill="#333">ingest.py</text>
+  <text x="185" y="1175" text-anchor="middle" font-size="10" fill="#555">babeltrace2 CTF &#8594; MongoDB</text>
+  <text x="185" y="1193" text-anchor="middle" font-size="10" fill="#555">nsys SQLite &#8594; InfluxDB3</text>
+  <text x="185" y="1211" text-anchor="middle" font-size="10" fill="#555">snapshot &#8594; MongoDB</text>
+
+  <!-- model_improved.py -->
+  <rect x="370" y="1130" width="250" height="100" rx="10" fill="#fff" stroke="#B7950B" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="495" y="1155" text-anchor="middle" font-size="13" font-weight="600" fill="#333">model_improved.py</text>
+  <text x="495" y="1175" text-anchor="middle" font-size="10" fill="#555">EX&#8594;N&#8594;E&#8594;F vertex discovery</text>
+  <text x="495" y="1193" text-anchor="middle" font-size="10" fill="#555">Aspect attribution</text>
+  <text x="495" y="1211" text-anchor="middle" font-size="10" fill="#555">Graph construction</text>
+
+  <!-- fish_compose.py -->
+  <rect x="680" y="1130" width="250" height="100" rx="10" fill="#fff" stroke="#B7950B" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="805" y="1155" text-anchor="middle" font-size="13" font-weight="600" fill="#333">fish_compose.py</text>
+  <text x="805" y="1175" text-anchor="middle" font-size="10" fill="#555">Per-container model</text>
+  <text x="805" y="1193" text-anchor="middle" font-size="10" fill="#555">External boundary matching</text>
+  <text x="805" y="1211" text-anchor="middle" font-size="10" fill="#555">+ CN layer &#8594; unified graph</text>
+
+  <!-- Arrows between postprocess components -->
+  <line x1="310" y1="1180" x2="370" y2="1180" stroke="#B7950B" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+  <line x1="620" y1="1180" x2="680" y2="1180" stroke="#B7950B" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+
+  <!-- Data artifact: fish_graph.json -->
+  <rect x="370" y="1265" width="250" height="40" rx="8" fill="#FFF8DC" stroke="#B7950B" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="495" y="1290" text-anchor="middle" font-size="12" font-weight="600" fill="#7D6608">fish_graph.json</text>
+
+  <line x1="805" y1="1230" x2="805" y2="1250" stroke="#B7950B" stroke-width="1.2"/>
+  <line x1="805" y1="1250" x2="495" y2="1250" stroke="#B7950B" stroke-width="1.2"/>
+  <line x1="495" y1="1250" x2="495" y2="1265" stroke="#B7950B" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+
+  <!-- fish_viz.html -->
+  <rect x="680" y="1315" width="250" height="100" rx="10" fill="#fff" stroke="#B7950B" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="805" y="1340" text-anchor="middle" font-size="13" font-weight="600" fill="#333">fish_viz.html</text>
+  <text x="805" y="1360" text-anchor="middle" font-size="10" fill="#555">Interactive D3 visualization</text>
+  <text x="805" y="1378" text-anchor="middle" font-size="10" fill="#555">Expand / Layer modes</text>
+  <text x="805" y="1396" text-anchor="middle" font-size="10" fill="#555">Force / Tree / Stair layouts</text>
+
+  <!-- Arrow: fish_graph.json -> viz -->
+  <line x1="620" y1="1285" x2="680" y2="1330" stroke="#B7950B" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+
+  <!-- Databases -->
+  <rect x="60" y="1265" width="250" height="80" rx="10" fill="#fff" stroke="#B7950B" stroke-width="1.2" filter="url(#shadow)"/>
+  <text x="185" y="1290" text-anchor="middle" font-size="12" font-weight="600" fill="#333">Databases</text>
+  <text x="185" y="1310" text-anchor="middle" font-size="10" fill="#555">MongoDB (trace events, snapshots)</text>
+  <text x="185" y="1328" text-anchor="middle" font-size="10" fill="#555">InfluxDB3 (GPU/nsys metrics)</text>
+
+  <line x1="185" y1="1230" x2="185" y2="1265" stroke="#B7950B" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+  <line x1="185" y1="1345" x2="185" y2="1370" stroke="#B7950B" stroke-width="1"/>
+  <line x1="185" y1="1370" x2="495" y2="1370" stroke="#B7950B" stroke-width="1"/>
+  <line x1="495" y1="1305" x2="495" y2="1370" stroke="#B7950B" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+
+  <!-- ============================================================ -->
+  <!-- FINAL OUTPUT label -->
+  <!-- ============================================================ -->
+  <rect x="400" y="1440" width="400" height="35" rx="8" fill="#FFF3CD" stroke="#B7950B" stroke-width="1.5"/>
+  <text x="600" y="1463" text-anchor="middle" font-size="13" font-weight="700" fill="#7D6608">Final Output: fish_graph.json &#8594; fish_viz.html</text>
+
+  <!-- ============================================================ -->
+  <!-- LEGEND -->
+  <!-- ============================================================ -->
+  <rect x="30" y="1500" width="1140" height="65" rx="8" fill="#fff" stroke="#ccc" stroke-width="1"/>
+  <text x="50" y="1525" font-size="12" font-weight="700" fill="#333">Legend:</text>
+  <rect x="120" y="1512" width="18" height="18" rx="4" fill="#E8DAEF" stroke="#7D3C98" stroke-width="1"/>
+  <text x="145" y="1526" font-size="11" fill="#444">Installation</text>
+  <rect x="240" y="1512" width="18" height="18" rx="4" fill="#D6EAF8" stroke="#2E86C1" stroke-width="1"/>
+  <text x="265" y="1526" font-size="11" fill="#444">Runtime</text>
+  <rect x="350" y="1512" width="18" height="18" rx="4" fill="#D5F5E3" stroke="#1E8449" stroke-width="1"/>
+  <text x="375" y="1526" font-size="11" fill="#444">Orchestration</text>
+  <rect x="490" y="1512" width="18" height="18" rx="4" fill="#FEF9E7" stroke="#B7950B" stroke-width="1"/>
+  <text x="515" y="1526" font-size="11" fill="#444">Postprocess</text>
+  <line x1="620" y1="1521" x2="670" y2="1521" stroke="#444" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrowDark)"/>
+  <text x="680" y="1526" font-size="11" fill="#444">Data flow between layers</text>
+  <line x1="850" y1="1521" x2="900" y2="1521" stroke="#7D3C98" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+  <text x="910" y="1526" font-size="11" fill="#444">Internal flow</text>
+
+  <!-- Subtle bottom label -->
+  <text x="600" y="1575" text-anchor="middle" font-size="10" fill="#999">FISH -- Full Inspection of Software Hierarchy</text>
+
+</svg>

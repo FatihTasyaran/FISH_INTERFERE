@@ -556,7 +556,47 @@ Fix:
 Priority: LOW (quality of life, not blocking functionality)
 
 
-12. Evaluate alternative graph layout engines for fish_viz
+13. Invariant validation on graph mutations
+---------------------------------------------
+Problem:
+  graph_store.py exposes mutation primitives (update_node/edge, add_node/edge,
+  remove_node/edge) but does not validate that resulting graphs still honor
+  the FISH hierarchy invariants:
+
+    CN (L-1) → EX (L0) → N (L1) → E (L2) → F (L3)
+
+  A careless mutation can leave the graph in an inconsistent state:
+    - A node with non-monotonic level vs. parent
+    - An EX with no CN parent
+    - Communication edges between types that should never communicate
+    - children[] pointing at missing / wrong-type IDs
+    - External vertices without the "external" flag set
+
+Why deferred:
+  Implementing validators right now complicates testing of the round-trip
+  (save → load → viz). We want to iterate on the storage layer first and
+  only bolt on invariants once the happy path is solid.
+
+Implementation:
+  1. Define INVARIANTS in a single place (validators.py):
+       - type_to_level: {"CN": -1, "EX": 0, "N": 1, "E": 2, "F": 3}
+       - allowed_contain_edges: {(-1, 0), (0, 1), (1, 2), (2, 3)}
+       - allowed_comm_edges:    {(F, E), (E, F), ...} from existing model
+       - every node has a parent via "children" except CN
+       - external flag consistent with whether the node has outside edges
+  2. graph_store.validate(session_name) → list of issues
+  3. Mutation methods accept validate=True flag (default False initially) —
+     raise ValidationError on violation, rollback.
+  4. CLI: `python graph_store.py validate <session>`
+  5. Add tests/invariants.py with unit tests: known-good graph passes,
+     each expected violation is caught.
+
+Priority: MEDIUM (not blocking storage layer work; add once roofline /
+  other analyses start producing non-trivial mutations that could break
+  invariants silently).
+
+
+14. Evaluate alternative graph layout engines for fish_viz
 -----------------------------------------------------------
 Problem:
   D3 force layout struggles with large graphs (3000+ nodes). The current

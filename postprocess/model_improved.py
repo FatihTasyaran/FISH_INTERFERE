@@ -166,7 +166,7 @@ def identify_executors(mongo):
                 "publishers": {},
             }
             if ex.A_v['label'] == "temp":
-                ex.A_v['label'] = nie['procname']
+                ex.A_v['label'] = f"{nie['procname']} (PID:{pid})"
 
             n = FishVertex("N", next(vertex_counter), n_A, [], 1)
             ex.Z_v.append(n.id_v)
@@ -443,6 +443,187 @@ def identify_callbacks(mongo, nodes, entities, executors):
 
     log(f"identify_callbacks DONE in {time.time()-t0:.1f}s — {len(functions)} functions")
     return functions
+
+
+# ---------------------------------------------------------------------------
+# Scheduler introspection: executor type + callback groups
+# ---------------------------------------------------------------------------
+
+def attach_callback_groups(mongo, executors, nodes, entities, functions):
+    """Attach executor_type / num_threads / cb_groups on EX vertices, and
+    callback_group info on E (and mirrored onto F).
+
+    Reads four new FISH tracepoints:
+      fish_executor_init         — (pid → executor type + num_threads)
+      fish_callback_group_init   — (group_addr → type + automatic_add)
+      fish_cbgroup_add           — (entity_rcl_handle → group_addr)
+      fish_executor_add_cbgroup  — (executor_addr → group_addrs)
+    """
+    coll = mongo["ros2_trace"]
+    t0 = time.time()
+
+    # --- Bulk load new tracepoint events --------------------------------
+    exec_init_docs = list(coll.find({"event": "ros2:fish_executor_init"}))
+    cg_init_docs   = list(coll.find({"event": "ros2:fish_callback_group_init"}))
+    cg_add_docs    = list(coll.find({"event": "ros2:fish_cbgroup_add"}))
+    ex_add_docs    = list(coll.find({"event": "ros2:fish_executor_add_cbgroup"}))
+
+    if not (exec_init_docs or cg_init_docs or cg_add_docs or ex_add_docs):
+        log("attach_callback_groups: no scheduler events in trace, skipping")
+        return
+
+    log(f"attach_callback_groups: "
+        f"{len(exec_init_docs)} exec_init, {len(cg_init_docs)} cg_init, "
+        f"{len(cg_add_docs)} cg_add, {len(ex_add_docs)} ex_add")
+
+    # --- fish_callback_group_init: group_addr → CG metadata -------------
+    cg_info = {}
+    for d in cg_init_docs:
+        p = d["payload"]
+        cg_info[p["group_addr"]] = {
+            "type": p["group_type"],
+            "automatic_add": bool(p["automatic_add"]),
+            "pid": d["vpid"],
+        }
+
+    # --- fish_cbgroup_add: entity_rcl_handle → group_addr ---------------
+    entity_to_group = {}
+    for d in cg_add_docs:
+        p = d["payload"]
+        entity_to_group[p["entity_addr"]] = {
+            "group_addr": p["group_addr"],
+            "kind": p["entity_kind"],
+        }
+
+    # --- fish_executor_init: pid → [executor info] ----------------------
+    executors_per_pid = {}
+    for d in exec_init_docs:
+        p = d["payload"]
+        pid = d["vpid"]
+        executors_per_pid.setdefault(pid, []).append({
+            "executor_addr": p["executor_addr"],
+            "type": p["executor_type"],
+            "num_threads": p["num_threads"],
+        })
+
+    # --- fish_executor_add_cbgroup: executor_addr → set(group_addrs) ----
+    exec_to_groups = {}
+    for d in ex_add_docs:
+        p = d["payload"]
+        exec_to_groups.setdefault(p["executor_addr"], set()).add(p["group_addr"])
+
+    # --- Handle → (entity_kind, node_handle, name) for sub/serv/cli ----
+    # This bridge lets us match entity_addr (rcl handle) in fish_cbgroup_add
+    # to the right E vertex even if we don't already store the handle on E.
+    handle_to_topic_node = {}   # rcl handle → (topic_or_name, node_handle, kind)
+    for d in coll.find({"event": "ros2:rcl_subscription_init"}):
+        p = d["payload"]
+        handle_to_topic_node[p["subscription_handle"]] = (
+            p["topic_name"], p["node_handle"], "sub")
+    for d in coll.find({"event": "ros2:rcl_service_init"}):
+        p = d["payload"]
+        handle_to_topic_node[p["service_handle"]] = (
+            p["service_name"], p["node_handle"], "serv")
+
+    # timer_handle is already stored on tmr E vertices (A_v['timer_handle'])
+
+    # --- Attach to EX vertices -----------------------------------------
+    for ex_id, ex in executors.items():
+        pid = ex.A_v.get("pid")
+        if pid is None:
+            continue
+        execs = executors_per_pid.get(pid, [])
+        if not execs:
+            continue
+        # Primary = executor with most cb_groups in this process (usually only 1)
+        execs_ranked = sorted(
+            execs,
+            key=lambda e: len(exec_to_groups.get(e["executor_addr"], [])),
+            reverse=True,
+        )
+        primary = execs_ranked[0]
+        # All addresses come from the trace as hex strings already
+        ex.A_v["executor_addr"] = primary["executor_addr"]
+        ex.A_v["executor_type"] = primary["type"]
+        ex.A_v["num_threads"] = primary["num_threads"]
+
+        # Aggregate CG info for all executors in process (usually same set)
+        seen = set()
+        cb_groups_list = []
+        for e in execs:
+            for g_addr in exec_to_groups.get(e["executor_addr"], []):
+                if g_addr in seen:
+                    continue
+                seen.add(g_addr)
+                ci = cg_info.get(g_addr, {})
+                cb_groups_list.append({
+                    "id": g_addr,
+                    "type": ci.get("type", "Unknown"),
+                    "automatic_add": ci.get("automatic_add"),
+                })
+        if cb_groups_list:
+            ex.A_v["cb_groups"] = cb_groups_list
+
+        if len(execs) > 1:
+            ex.A_v["extra_executors"] = [
+                {"addr": e["executor_addr"],
+                 "type": e["type"],
+                 "num_threads": e["num_threads"]}
+                for e in execs_ranked[1:]
+            ]
+
+    # --- Attach to E / F vertices --------------------------------------
+    # node_handle → node_id lookup
+    node_by_handle = {n.A_v["node_handle"]: nid for nid, n in nodes.items()}
+
+    cg_on_e = 0
+    for e_id, e in entities.items():
+        etype = e.A_v.get("etype")
+        rcl_handle = None
+        if etype == "tmr":
+            rcl_handle = e.A_v.get("timer_handle")
+        elif etype in ("sub", "serv"):
+            # Find the rcl_handle via (node_handle, name) lookup
+            # We need to walk handle_to_topic_node and match.
+            label = e.A_v.get("label")
+            # Parent node is the E's parent
+            parent_nh = None
+            # Find parent node by searching which node has e_id in Z_v
+            for nid, n in nodes.items():
+                if e_id in n.Z_v:
+                    parent_nh = n.A_v.get("node_handle")
+                    break
+            if parent_nh is None:
+                continue
+            for h, (name, nh, kind) in handle_to_topic_node.items():
+                if nh == parent_nh and name == label and kind == etype:
+                    rcl_handle = h
+                    break
+
+        if rcl_handle is None:
+            continue
+        mapping = entity_to_group.get(rcl_handle)
+        if not mapping:
+            continue
+        ci = cg_info.get(mapping["group_addr"])
+        if not ci:
+            continue
+        cg_attr = {
+            "id": mapping["group_addr"],
+            "type": ci["type"],
+            "automatic_add": ci["automatic_add"],
+        }
+        e.A_v["callback_group"] = cg_attr
+        cg_on_e += 1
+
+        # Mirror onto children F vertices
+        for f_id in e.Z_v:
+            f = functions.get(f_id)
+            if f:
+                f.A_v["callback_group"] = cg_attr
+
+    log(f"attach_callback_groups DONE in {time.time()-t0:.1f}s — "
+        f"{cg_on_e}/{len(entities)} entities got CG info")
 
 
 # ---------------------------------------------------------------------------
@@ -795,9 +976,15 @@ def split_callbacks(mongo, entities, functions):
 # Graph Construction
 # ---------------------------------------------------------------------------
 
-def create_graph(executors, nodes, entities, functions):
+def create_graph(executors, nodes, entities, functions, session_name=""):
     """Build directed graph with vertical containment edges."""
     G = nx.DiGraph()
+
+    # L-1: Container node wrapping all executors
+    cn_id = next(vertex_counter)
+    cn_A = {"label": session_name or "container"}
+    cn = FishVertex("CN", cn_id, cn_A, list(executors.keys()), -1)
+    G.add_node(cn.id_v, v=cn)
 
     for ex in executors.values():
         G.add_node(ex.id_v, v=ex)
@@ -808,6 +995,10 @@ def create_graph(executors, nodes, entities, functions):
     for f in functions.values():
         G.add_node(f.id_v, v=f)
 
+    # CN → EX
+    for ex_id in cn.Z_v:
+        G.add_edge(cn.id_v, ex_id, rel="contains", level="L-1_L0")
+    # EX → N
     for ex in executors.values():
         for n_id in ex.Z_v:
             G.add_edge(ex.id_v, n_id, rel="contains", level="L0_L1")
@@ -1022,6 +1213,10 @@ def add_horizontal_edges(G, mongo, executors, nodes, entities, functions):
         l0_count += 1
     log(f"  L0 aggregated: {l0_count}")
 
+    # --- L-1 aggregation (container level, used by fish_compose) ---
+    # Single-container: no cross-container edges, but the structure is there
+    # fish_compose.py handles multi-container L-1 edges
+
     total = l2_count + l3_count + l1_count + l0_count
     log(f"  Total horizontal: {total}")
     return G
@@ -1080,6 +1275,12 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="FISH model extraction (improved)")
     ap.add_argument("--session", required=True, help="Session/database name")
     ap.add_argument("--no-split", action="store_true", help="Disable callback splitting")
+    ap.add_argument("--no-db", action="store_true",
+                    help="Skip persisting the graph into MongoDB (fish_meta)")
+    ap.add_argument("--source-trace", default=None,
+                    help="Trace directory path, stored as metadata")
+    ap.add_argument("--container-role", default=None,
+                    help="Container role (aircraft/simulation/ground/...) stored as metadata")
     args = ap.parse_args()
 
     mongo = connect_mongo(args.session)
@@ -1090,16 +1291,30 @@ if __name__ == "__main__":
     entities = identify_entities(mongo, nodes)
     functions = identify_callbacks(mongo, nodes, entities, executors)
     attribute_aspects(mongo, executors, nodes, entities)
+    attach_callback_groups(mongo, executors, nodes, entities, functions)
     detect_actions(entities)
 
     if not args.no_split:
         split_callbacks(mongo, entities, functions)
 
     # Phase 2: Graph construction
-    G = create_graph(executors, nodes, entities, functions)
+    G = create_graph(executors, nodes, entities, functions, session_name=args.session)
     G = add_horizontal_edges(G, mongo, executors, nodes, entities, functions)
 
     # Export
     export_json(G)
+
+    if not args.no_db:
+        from graph_store import save_graph
+        meta = save_graph(
+            G, args.session,
+            source_trace=args.source_trace,
+            container_role=args.container_role,
+            is_composed=False,
+            actor="model_improved",
+        )
+        log(f"Saved to MongoDB (fish_meta): "
+            f"{meta['stats']['num_nodes']} nodes, "
+            f"{meta['stats']['num_edges']} edges")
 
     log("Done.")

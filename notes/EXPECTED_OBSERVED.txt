@@ -1,0 +1,533 @@
+EXPECTED vs OBSERVED — ROS 2 scheduling behavior under FISH tracing
+=====================================================================
+
+Purpose:
+  Record every case where the documented / canonical ROS 2 scheduling
+  model diverges from what FISH actually observes at runtime. These are
+  the findings that drive the paper: the observed behavior is not
+  captured by any existing ROS 2 scheduling model we are aware of, nor
+  by the official documentation.
+
+  Each entry below follows the same shape:
+    - EXPECTED  — what the docs / tutorials imply
+    - OBSERVED  — what FISH measured
+    - EVIDENCE  — concrete trace session + numbers
+    - CAUSE     — which rclcpp code path produces the observed behavior
+    - IMPLICATION — why this matters for response-time analysis
+
+  Evidence references the AAS mission trace collected on 2026-04-18:
+    session:    fish_compose_20260418_165627
+    containers: aircraft, ground, simulation (AAS single-drone w/ PX4 SITL)
+    mission:    takeoff -> orbit -> land, ~95 s of active flight
+    tracepoints: 4 new scheduler tracepoints (fish_executor_init,
+                 fish_callback_group_init, fish_cbgroup_add,
+                 fish_executor_add_cbgroup) installed in rclcpp
+                 (callback_group.cpp + executor.cpp + 3 executors/*.cpp)
+
+
+============================================================================
+1. A process can host MULTIPLE executor instances
+============================================================================
+
+EXPECTED
+--------
+The canonical ROS 2 tutorial pattern is:
+
+    int main(...) {
+        auto node = std::make_shared<MyNode>();
+        rclcpp::spin(node);     // or an explicit Executor
+    }
+
+Implicit assumption across docs, design papers, and most analytic
+scheduling models for ROS 2:
+    1 process = 1 executor
+    The executor dispatches all callbacks from all nodes inside the process.
+
+OBSERVED
+--------
+In the AAS trace, six of the eight FISH-observed C++ processes hosted
+MORE than one Executor instance during their lifetime:
+
+  process            primary                         extras
+  ------------------ ------------------------------- --------------------
+  parameter_bridge   SingleThreaded, 1 CG           (none) × 3 processes
+  ground_system      SingleThreaded, 2 CGs          1 × SingleThreaded
+  kiss_icp_node      SingleThreaded, 4 CGs          3 × SingleThreaded
+  state_sharing_node MultiThreaded (20 thr), 4 CGs  1 × SingleThreaded
+  px4_offboard       MultiThreaded (20 thr), 4 CGs  1 × SingleThreaded
+  px4_interface      MultiThreaded (20 thr), 6 CGs  1 × SingleThreaded
+
+Total: 9 primary executors + 6 extras = 15 Executor instances across
+8 C++ processes (plus 1 rclpy process: yolo_py, whose Python executors
+are not yet instrumented).
+
+The "extras" split into two categories — see below.
+
+EVIDENCE
+--------
+  Trace events:
+    aircraft  — 13 fish_executor_init events
+    ground    — subset of the 13 (3 parameter_bridges split across roles)
+    simulation — 3 fish_executor_init events
+
+  Event payload (raw):
+    ros2:fish_executor_init {
+      executor_addr: "0x7FFCD1A35B30",
+      executor_type: "SingleThreaded" | "MultiThreaded" | "StaticSingleThreaded",
+      num_threads:   1 | 20 | ...
+    }
+
+CAUSE
+-----
+Two distinct mechanisms produce multiple executors per process:
+
+  (1) Transient executors created by convenience helpers.
+
+      rclcpp/src/rclcpp/executors.cpp:
+
+        void rclcpp::spin(NodeBaseInterface::SharedPtr node_ptr) {
+          rclcpp::ExecutorOptions options;
+          options.context = node_ptr->get_context();
+          rclcpp::executors::SingleThreadedExecutor exec(options);  // <<
+          exec.add_node(node_ptr);
+          exec.spin();
+          exec.remove_node(node_ptr);
+        }
+
+      Same pattern in rclcpp::spin_some() and
+      rclcpp::spin_until_future_complete(). Every call allocates a fresh
+      SingleThreadedExecutor on the stack, constructs it (→ fires
+      fish_executor_init), spins, then destructs it.
+
+      Common callers inside nodes (any of these trigger a new executor):
+        - Client<T>::async_send_request(req).get()   (blocking sync)
+        - Node::declare_parameter() if a remote param service is queried
+        - Custom service wait_for_service() loops
+        - Lifecycle / parameter callbacks invoking sub-spins
+
+      In kiss_icp_node, three such extras were observed — almost
+      certainly from parameter service queries during startup.
+
+  (2) Deliberate persistent parallel executors.
+
+      An application thread can construct its own Executor and spin it
+      alongside the main one. The px4_interface process visibly uses
+      this pattern:
+
+        MT executor (20 threads, 6 CGs) — main callback dispatch
+        ST executor (1 thread,   1 CG)  — auxiliary work (parameter,
+                                           lifecycle, low-rate services)
+
+      ROS 2 documentation DOES mention "you may use multiple executors"
+      but treats it as an advanced corner case; no analytic model we are
+      aware of captures it.
+
+IMPLICATION
+-----------
+Response-time analysis conventionally assumes a static task set with a
+static scheduler. With multiple executors per process:
+
+  - The "scheduling entity" set is time-varying: transient executors
+    come and go during startup or specific mission phases.
+  - Callbacks of the SAME node may be dispatched by different executors
+    at different points (e.g., a parameter callback handled by a
+    sub-spin while the main MT loop is idle).
+  - Thread affinity of a callback depends on WHICH executor handled it.
+  - Priority inversion is possible: an MT callback waits on a service
+    whose reply is dispatched by a sibling ST executor in the same
+    process.
+
+FISH's approach: enumerate EVERY Executor instance per process and
+attach metadata (executor_type, num_threads, cb_groups). The
+graph_store `EX` vertex records `executor_addr`, `executor_type`,
+`num_threads`, `cb_groups`, plus `extra_executors` (list) for
+coexisting instances. Downstream analysis can filter transient
+executors (typically no persistent CGs, short-lived) from persistent
+ones (multiple CGs, long-lived).
+
+
+============================================================================
+2. A node can own MULTIPLE callback groups with MIXED types
+============================================================================
+
+EXPECTED
+--------
+Two common simplifications in the literature and tutorials:
+
+  (a) Each node has one callback group — the default MutuallyExclusive.
+  (b) A process either uses MutuallyExclusive-only or Reentrant-only
+      callback groups, depending on the designer's choice of
+      SingleThreaded vs MultiThreaded executor.
+
+Neither simplification survives contact with real applications.
+
+OBSERVED
+--------
+AAS aircraft node CG counts:
+
+  process            CGs  types
+  ------------------ ---  ----------------------------------------
+  parameter_bridge   1    MutuallyExclusive (auto)
+  ground_system      2    MutuallyExclusive (auto) + MutuallyExclusive (manual)
+  kiss_icp_node      4    mixed — each of its 4 executors has 1 CG
+  state_sharing_node 4    mix of MutuallyExclusive and Reentrant
+  px4_offboard       4    mix of MutuallyExclusive and Reentrant
+  px4_interface      6    mix of MutuallyExclusive and Reentrant
+
+Overall distribution (across the unified compose graph):
+  14 MutuallyExclusive   +   23 Reentrant    (37 CG-attributed entities)
+
+High-frequency PX4 sensor topics are specifically Reentrant:
+  /Drone1/fmu/out/vehicle_global_position → Reentrant CG
+  /Drone1/fmu/out/vehicle_local_position  → Reentrant CG
+  /Drone1/fmu/out/airspeed_validated      → Reentrant CG
+  /Drone1/fmu/out/vehicle_odometry        → Reentrant CG
+
+Application authors deliberately mix CG types to control intra-node
+concurrency: sensor ingestion in Reentrant so messages can be
+processed concurrently on different threads, state mutations in
+MutuallyExclusive to avoid races.
+
+EVIDENCE
+--------
+  ros2:fish_callback_group_init events per container:
+    aircraft     — 24 CG init events
+    ground       —  3 CG init events
+    simulation   —  3 CG init events
+
+  ros2:fish_cbgroup_add events (entity ↔ CG association):
+    aircraft     — 537 add events (entities + waitables)
+
+  The cg_add event uses the RCL handle (obtained via
+  `subscription_ptr->get_subscription_handle().get()` etc.) so it
+  joins directly with the rcl_*_init events FISH already uses to
+  identify entities.
+
+CAUSE
+-----
+rclcpp API allows a node to create CGs freely:
+
+    node->create_callback_group(CallbackGroupType::MutuallyExclusive);
+    node->create_callback_group(CallbackGroupType::Reentrant);
+
+Each entity (subscription, timer, service, client) takes a
+`callback_group` via its SubscriptionOptions / TimerOptions /
+ServiceOptions. If omitted, the entity falls into the node's default
+MutuallyExclusive group.
+
+In AAS, px4_interface's 6 CGs are consistent with a separation like:
+  - sensor ingest Reentrant group
+  - command publish MutuallyExclusive group
+  - parameter/lifecycle MutuallyExclusive group
+  - timer MutuallyExclusive group
+  - service server MutuallyExclusive group
+  - default MutuallyExclusive group (for anything left over)
+
+IMPLICATION
+-----------
+The scheduling unit is the CALLBACK GROUP, not the node. Response-time
+analysis must model:
+
+  - For each MutuallyExclusive CG: callbacks in the group are serialized.
+    WCRT analysis treats the group as a single resource with FIFO / prio
+    order determined by ROS 2 executor policy.
+  - For each Reentrant CG: callbacks can run concurrently across any
+    number of executor threads. Response time is bounded only by
+    callback WCET and executor thread availability (not by other
+    callbacks in the same CG).
+  - Callbacks in different CGs run concurrently whenever threads are
+    available.
+
+Treating a whole node as one scheduling entity fundamentally misses
+this structure and produces either overly pessimistic bounds (if
+assumed serialized) or optimistic bounds (if assumed concurrent).
+
+
+============================================================================
+3. MultiThreadedExecutor default thread count = hardware_concurrency()
+============================================================================
+
+EXPECTED
+--------
+MultiThreadedExecutor has a constructor parameter `number_of_threads`.
+Documentation example frequently passes an explicit value (often 2 or 4).
+Many analytic models treat "number of threads" as an application-level
+parameter set by the developer.
+
+OBSERVED
+--------
+All three MultiThreaded executors in AAS were constructed with
+`number_of_threads = 20`.
+
+  px4_interface:       MultiThreaded, 20 threads
+  px4_offboard:        MultiThreaded, 20 threads
+  state_sharing_node:  MultiThreaded, 20 threads
+
+Hardware on the host running the container: 20 physical cores.
+None of the AAS node source code specifies `number_of_threads`
+explicitly — it is left at the default (0).
+
+CAUSE
+-----
+rclcpp/src/rclcpp/executors/multi_threaded_executor.cpp line 37:
+
+    number_of_threads_ = number_of_threads
+        ? number_of_threads
+        : std::thread::hardware_concurrency();
+    if (number_of_threads_ == 0) {
+      number_of_threads_ = 1;
+    }
+
+When the constructor's `number_of_threads == 0` (its default), rclcpp
+queries `std::thread::hardware_concurrency()` and uses whatever the OS
+reports. This value is determined at RUNTIME, on the machine hosting
+the container, and is INVISIBLE to the application source.
+
+IMPLICATION
+-----------
+  - A model built offline from source inspection will always be wrong
+    about `num_threads` for any executor that does not explicitly pass
+    a value.
+  - The same application binary has different scheduling capacity on
+    different hardware — a 4-core machine gets 4 threads, a 20-core
+    machine gets 20 threads. Response-time bounds derived on one
+    platform do not transfer.
+  - For containerized deployments, thread count is the HOST's thread
+    count, not the container's CPU quota. An MT executor may spawn 20
+    threads even if `--cpus=2` limits actual parallelism. Under load,
+    this translates to thread contention inside the container.
+
+FISH captures `num_threads` as measured at the actual constructor call
+(tracepoint fires after the hardware_concurrency resolution), so the
+recorded value reflects what the executor will use in practice.
+
+
+============================================================================
+4. Python (rclpy) executors are INVISIBLE to C++ tracepoints
+============================================================================
+
+EXPECTED
+--------
+ROS 2 exposes the "same" executor concept in both rclcpp and rclpy.
+Tutorials describe the two interchangeably.
+
+OBSERVED
+--------
+The yolo_py node in AAS (PID 1249, rclpy-based) produced ZERO
+fish_executor_init, fish_callback_group_init, fish_cbgroup_add, or
+fish_executor_add_cbgroup events. In the graph_store model, its EX
+vertex has:
+
+    executor_type: ?        (unknown)
+    num_threads:   ?
+    cb_groups:     []
+
+CAUSE
+-----
+rclpy's Executor, CallbackGroup, SingleThreadedExecutor,
+MultiThreadedExecutor, MutuallyExclusiveCallbackGroup, and
+ReentrantCallbackGroup are pure Python classes in
+`rclpy/executors.py`. They do not call into rclcpp's C++ Executor
+hierarchy. Tracepoints placed in rclcpp never fire for rclpy nodes.
+
+FISH already has a ctypes bridge pattern (see
+`python/rclpy/fish_rclpy_trace.py`) that Python code uses to call
+tracetools' C functions. The rclpy scheduler integration is a
+mechanically straightforward extension of that bridge: patch
+`rclpy/executors.py` __init__ methods to call
+`ros_trace_fish_executor_init(...)` etc.
+
+IMPLICATION
+-----------
+Until the rclpy patch lands, any analysis over a mixed C++/Python
+deployment will have "holes" at Python nodes:
+  - executor type unknown
+  - num_threads unknown
+  - CG membership unknown
+
+Also worth noting: rclpy's executors run under the Python GIL, so
+MultiThreadedExecutor in rclpy does not buy the same parallelism as in
+rclcpp. The eventual rclpy scheduler tracepoints should be reported
+with a "python" flag so response-time analysis knows to apply GIL
+constraints.
+
+
+============================================================================
+5. fish_callback_group_init fires BEFORE the owning node is known
+============================================================================
+
+EXPECTED
+--------
+A callback group belongs to a node — `node->create_callback_group(...)`
+is the common API. Any representation of CGs should naturally carry
+the owning node as metadata.
+
+OBSERVED
+--------
+The fish_callback_group_init event payload has:
+    group_addr, group_type, automatic_add, vpid (process id)
+but NOT the node_addr.
+
+The node association is recoverable only after the first
+fish_cbgroup_add or fish_executor_add_cbgroup that mentions the same
+group_addr — at that point we can triangulate:
+    E.entity_addr → parent N → node_handle
+or
+    fish_executor_add_cbgroup(executor_addr, group_addr, node_addr)
+
+In the current FISH extraction this triangulation works: every CG that
+ends up in the graph has at least one entity added to it, so we
+recover (CG → node) via (CG → entity → node).
+
+CAUSE
+-----
+The CallbackGroup constructor does not know which node is creating it.
+In rclcpp's implementation, the group is constructed first and the
+node references it afterward. At the tracepoint fire site, the
+information is simply not available without reaching out to external
+state.
+
+IMPLICATION
+-----------
+Minor but worth noting:
+  - CG → node association is derived, not directly traced.
+  - If a CG is created but no entity is ever added to it AND the
+    executor never claims it via add_callback_group_to_map, we cannot
+    attribute it to a node. Such "orphan" CGs would not appear in the
+    task model. In practice we have not observed any, but a future
+    analysis that cares about this should add a tracepoint for
+    Node::create_callback_group() specifically.
+
+
+============================================================================
+6. Callback groups shared across unexpected boundaries
+============================================================================
+
+EXPECTED
+--------
+A CG belongs to one node; the node's entities use it. Simple
+containment.
+
+OBSERVED
+--------
+Inside a single process, multiple entities across DIFFERENT nodes
+sometimes share a CG when the process uses one CG as a "scheduling
+bucket" rather than as a per-node grouping. In AAS this was not
+observed because each process runs one primary node + service
+bridges, but we have the data structure to detect it and expect it to
+appear in composite containers (e.g., Autoware's sensing container
+with 8+ composable nodes).
+
+EVIDENCE
+--------
+Not yet in AAS — to be checked on the Autoware run.
+
+IMPLICATION
+-----------
+The node → CG relationship is generally many-to-many in the formal
+model. FISH records the CG as a first-class object with its own
+identity; the relationship to nodes and entities is derived at
+analysis time.
+
+
+============================================================================
+Summary: why this matters for the paper
+============================================================================
+
+Every scheduling-analysis paper we have seen on ROS 2 uses one of:
+  - A textbook Executor model (1 process, 1 executor, 1 CG per node,
+    SingleThreaded OR MultiThreaded but not mixed)
+  - A pure callback-graph model that ignores executors and CGs entirely
+
+Neither captures:
+  - Multiple executors per process (both transient and persistent)
+  - Mixed MutuallyExclusive + Reentrant CGs within one node
+  - Runtime-determined thread count via hardware_concurrency()
+  - The rclpy vs rclcpp divide
+
+FISH's contribution is a task model derived from observation rather
+than design documents, where each of these deviations is captured and
+measurable. The AAS results already demonstrate that real ROS 2
+applications violate every common simplification.
+
+Paper framing for the "problem" section:
+  1. Quote the standard executor model from the ROS 2 Foxy / Humble
+     design notes (or Casini et al. ECRTS 2019 model).
+  2. Show the AAS measurements above as counter-examples.
+  3. Argue that response-time analysis needs the observed model.
+
+Paper framing for the "approach" section:
+  1. FISH captures executor type + thread count + CG type + CG
+     membership with zero source-code modification to the application.
+  2. The graph_store persists this as mutable graph state so
+     downstream WCET, WCRT, GPU contention analyses can accumulate.
+
+
+============================================================================
+Appendix A. Raw counts from fish_compose_20260418_165627
+============================================================================
+
+Per-container event counts (MongoDB `ros2_trace` collection):
+
+  container     fish_exec_init  fish_cg_init  fish_cg_add  fish_exec_add_cg
+  -----------   --------------  ------------  -----------  ----------------
+  aircraft                  13            24          537                21
+  ground                     3             3          ???               ???
+  simulation                 3             3          ???               ???
+
+Per-container composed graph:
+  aircraft:    108 vertices, 155 edges, 33 entities, 32 with CG, 5 EX
+  ground:       11 vertices,  12 edges,  6 entities
+  simulation:   15 vertices,  17 edges,  6 entities
+  unified:     129 vertices, 186 edges (3 CN → 9 EX → ... → F layer)
+
+Callback group type distribution (composed):
+  37 E/F vertices with CG:
+    14 MutuallyExclusive
+    23 Reentrant
+
+Executor type distribution (8 known primaries, 1 unknown):
+  3 × SingleThreaded (parameter_bridge)
+  2 × SingleThreaded (ground_system, kiss_icp_node)
+  3 × MultiThreaded 20 threads (px4_interface, px4_offboard, state_sharing)
+  1 × unknown (yolo_py, rclpy — tracepoints not installed)
+
+Extra persistent/transient executors per primary:
+  parameter_bridge    — 0 extras (×3 instances)
+  ground_system       — 1 extra (ST)
+  kiss_icp_node       — 3 extras (all ST, almost certainly transient)
+  state_sharing_node  — 1 extra (ST, persistent)
+  px4_offboard        — 1 extra (ST, persistent)
+  px4_interface       — 1 extra (ST, persistent)
+
+
+============================================================================
+Appendix B. Open questions for future measurement
+============================================================================
+
+1. Transient vs persistent classification.
+   Can we distinguish them by executor lifetime? Adding a tracepoint at
+   Executor destruction would give us per-executor lifetime. Very-short
+   lifetimes (< 1s) almost certainly correspond to spin() / spin_some()
+   helpers.
+
+2. Spin() without add_node.
+   rclcpp::spin(node) creates an executor AND calls add_node internally.
+   But a user's own Executor might be constructed without any add_node
+   call yet. Do we observe such executors? (Would show up as
+   fish_executor_init with zero matching fish_executor_add_cbgroup.)
+
+3. CG reuse across nodes.
+   Does any AAS process share a single CG across multiple nodes? Check
+   with: for each group_addr, count distinct node_addrs it's associated
+   with via fish_executor_add_cbgroup or inferred from entities.
+
+4. Reentrant CG concurrency actually observed.
+   Just because a CG is Reentrant does not mean the callback ever runs
+   concurrent instances. Cross-check callback_start/end timings: for
+   each Reentrant CG, find cases where two callback_start of the same
+   callback overlap in time (across vtids).
+
+5. rclpy behavior.
+   After installing rclpy scheduler tracepoints, re-measure yolo_py and
+   compare: MT in rclpy != MT in rclcpp due to GIL.

@@ -47,3 +47,8 @@ ros2:rclcpp_client_response_received
 # Callback-link tracing (FISH custom)
 ros2:fish_publish_link
 ros2:fish_client_link
+# Scheduler introspection (FISH custom)
+ros2:fish_executor_init
+ros2:fish_callback_group_init
+ros2:fish_cbgroup_add
+ros2:fish_executor_add_cbgroup

@@ -1,0 +1,154 @@
+FISH Software Architecture — Block Diagram
+============================================
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                     1. INSTALLATION LAYER                          │
+│                                                                     │
+│  setup_fish.sh ─────────┐                                          │
+│    │                     │                                          │
+│    ├─ install_fish_tracepoints     Patches system ROS 2:            │
+│    │    ├─ tracetools (tp_call.h, tracetools.h, tracetools.c)      │
+│    │    ├─ rcl (publisher.c, client.c)                             │
+│    │    ├─ rclcpp_action (server.hpp)                              │
+│    │    └─ rclpy (executors.py, __init__.py) + ctypes bridge       │
+│    │                                                                │
+│    └─ install_fish.sh              Installs:                        │
+│         ├─ ros2 wrapper (bash)     Intercepts ros2 run / launch    │
+│         ├─ trace_session.sh        LTTng session start/stop        │
+│         └─ python/fish/ package    GPU daemon, snapshot, CLI       │
+│                                                                     │
+│  Multi-container:                                                   │
+│    install_all.sh → container_install.sh → setup_fish.sh (per ct.) │
+│    build_fish_image.sh             Bakes FISH into Docker image    │
+│                                                                     │
+│  Config:                                                            │
+│    fish_settings.ini               Thresholds, paths, GPU keywords │
+│    fish_events.txt                 LTTng event filter list         │
+├─────────────────────────────────────────────────────────────────────┤
+│                     2. RUNTIME LAYER                                │
+│                                                                     │
+│  ros2 wrapper (bash) ──── intercepts every ros2 command            │
+│    │                                                                │
+│    ├─ ros2 launch ────────┐                                        │
+│    │   launch_inspect.py  │  Dry-run: capture nodes/containers     │
+│    │   launch_wrap.py     │  Monkey-patch: inject nsys prefix      │
+│    │                      │  for GPU containers/nodes              │
+│    │                      │                                        │
+│    ├─ ros2 run ───────────┤  Direct execution with LTTng active    │
+│    │                      │                                        │
+│    └─ ros2 run fish <cmd> │  CLI: stop / snapshot / gpu / status   │
+│                                                                     │
+│  trace_session.sh                                                   │
+│    ├─ start_session()      LTTng create + enable (fish_events.txt) │
+│    ├─ stop_session()       LTTng stop + destroy + flush            │
+│    └─ auto-starts:                                                  │
+│         gpu.py daemon      Watches for GPU processes,              │
+│                            nsys relaunch for standalone nodes      │
+│         snapshot.py        Captures process tree, node list,       │
+│                            topic info, topic_hz at startup/shutdown│
+│                                                                     │
+│  Tracepoints (in patched ROS 2):                                   │
+│    Standard:   callback_start/end, rcl_publish, rcl_take, …        │
+│    FISH custom: fish_publish_link, fish_client_link,               │
+│                 action_server_init, action_execute_goal/cancel/res  │
+├─────────────────────────────────────────────────────────────────────┤
+│                     3. ORCHESTRATION LAYER                          │
+│                                                                     │
+│  fish_orchestrator.py                                               │
+│    ├─ Reads mission YAML (missions/aas_single_drone.yaml)          │
+│    ├─ Starts Docker containers                                     │
+│    ├─ Waits for FISH-stable signal (SIGUSR1) from each             │
+│    ├─ Executes mission actions (takeoff → orbit → land)            │
+│    ├─ Stops FISH in each container (shutdown snapshot)             │
+│    └─ Collects traces into session dir                             │
+│                                                                     │
+│  fish_auto_mission.sh / fish_mission.sh                            │
+│    Legacy single-container mission scripts                         │
+├─────────────────────────────────────────────────────────────────────┤
+│                     4. POSTPROCESS LAYER                            │
+│                                                                     │
+│  ingest.py                                                          │
+│    ├─ babeltrace2 CTF → MongoDB (ros2_trace collection)            │
+│    ├─ Snapshot data → MongoDB (process_tree, node_info, topic_*)   │
+│    └─ nsys SQLite → InfluxDB3 (GPU kernel/memcpy timelines)       │
+│                                                                     │
+│  model_improved.py --session <name>                                │
+│    ├─ identify_executors()      EX vertices from rcl_node_init     │
+│    ├─ identify_entities()       E vertices (sub/serv/tmr)          │
+│    ├─ identify_callbacks()      F vertices (callback matching)     │
+│    ├─ attribute_aspects()       pub/cli via tracepoint or fallback │
+│    ├─ detect_actions()          Action name/role markers           │
+│    ├─ split_callbacks()         Service client continuations       │
+│    ├─ create_graph()            Vertical containment edges         │
+│    ├─ add_horizontal_edges()    Comm edges L2→L3→L1→L0            │
+│    └─ export_json()             → fish_graph.json                  │
+│                                                                     │
+│  fish_compose.py                                                    │
+│    ├─ Per-container: ingest + model_improved.py                    │
+│    ├─ External boundary matching (cross-container topics)          │
+│    ├─ CN (container) node layer (L-1)                              │
+│    └─ Unified multi-container graph                                │
+│                                                                     │
+│  fish_viz.html                                                      │
+│    ├─ Reads fish_graph.json                                        │
+│    ├─ Expand mode / Layer mode                                     │
+│    ├─ Force / Tree / Stair layouts                                 │
+│    └─ Containment + comm edges, hover info, neighbor highlight     │
+│                                                                     │
+│  Supporting:                                                        │
+│    utils.py            Confirmed kills, pretty print               │
+│    graph_utils.py      Structural metrics for layout decisions     │
+│    pre_analysis.py     Exploratory histograms / charts             │
+└─────────────────────────────────────────────────────────────────────┘
+
+
+Layer Summary
+─────────────
+
+  #   Layer            When                  Input                    Output
+  ─── ──────────────── ───────────────────── ──────────────────────── ─────────────────────────────────
+  1   Installation     Once                  Vanilla ROS 2            Patched ROS 2 + FISH tools
+  2   Runtime          App runs              User's ros2 run/launch   CTF trace + nsys SQLite + snapshots
+  3   Orchestration    Mission time          Mission YAML             Coordinated multi-container session
+  4   Postprocess      After collection      Raw traces               Task model (fish_graph.json) + viz
+
+
+File Index
+──────────
+
+  Installation:
+    setup_fish.sh                    Entry point — calls tracepoint installer + install_fish.sh
+    fish_tracepoints/install_fish_tracepoints   Monolithic tracepoint patcher (container deploy)
+    fish_tracepoints/install.sh      Tracepoint patcher (standalone, dev use)
+    fish_tracepoints/install_rclpy.sh   rclpy-specific patches
+    install_fish.sh                  ros2 wrapper + trace session + python package
+    install_all.sh                   Multi-container parallel install
+    container_install.sh             Per-container install into running Docker
+    build_fish_image.sh              Bake FISH into a Docker image
+    install_fish_deps.sh             System dependency installer (lttng, babeltrace2, …)
+    fish_settings.ini                Configuration: thresholds, paths, GPU keywords
+    fish_events.txt                  LTTng event filter list
+
+  Runtime (python/fish/):
+    launch_inspect.py                Dry-run launch interpretation, GPU detection
+    launch_wrap.py                   Monkey-patch launch to inject nsys prefix
+    gpu.py                           GPU daemon: process watch, nsys relaunch
+    snapshot.py                      Process tree, node list, topic info capture
+    cli.py                           FISH CLI (ros2 run fish <cmd>)
+    settings.py                      Settings reader for fish_settings.ini
+
+  Orchestration:
+    fish_orchestrator.py             Multi-container mission executor
+    missions/aas_single_drone.yaml   AAS mission definition
+    fish_auto_mission.sh             Legacy single-container auto mission
+    fish_mission.sh                  Legacy single-container mission script
+
+  Postprocess (postprocess/):
+    ingest.py                        CTF → MongoDB, nsys → InfluxDB3
+    model_improved.py                Single-container model extraction
+    model.py                         Original model extraction (superseded)
+    fish_compose.py                  Multi-container merge + L-1 layer
+    fish_viz.html                    Interactive D3 visualization
+    utils.py                         Shared utilities (confirmed_kills, etc.)
+    graph_utils.py                   Structural graph metrics
+    pre_analysis.py                  Exploratory histograms / charts

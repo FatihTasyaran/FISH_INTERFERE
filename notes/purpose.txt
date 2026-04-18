@@ -1,0 +1,71 @@
+FISH — Purpose
+==============
+
+For a given ROS 2 application, resolve OS and ROS 2 abstractions that hide
+scheduling and dependency relationships between units of computational
+blocks. Construct a task model that enables response-time analysis of the
+application, considering the hierarchy of schedulers and different types
+of processors.
+
+Background
+----------
+
+An operating system allocates resources to tasks. In Linux, tasks are
+implemented as processes. A ROS 2 application implemented on Linux is a
+collection of interdependent, communicating processes. Timing properties
+of the Linux scheduler are well known; however, timing properties of a
+ROS 2 task collection scheduled under Linux are not.
+
+A ROS 2 application running on Linux is not a flat collection of
+processes. Within each process, ROS 2 introduces its own layer of
+abstractions — executors, callbacks, subscriptions, timers, services,
+actions, lifecycle states — each governed by ROS 2's own scheduling
+rules. A single Linux process may host multiple nodes, multiple
+callbacks, and multiple executor threads, with intra-process
+dependencies that the OS scheduler is entirely unaware of. From Linux's
+perspective, this is just a thread doing work; from the user's
+perspective, this is a callback firing in response to a message.
+
+The picture grows more complex with modern autonomy stacks. Composable
+node containers pack many nodes into one process. Action servers split
+work across goal/cancel/result callbacks. GPU-accelerated nodes
+(perception, planning) offload compute to another scheduler entirely —
+the GPU runtime — which manages its own copy engines, execution engines,
+and streams, producing yet another layer of hidden ordering and
+contention. The end-to-end latency of "lidar arrives → trajectory
+published" depends on a chain of decisions made by Linux, ROS 2, and
+CUDA, none of which are visible from any single vantage point.
+
+What FISH provides
+------------------
+
+For each unit of work — a callback on the CPU, a kernel launch on the
+GPU — FISH captures the scheduling point at which it begins and the
+dependency edges that triggered it (a publication, a service request,
+a memcpy completion). The result is a unified task model that exposes:
+
+  1. The scheduler hierarchy — Linux processes / threads, ROS 2
+     executors, GPU streams — and how they nest.
+
+  2. The computational units and their dependency graph — which
+     callback feeds which, across processes and across processors.
+
+FISH does this with zero source-code modification to the application,
+and covers every ROS 2 entry point that real applications use: rclpy
+and rclcpp, ros2 run and ros2 launch, standalone nodes and composable
+node containers. A single `fish install` brings up the full
+instrumentation stack. The analyst gets a model. The user does nothing.
+
+Design implications
+-------------------
+
+This purpose drives the design decisions throughout the project:
+
+  * One-click install — anyone, any application, no preparation.
+  * Coverage of rclcpp AND rclpy — Python nodes are first-class.
+  * Coverage of ros2 run AND ros2 launch — both entry points patched.
+  * Coverage of composable node containers — most modern stacks use them.
+  * Custom tracepoints (fish_publish_link, fish_client_link) — to make
+    callback→publication attribution deterministic instead of heuristic.
+  * Multi-container orchestration — real autonomy stacks span multiple
+    Docker containers across hosts.

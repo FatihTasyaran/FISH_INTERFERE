@@ -25,29 +25,33 @@ DO_ACTION=false
 DO_RCLPY=false
 DO_CLIENT=false
 DO_LINK=false
+DO_SCHEDULER=false
 
 if [ $# -eq 0 ]; then
     DO_ACTION=true
     DO_RCLPY=true
     DO_CLIENT=true
     DO_LINK=true
+    DO_SCHEDULER=true
 fi
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --action) DO_ACTION=true ;;
-        --rclpy)  DO_RCLPY=true ;;
-        --client) DO_CLIENT=true ;;
-        --link)   DO_LINK=true ;;
-        --all)    DO_ACTION=true; DO_RCLPY=true; DO_CLIENT=true; DO_LINK=true ;;
+        --action)    DO_ACTION=true ;;
+        --rclpy)     DO_RCLPY=true ;;
+        --client)    DO_CLIENT=true ;;
+        --link)      DO_LINK=true ;;
+        --scheduler) DO_SCHEDULER=true ;;
+        --all)       DO_ACTION=true; DO_RCLPY=true; DO_CLIENT=true; DO_LINK=true; DO_SCHEDULER=true ;;
         --help|-h)
-            echo "Usage: $0 [--action] [--rclpy] [--client] [--link] [--all] [--help]"
+            echo "Usage: $0 [--action] [--rclpy] [--client] [--link] [--scheduler] [--all] [--help]"
             echo ""
-            echo "  --action  Install 4 action server dispatch tracepoints"
-            echo "  --rclpy   Install 5 rclpy callback chain tracepoints"
-            echo "  --client  Install 2 service client tracepoints"
-            echo "  --link    Install 2 callback-link tracepoints (fish_publish_link, fish_client_link)"
-            echo "  --all     Install all (default if no flag given)"
+            echo "  --action     Install 4 action server dispatch tracepoints"
+            echo "  --rclpy      Install 5 rclpy callback chain tracepoints"
+            echo "  --client     Install 2 service client tracepoints"
+            echo "  --link       Install 2 callback-link tracepoints (fish_publish_link, fish_client_link)"
+            echo "  --scheduler  Install 4 scheduler introspection tracepoints (executor/cbgroup)"
+            echo "  --all        Install all (default if no flag given)"
             exit 0
             ;;
         *)
@@ -131,10 +135,12 @@ clone_repos() {
         "https://github.com/ros2/ros2_tracing.git" \
         "$TRACETOOLS_TAG" "$CLONE_DIR/ros2_tracing"
 
-    if $DO_ACTION || $DO_LINK; then
+    if $DO_ACTION || $DO_CLIENT || $DO_SCHEDULER; then
         clone_if_needed \
             "https://github.com/ros2/rclcpp.git" \
             "$RCLCPP_TAG" "$CLONE_DIR/rclcpp"
+    fi
+    if $DO_ACTION || $DO_LINK; then
         clone_if_needed \
             "https://github.com/ros2/rcl.git" \
             "$RCL_TAG" "$CLONE_DIR/rcl"
@@ -948,6 +954,493 @@ print("  Done.")
 PATCH_LINK_C
 }
 
+# ─── Tracetools: scheduler introspection tracepoints ────────────────────────
+patch_tracetools_scheduler() {
+    log "  Patching tracetools for scheduler tracepoints ..."
+
+    python3 <<'PATCH_SCHED_C'
+OVERLAY = "/root/trace_overlay_ws/src/tracetools"
+
+# ── tp_call.h ──
+path = f"{OVERLAY}/include/tracetools/tp_call.h"
+with open(path) as f:
+    content = f.read()
+
+if "fish_executor_init" in content:
+    print("    tp_call.h already has scheduler events, skipping")
+else:
+    INSERT_BEFORE = "#endif  // _TRACETOOLS__TP_CALL_H_"
+    new_events = """
+/* FISH scheduler introspection tracepoints */
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_executor_init,
+  TP_ARGS(
+    const void *, executor_addr_arg,
+    const char *, executor_type_arg,
+    uint32_t, num_threads_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, executor_addr, executor_addr_arg)
+    ctf_string(executor_type, executor_type_arg)
+    ctf_integer(uint32_t, num_threads, num_threads_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_callback_group_init,
+  TP_ARGS(
+    const void *, group_addr_arg,
+    const char *, group_type_arg,
+    uint8_t, automatic_add_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, group_addr, group_addr_arg)
+    ctf_string(group_type, group_type_arg)
+    ctf_integer(uint8_t, automatic_add, automatic_add_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_cbgroup_add,
+  TP_ARGS(
+    const void *, group_addr_arg,
+    const void *, entity_addr_arg,
+    const char *, entity_kind_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, group_addr, group_addr_arg)
+    ctf_integer_hex(const void *, entity_addr, entity_addr_arg)
+    ctf_string(entity_kind, entity_kind_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_executor_add_cbgroup,
+  TP_ARGS(
+    const void *, executor_addr_arg,
+    const void *, group_addr_arg,
+    const void *, node_addr_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, executor_addr, executor_addr_arg)
+    ctf_integer_hex(const void *, group_addr, group_addr_arg)
+    ctf_integer_hex(const void *, node_addr, node_addr_arg)
+  )
+)
+
+"""
+    content = content.replace(INSERT_BEFORE, new_events + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tp_call.h patched — 4 scheduler TRACEPOINT_EVENT added")
+
+# ── tracetools.h ──
+path = f"{OVERLAY}/include/tracetools/tracetools.h"
+with open(path) as f:
+    content = f.read()
+
+if "fish_executor_init" in content:
+    print("    tracetools.h already has scheduler events, skipping")
+else:
+    INSERT_BEFORE = "#ifdef __cplusplus\n}\n#endif\n\n#endif  // TRACETOOLS__TRACETOOLS_H_"
+    new_decls = """/* FISH scheduler introspection tracepoints */
+
+/// `fish_executor_init` — fires in each Executor derived class's constructor
+DECLARE_TRACEPOINT(
+  fish_executor_init,
+  const void * executor_addr,
+  const char * executor_type,
+  uint32_t num_threads)
+
+/// `fish_callback_group_init` — fires in CallbackGroup constructor
+DECLARE_TRACEPOINT(
+  fish_callback_group_init,
+  const void * group_addr,
+  const char * group_type,
+  uint8_t automatic_add)
+
+/// `fish_cbgroup_add` — fires in CallbackGroup::add_{sub,tmr,srv,cli,wait}
+DECLARE_TRACEPOINT(
+  fish_cbgroup_add,
+  const void * group_addr,
+  const void * entity_addr,
+  const char * entity_kind)
+
+/// `fish_executor_add_cbgroup` — fires in Executor::add_callback_group_to_map
+DECLARE_TRACEPOINT(
+  fish_executor_add_cbgroup,
+  const void * executor_addr,
+  const void * group_addr,
+  const void * node_addr)
+
+"""
+    content = content.replace(INSERT_BEFORE, new_decls + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tracetools.h patched — 4 scheduler DECLARE_TRACEPOINT added")
+
+# ── tracetools.c ──
+path = f"{OVERLAY}/src/tracetools.c"
+with open(path) as f:
+    content = f.read()
+
+if "fish_executor_init" in content:
+    print("    tracetools.c already has scheduler events, skipping")
+else:
+    INSERT_BEFORE = "#ifndef _WIN32\n# pragma GCC diagnostic pop"
+    new_impls = """/* FISH scheduler tracepoints (one-shot, no dedup) */
+
+void TRACEPOINT(
+  fish_executor_init,
+  const void * executor_addr,
+  const char * executor_type,
+  uint32_t num_threads)
+{
+  CONDITIONAL_TP(
+    fish_executor_init,
+    executor_addr,
+    executor_type,
+    num_threads);
+}
+
+void TRACEPOINT(
+  fish_callback_group_init,
+  const void * group_addr,
+  const char * group_type,
+  uint8_t automatic_add)
+{
+  CONDITIONAL_TP(
+    fish_callback_group_init,
+    group_addr,
+    group_type,
+    automatic_add);
+}
+
+void TRACEPOINT(
+  fish_cbgroup_add,
+  const void * group_addr,
+  const void * entity_addr,
+  const char * entity_kind)
+{
+  CONDITIONAL_TP(
+    fish_cbgroup_add,
+    group_addr,
+    entity_addr,
+    entity_kind);
+}
+
+void TRACEPOINT(
+  fish_executor_add_cbgroup,
+  const void * executor_addr,
+  const void * group_addr,
+  const void * node_addr)
+{
+  CONDITIONAL_TP(
+    fish_executor_add_cbgroup,
+    executor_addr,
+    group_addr,
+    node_addr);
+}
+
+"""
+    content = content.replace(INSERT_BEFORE, new_impls + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tracetools.c patched — 4 scheduler TRACEPOINT functions")
+
+print("  Done.")
+PATCH_SCHED_C
+}
+
+# ─── Patch rclcpp for scheduler (callback_group + executor + 3 executors) ───
+patch_and_build_rclcpp_scheduler() {
+    step "Patching rclcpp (callback_group.cpp, executor.cpp, executors/*) for scheduler tracepoints ..."
+
+    if [ ! -d "$OVERLAY_WS/src/rclcpp" ]; then
+        cp -r "$CLONE_DIR/rclcpp/rclcpp" "$OVERLAY_WS/src/rclcpp"
+        log "  Copied rclcpp into workspace"
+    fi
+
+    python3 <<'PATCH_RCLCPP_SCHED'
+import sys
+OVERLAY = "/root/trace_overlay_ws/src/rclcpp"
+
+# ── callback_group.cpp ──
+path = f"{OVERLAY}/src/rclcpp/callback_group.cpp"
+with open(path) as f:
+    content = f.read()
+
+if "fish_callback_group_init" in content:
+    # Migration: upgrade old fish_cbgroup_add that used the rclcpp wrapper
+    # pointer (arg_name.get()) to the RCL handle variant so entity_addr
+    # matches the handles from rcl_*_init events.
+    migrations = [
+        ("subscription_ptr", "subscription_ptr->get_subscription_handle().get()"),
+        ("timer_ptr",        "timer_ptr->get_timer_handle().get()"),
+        ("service_ptr",      "service_ptr->get_service_handle().get()"),
+        ("client_ptr",       "client_ptr->get_client_handle().get()"),
+    ]
+    upgraded = 0
+    for arg_name, new_expr in migrations:
+        old_inner = f"static_cast<const void *>({arg_name}.get())"
+        new_inner = f"static_cast<const void *>({new_expr})"
+        if old_inner in content and new_inner not in content:
+            content = content.replace(old_inner, new_inner, 1)
+            upgraded += 1
+    if upgraded:
+        with open(path, "w") as f:
+            f.write(content)
+        print(f"    callback_group.cpp: upgraded {upgraded} entity_addr expressions to rcl handle")
+    else:
+        print("    callback_group.cpp already patched (current entity_addr variant)")
+else:
+    old_inc = '#include "rclcpp/waitable.hpp"'
+    new_inc = old_inc + '\n#include "tracetools/tracetools.h"'
+    if old_inc not in content:
+        print("    WARNING: include anchor not found in callback_group.cpp")
+        sys.exit(1)
+    content = content.replace(old_inc, new_inc, 1)
+
+    old_ctor = """CallbackGroup::CallbackGroup(
+  CallbackGroupType group_type,
+  bool automatically_add_to_executor_with_node)
+: type_(group_type), associated_with_executor_(false),
+  can_be_taken_from_(true),
+  automatically_add_to_executor_with_node_(automatically_add_to_executor_with_node)
+{}"""
+    new_ctor = """CallbackGroup::CallbackGroup(
+  CallbackGroupType group_type,
+  bool automatically_add_to_executor_with_node)
+: type_(group_type), associated_with_executor_(false),
+  can_be_taken_from_(true),
+  automatically_add_to_executor_with_node_(automatically_add_to_executor_with_node)
+{
+  TRACEPOINT(
+    fish_callback_group_init,
+    static_cast<const void *>(this),
+    (group_type == CallbackGroupType::MutuallyExclusive) ?
+      "MutuallyExclusive" : "Reentrant",
+    static_cast<uint8_t>(automatically_add_to_executor_with_node ? 1 : 0));
+}"""
+    if old_ctor not in content:
+        print("    WARNING: CallbackGroup ctor pattern not found")
+        sys.exit(1)
+    content = content.replace(old_ctor, new_ctor, 1)
+
+    # entity_addr_expr yields the RCL handle so the event joins with
+    # existing rcl_*_init tracepoints. Waitables have no rcl handle, so
+    # we fall back to the rclcpp wrapper pointer.
+    for method, arg_name, list_name, kind, entity_expr in [
+        ("add_subscription", "subscription_ptr", "subscription_ptrs_", "sub",
+         "subscription_ptr->get_subscription_handle().get()"),
+        ("add_timer",        "timer_ptr",        "timer_ptrs_",        "tmr",
+         "timer_ptr->get_timer_handle().get()"),
+        ("add_service",      "service_ptr",      "service_ptrs_",      "srv",
+         "service_ptr->get_service_handle().get()"),
+        ("add_client",       "client_ptr",       "client_ptrs_",       "cli",
+         "client_ptr->get_client_handle().get()"),
+        ("add_waitable",     "waitable_ptr",     "waitable_ptrs_",     "wait",
+         "waitable_ptr.get()"),
+    ]:
+        old_push = (f"  std::lock_guard<std::mutex> lock(mutex_);\n"
+                    f"  {list_name}.push_back({arg_name});")
+        new_push = (f"  std::lock_guard<std::mutex> lock(mutex_);\n"
+                    f"  TRACEPOINT(\n"
+                    f"    fish_cbgroup_add,\n"
+                    f"    static_cast<const void *>(this),\n"
+                    f"    static_cast<const void *>({entity_expr}),\n"
+                    f"    \"{kind}\");\n"
+                    f"  {list_name}.push_back({arg_name});")
+        ms = content.find(f"CallbackGroup::{method}(")
+        if ms < 0:
+            print(f"    WARNING: {method} not found")
+            continue
+        bs = content.find("{", ms)
+        be = content.find("}", bs)
+        body = content[bs:be]
+        if old_push not in body:
+            print(f"    WARNING: push_back anchor not found in {method}")
+            continue
+        new_body = body.replace(old_push, new_push, 1)
+        content = content[:bs] + new_body + content[be:]
+        print(f"      {method}: patched")
+
+    with open(path, "w") as f:
+        f.write(content)
+    print("    callback_group.cpp patched (init + 5 add_* tracepoints)")
+
+
+# ── executor.cpp ──
+path = f"{OVERLAY}/src/rclcpp/executor.cpp"
+with open(path) as f:
+    content = f.read()
+
+if "fish_executor_add_cbgroup" in content:
+    print("    executor.cpp already patched, skipping")
+else:
+    if "tracetools/tracetools.h" not in content:
+        old_inc = '#include "rclcpp/executor.hpp"'
+        new_inc = old_inc + '\n#include "tracetools/tracetools.h"'
+        if old_inc in content:
+            content = content.replace(old_inc, new_inc, 1)
+
+    old_block = """  // Also add to the map that contains all callback groups
+  weak_groups_to_nodes_.insert(std::make_pair(weak_group_ptr, node_ptr));"""
+    new_block = """  // Also add to the map that contains all callback groups
+  weak_groups_to_nodes_.insert(std::make_pair(weak_group_ptr, node_ptr));
+
+  TRACEPOINT(
+    fish_executor_add_cbgroup,
+    static_cast<const void *>(this),
+    static_cast<const void *>(group_ptr.get()),
+    static_cast<const void *>(node_ptr.get()));"""
+    if old_block not in content:
+        print("    WARNING: executor.cpp anchor not found")
+        sys.exit(1)
+    content = content.replace(old_block, new_block, 1)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    executor.cpp patched (fish_executor_add_cbgroup)")
+
+
+# ── single_threaded_executor.cpp ──
+path = f"{OVERLAY}/src/rclcpp/executors/single_threaded_executor.cpp"
+with open(path) as f:
+    content = f.read()
+
+if "fish_executor_init" in content:
+    print("    single_threaded_executor.cpp already patched, skipping")
+else:
+    old_inc = '#include "rclcpp/any_executable.hpp"'
+    new_inc = old_inc + '\n#include "tracetools/tracetools.h"'
+    if old_inc not in content:
+        print("    WARNING: single_threaded include anchor not found")
+        sys.exit(1)
+    content = content.replace(old_inc, new_inc, 1)
+
+    old_ctor = ("SingleThreadedExecutor::SingleThreadedExecutor"
+                "(const rclcpp::ExecutorOptions & options)\n"
+                ": rclcpp::Executor(options) {}")
+    new_ctor = ("SingleThreadedExecutor::SingleThreadedExecutor"
+                "(const rclcpp::ExecutorOptions & options)\n"
+                ": rclcpp::Executor(options)\n"
+                "{\n"
+                "  TRACEPOINT(\n"
+                "    fish_executor_init,\n"
+                "    static_cast<const void *>(this),\n"
+                "    \"SingleThreaded\",\n"
+                "    static_cast<uint32_t>(1));\n"
+                "}")
+    if old_ctor not in content:
+        print("    WARNING: single_threaded ctor anchor not found")
+        sys.exit(1)
+    content = content.replace(old_ctor, new_ctor, 1)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    single_threaded_executor.cpp patched")
+
+
+# ── multi_threaded_executor.cpp ──
+path = f"{OVERLAY}/src/rclcpp/executors/multi_threaded_executor.cpp"
+with open(path) as f:
+    content = f.read()
+
+if "fish_executor_init" in content:
+    print("    multi_threaded_executor.cpp already patched, skipping")
+else:
+    old_inc = '#include "rclcpp/utilities.hpp"'
+    new_inc = old_inc + '\n#include "tracetools/tracetools.h"'
+    if old_inc not in content:
+        print("    WARNING: multi_threaded include anchor not found")
+        sys.exit(1)
+    content = content.replace(old_inc, new_inc, 1)
+
+    old_body = ("  number_of_threads_ = number_of_threads ? number_of_threads"
+                " : std::thread::hardware_concurrency();\n"
+                "  if (number_of_threads_ == 0) {\n"
+                "    number_of_threads_ = 1;\n"
+                "  }\n"
+                "}")
+    new_body = ("  number_of_threads_ = number_of_threads ? number_of_threads"
+                " : std::thread::hardware_concurrency();\n"
+                "  if (number_of_threads_ == 0) {\n"
+                "    number_of_threads_ = 1;\n"
+                "  }\n"
+                "  TRACEPOINT(\n"
+                "    fish_executor_init,\n"
+                "    static_cast<const void *>(this),\n"
+                "    \"MultiThreaded\",\n"
+                "    static_cast<uint32_t>(number_of_threads_));\n"
+                "}")
+    if old_body not in content:
+        print("    WARNING: multi_threaded body anchor not found")
+        sys.exit(1)
+    content = content.replace(old_body, new_body, 1)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    multi_threaded_executor.cpp patched")
+
+
+# ── static_single_threaded_executor.cpp ──
+path = f"{OVERLAY}/src/rclcpp/executors/static_single_threaded_executor.cpp"
+with open(path) as f:
+    content = f.read()
+
+if "fish_executor_init" in content:
+    print("    static_single_threaded_executor.cpp already patched, skipping")
+else:
+    old_inc = '#include "rcpputils/scope_exit.hpp"'
+    new_inc = old_inc + '\n#include "tracetools/tracetools.h"'
+    if old_inc not in content:
+        print("    WARNING: static_single include anchor not found")
+        sys.exit(1)
+    content = content.replace(old_inc, new_inc, 1)
+
+    old_body = """StaticSingleThreadedExecutor::StaticSingleThreadedExecutor(
+  const rclcpp::ExecutorOptions & options)
+: rclcpp::Executor(options)
+{
+  entities_collector_ = std::make_shared<StaticExecutorEntitiesCollector>();
+}"""
+    new_body = """StaticSingleThreadedExecutor::StaticSingleThreadedExecutor(
+  const rclcpp::ExecutorOptions & options)
+: rclcpp::Executor(options)
+{
+  entities_collector_ = std::make_shared<StaticExecutorEntitiesCollector>();
+  TRACEPOINT(
+    fish_executor_init,
+    static_cast<const void *>(this),
+    "StaticSingleThreaded",
+    static_cast<uint32_t>(1));
+}"""
+    if old_body not in content:
+        print("    WARNING: static_single body anchor not found")
+        sys.exit(1)
+    content = content.replace(old_body, new_body, 1)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    static_single_threaded_executor.cpp patched")
+
+print("  Done patching rclcpp for scheduler tracepoints.")
+PATCH_RCLCPP_SCHED
+
+    set +u && source "$OVERLAY_WS/install/setup.bash" && set -u
+    cd "$OVERLAY_WS"
+    colcon build \
+        --packages-select rclcpp \
+        --cmake-args \
+            -DBUILD_TESTING=OFF \
+            "-Dtracetools_DIR=$OVERLAY_WS/install/tracetools/share/tracetools/cmake" \
+        2>&1 | tail -5
+
+    log "  rclcpp built with scheduler tracepoints"
+}
+
 # ─── Patch and build rcl (link fire points) ──────────────────────────────────
 patch_and_build_rcl() {
     step "Patching and building rcl (publisher.c, client.c) ..."
@@ -1162,6 +1655,14 @@ build_tracetools() {
             log "  Link symbols: OK"
         else
             err "  Link symbols: FAILED"
+            exit 1
+        fi
+    fi
+    if $DO_SCHEDULER; then
+        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_fish_executor_init"; then
+            log "  Scheduler symbols: OK"
+        else
+            err "  Scheduler symbols: FAILED"
             exit 1
         fi
     fi
@@ -1782,10 +2283,11 @@ print(os.path.abspath(m.__file__))
     fi
 
     python3 <<PATCHNAMES
-do_action = $( $DO_ACTION && echo "True" || echo "False" )
-do_rclpy  = $( $DO_RCLPY  && echo "True" || echo "False" )
-do_client = $( $DO_CLIENT && echo "True" || echo "False" )
-do_link   = $( $DO_LINK   && echo "True" || echo "False" )
+do_action    = $( $DO_ACTION    && echo "True" || echo "False" )
+do_rclpy     = $( $DO_RCLPY     && echo "True" || echo "False" )
+do_client    = $( $DO_CLIENT    && echo "True" || echo "False" )
+do_link      = $( $DO_LINK      && echo "True" || echo "False" )
+do_scheduler = $( $DO_SCHEDULER && echo "True" || echo "False" )
 
 with open("$NAMES_PY") as f:
     content = f.read()
@@ -1878,6 +2380,38 @@ if do_link and "fish_publish_link" not in content:
 elif do_link:
     print("  Link events already present")
 
+# Scheduler events
+if do_scheduler and "fish_executor_init" not in content:
+    sched_entries = '''    "ros2:fish_executor_init",
+    "ros2:fish_callback_group_init",
+    "ros2:fish_cbgroup_add",
+    "ros2:fish_executor_add_cbgroup",'''
+
+    if '"ros2:fish_client_link",' in content:
+        anchor = '    "ros2:fish_client_link",\n]'
+        content = content.replace(anchor,
+            '    "ros2:fish_client_link",\n' + sched_entries + '\n]')
+    elif '"ros2:rclcpp_client_response_received",' in content:
+        anchor = '    "ros2:rclcpp_client_response_received",\n]'
+        content = content.replace(anchor,
+            '    "ros2:rclcpp_client_response_received",\n' + sched_entries + '\n]')
+    elif '"ros2:rclpy_callback_register",' in content:
+        anchor = '    "ros2:rclpy_callback_register",\n]'
+        content = content.replace(anchor,
+            '    "ros2:rclpy_callback_register",\n' + sched_entries + '\n]')
+    elif '"ros2:rclcpp_action_execute_result",' in content:
+        anchor = '    "ros2:rclcpp_action_execute_result",\n]'
+        content = content.replace(anchor,
+            '    "ros2:rclcpp_action_execute_result",\n' + sched_entries + '\n]')
+    else:
+        anchor = "    tracepoints.rclcpp_executor_execute,\n]"
+        content = content.replace(anchor,
+            "    tracepoints.rclcpp_executor_execute,\n" + sched_entries + "\n]")
+    changed = True
+    print("  Added 4 scheduler events")
+elif do_scheduler:
+    print("  Scheduler events already present")
+
 if changed:
     with open("$NAMES_PY", "w") as f:
         f.write(content)
@@ -1911,13 +2445,26 @@ verify() {
 
     if $DO_LINK; then
         local link_syms
-        link_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_fish_" || true)
+        link_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_fish_publish_link\|ros_trace_fish_client_link" || true)
         log "Link symbols in libtracetools.so: $link_syms (expected: 2)"
 
         if nm -D "$so" 2>/dev/null | grep -q "__fish_active_callback"; then
             log "Thread-local __fish_active_callback: OK"
         else
             warn "Thread-local __fish_active_callback: NOT FOUND"
+        fi
+    fi
+
+    if $DO_SCHEDULER; then
+        local sched_syms
+        sched_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_fish_executor_init\|ros_trace_fish_callback_group_init\|ros_trace_fish_cbgroup_add\|ros_trace_fish_executor_add_cbgroup" || true)
+        log "Scheduler symbols in libtracetools.so: $sched_syms (expected: 4)"
+
+        local rclcpp_so="$OVERLAY_WS/install/rclcpp/lib/librclcpp.so"
+        if [ -f "$rclcpp_so" ] && nm -D "$rclcpp_so" 2>/dev/null | grep -q "fish_executor_init\|fish_callback_group_init"; then
+            log "rclcpp scheduler tracepoints: linked"
+        elif [ -f "$rclcpp_so" ]; then
+            warn "rclcpp scheduler tracepoints: symbols not found in librclcpp.so"
         fi
     fi
 
@@ -1942,10 +2489,11 @@ print(len(DEFAULT_EVENTS_ROS))
 " 2>/dev/null || echo "0")
 
     local expected=28
-    $DO_ACTION && expected=$((expected + 4))
-    $DO_RCLPY  && expected=$((expected + 5))
-    $DO_CLIENT && expected=$((expected + 2))
-    $DO_LINK   && expected=$((expected + 2))
+    $DO_ACTION    && expected=$((expected + 4))
+    $DO_RCLPY     && expected=$((expected + 5))
+    $DO_CLIENT    && expected=$((expected + 2))
+    $DO_LINK      && expected=$((expected + 2))
+    $DO_SCHEDULER && expected=$((expected + 4))
     log "Events in DEFAULT_EVENTS_ROS: $event_count (expected: $expected)"
 
     if [ "${FISH_SETUP_PARENT:-}" != "1" ]; then
@@ -1980,9 +2528,11 @@ setup_bashrc() {
 # ═════════════════════════════════════════════════════════════════════════════
 main() {
     log "FISH Tracepoint Installer"
-    log "  action: $DO_ACTION"
-    log "  rclpy:  $DO_RCLPY"
-    log "  link:   $DO_LINK"
+    log "  action:    $DO_ACTION"
+    log "  rclpy:     $DO_RCLPY"
+    log "  client:    $DO_CLIENT"
+    log "  link:      $DO_LINK"
+    log "  scheduler: $DO_SCHEDULER"
     log ""
 
     preflight_checks
@@ -1990,19 +2540,22 @@ main() {
     clone_repos
     copy_sources
 
-    # Patch tracetools C source (action first, then rclpy, then client, then link)
+    # Patch tracetools C source (action first, then rclpy, then client, then link, then scheduler)
     step "Patching tracetools C source ..."
-    $DO_ACTION && patch_tracetools_action
-    $DO_RCLPY  && patch_tracetools_rclpy
-    $DO_CLIENT && patch_tracetools_client
-    $DO_LINK   && patch_tracetools_link
+    $DO_ACTION    && patch_tracetools_action
+    $DO_RCLPY     && patch_tracetools_rclpy
+    $DO_CLIENT    && patch_tracetools_client
+    $DO_LINK      && patch_tracetools_link
+    $DO_SCHEDULER && patch_tracetools_scheduler
 
     build_tracetools
 
-    # Feature-specific post-build work
-    $DO_ACTION && patch_and_build_rclcpp_action
-    $DO_CLIENT && patch_and_build_rclcpp_client
-    $DO_LINK   && patch_and_build_rcl
+    # Feature-specific post-build work.
+    # Order: rcl (no dep on rclcpp) → rclcpp_action (depends on rclcpp) → rclcpp (client + scheduler share one build)
+    $DO_LINK      && patch_and_build_rcl
+    $DO_ACTION    && patch_and_build_rclcpp_action
+    $DO_CLIENT    && patch_and_build_rclcpp_client
+    $DO_SCHEDULER && patch_and_build_rclcpp_scheduler
     if $DO_RCLPY; then
         install_rclpy_tracepoints
     fi

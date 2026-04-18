@@ -1,0 +1,69 @@
+flowchart TD
+
+    %% ===== LAYER 1: INSTALLATION =====
+    subgraph L1["Layer 1 -- Installation (runs once)"]
+        direction LR
+        setup["setup_fish.sh<br/>(entry point)"]
+        tp["install_fish_tracepoints<br/>(patch tracetools, rcl,<br/>rclcpp_action, rclpy)"]
+        inst["install_fish.sh<br/>(ros2 wrapper, trace_session,<br/>python/fish package)"]
+        setup --> tp
+        setup --> inst
+
+        multi["Multi-container path:<br/>install_all.sh &#8594; container_install.sh<br/>&#8594; setup_fish.sh (per container)"]
+        docker_build["build_fish_image.sh<br/>(bake FISH into Docker)"]
+        config["Config files:<br/>fish_settings.ini<br/>fish_events.txt"]
+    end
+
+    %% ===== LAYER 2: RUNTIME =====
+    subgraph L2["Layer 2 -- Runtime (while app runs)"]
+        direction LR
+        wrapper["ros2 wrapper (bash)<br/>intercepts ros2 commands"]
+        launch_path["ros2 launch &#8594;<br/>launch_inspect.py (dry-run)<br/>&#8594; launch_wrap.py (nsys/GPU)"]
+        run_path["ros2 run &#8594;<br/>direct exec + LTTng"]
+        cli["ros2 run fish &lt;cmd&gt;<br/>stop / snapshot / gpu / status"]
+        wrapper --> launch_path
+        wrapper --> run_path
+        wrapper --> cli
+
+        trace_sess["trace_session.sh<br/>(LTTng start/stop,<br/>gpu.py daemon, snapshot.py)"]
+        tracepoints["Tracepoints in patched ROS 2:<br/>Standard: callback_start/end,<br/>rcl_publish, rcl_take, ...<br/>FISH: fish_publish_link,<br/>fish_client_link, action_*"]
+    end
+
+    %% ===== LAYER 3: ORCHESTRATION =====
+    subgraph L3["Layer 3 -- Orchestration (mission time)"]
+        direction LR
+        orch["fish_orchestrator.py"]
+        mission_yaml["Mission YAML"]
+        orch_steps["1. Read mission YAML<br/>2. Start Docker containers<br/>3. Wait SIGUSR1 (FISH-stable)<br/>4. Execute mission actions<br/>5. Stop FISH (shutdown snapshot)<br/>6. Collect traces into session dir"]
+        mission_yaml --> orch
+        orch --> orch_steps
+    end
+
+    %% ===== LAYER 4: POSTPROCESS =====
+    subgraph L4["Layer 4 -- Postprocess (after trace collection)"]
+        direction LR
+        ingest["ingest.py<br/>(babeltrace2 CTF &#8594; MongoDB,<br/>nsys SQLite &#8594; InfluxDB3,<br/>snapshot &#8594; MongoDB)"]
+        model["model_improved.py<br/>(EX&#8594;N&#8594;E&#8594;F vertex discovery,<br/>aspect attribution,<br/>graph construction)"]
+        compose["fish_compose.py<br/>(per-container model +<br/>boundary matching + CN layer)"]
+        viz["fish_viz.html<br/>(interactive D3 viz:<br/>expand/layer modes,<br/>force/tree/stair layouts)"]
+        ingest --> model
+        model --> compose
+        compose --> viz
+    end
+
+    %% ===== DATA FLOW BETWEEN LAYERS =====
+    L1 -- "Patched ROS 2 +<br/>FISH tools installed" --> L2
+    L2 -- "~/fish_traces/&lt;session&gt;/<br/>ros2/ (CTF), nsys/ (SQLite),<br/>snapshot/" --> L3
+    L3 -- "fish_compose_&lt;ts&gt;/<br/>per-container traces" --> L4
+    L4 -- "fish_graph.json &#8594;<br/>fish_viz.html" --> viz
+
+    %% ===== STYLES =====
+    classDef layerInstall fill:#E8DAEF,stroke:#7D3C98,color:#000
+    classDef layerRuntime fill:#D6EAF8,stroke:#2E86C1,color:#000
+    classDef layerOrch fill:#D5F5E3,stroke:#1E8449,color:#000
+    classDef layerPost fill:#FEF9E7,stroke:#B7950B,color:#000
+
+    class L1 layerInstall
+    class L2 layerRuntime
+    class L3 layerOrch
+    class L4 layerPost

@@ -1,0 +1,166 @@
+FISH Development Notes — chronological journal
+================================================
+
+
+2026-04-18
+----------
+
+Big day — extended FISH well beyond where we were after the meeting.
+Mission goal from this session: implement/test/update loop for
+graph_store persistence, scheduler-introspection tracepoints, and
+end-to-end validation on a real AAS mission.
+
+1. graph_store (new persistent graph layer)
+   - postprocess/graph_store.py — MongoDB-backed store for the FISH
+     graph. Collections in `fish_meta` DB:
+       fish_graphs, fish_nodes, fish_edges, fish_mutations (audit log).
+   - Public API: save_graph, load_graph, update_node, update_edge,
+     add/remove, to_viz_json, export_json, remap_graph, list_graphs.
+   - CLI: `python3 graph_store.py list|info|export|delete|mutations`.
+   - Round-trip verified: serialize → store → load → export, byte-for-byte
+     equivalent on the 108 nodes, 155 edges graph we already had.
+   - Docs: docs/graph_store.md + notes/graph_store.txt.
+
+2. model_improved + fish_compose hooked into graph_store
+   - model_improved.py main auto-calls save_graph at the end (unless
+     --no-db). New flags: --source-trace, --container-role.
+   - fish_compose.py fully rewritten: per-container graphs cached as
+     `<compose>_<role>`, composed graph as `<compose>` with
+     is_composed=True.
+   - Boundary matching fixed: cross-container L2 edges are now
+     real→real, not real→ext-placeholder. Previously the edge
+     targeted an ext entity that we immediately deleted, silently
+     losing the cross-container comm. Synthetic 2-container test
+     confirmed the fix; the AAS 3-container run produced 30 real→real
+     cross-container L2 edges.
+   - Flags: --skip-ingest, --from-cache (DB cache only, no extract),
+     --force-reextract.
+
+3. Four new scheduler-introspection tracepoints (C++ rclcpp)
+   Purpose: answer "what executor type, how many threads, which
+   callback groups" directly from trace, not from heuristics.
+
+     fish_executor_init(executor_addr, executor_type, num_threads)
+       — in SingleThreadedExecutor / MultiThreadedExecutor /
+         StaticSingleThreadedExecutor ctors
+     fish_callback_group_init(group_addr, group_type, automatic_add)
+       — in CallbackGroup ctor
+     fish_cbgroup_add(group_addr, entity_rcl_handle, entity_kind)
+       — in add_subscription / add_timer / add_service / add_client /
+         add_waitable. Critical detail: entity_addr is the RCL handle
+         obtained via `subscription_ptr->get_subscription_handle().get()`
+         (and similar for timer / service / client). This lets the
+         event JOIN CLEANLY with existing rcl_*_init events, i.e., the
+         E vertex is identifiable from the tracepoint payload alone.
+         First attempt used the rclcpp wrapper pointer; migration
+         logic in install_fish_tracepoints upgrades existing overlays
+         in place.
+     fish_executor_add_cbgroup(executor_addr, group_addr, node_addr)
+       — in Executor::add_callback_group_to_map (covers both explicit
+         add_callback_group and the auto-add path through add_node).
+
+   Installers updated (both install.sh and install_fish_tracepoints):
+     - tp_call.h / tracetools.h / tracetools.c extended for the 4 new
+       tracepoints (declaration + wrapper functions).
+     - rclcpp now cloned + copied into the overlay workspace (was
+       previously only cloned for rclcpp_action).
+     - Build chain: tracetools → rcl → rclcpp → rclcpp_action.
+     - install_fish_tracepoints gets a new --scheduler flag, bundled
+       into --all / default.
+     - names.py (tracetools_trace DEFAULT_EVENTS_ROS) gets +4 entries.
+     - fish_events.txt gets +4 entries.
+
+4. Deployed on all 3 AAS containers
+   - install_all.sh --cont ran twice (first pass had the wrapper-ptr
+     bug; second pass applied the migration to rcl handle).
+   - rclcpp rebuilt in overlay — ~5 min per container, parallel, clean.
+   - All 3 container images (aircraft-image-fish, simulation-image-fish,
+     ground-image-fish) carry the new tracepoints.
+
+5. End-to-end mission: fish_compose_20260418_165627
+   - sim_run.sh launched all 3 containers; orchestrator ran takeoff →
+     orbit → land (~95 s active flight).
+   - Ingest: 13.7M docs in aircraft DB, 2M each for ground/simulation.
+   - Model extraction + compose: 129 vertex unified graph (3 CN, 9 EX,
+     13 N, ~45 E, ~56 F), 186 edges.
+   - Scheduler event yield in aircraft:
+       13 fish_executor_init, 24 fish_callback_group_init,
+       537 fish_cbgroup_add, 21 fish_executor_add_cbgroup.
+   - 32/33 entities ended up with callback_group attribute.
+   - 8/9 executors ended up with executor_type + num_threads + cb_groups
+     attributes. The 9th (yolo_py) is rclpy — see below.
+
+6. Key findings, paper-relevant
+   See notes/EXPECTED_OBSERVED.txt. Summary:
+   - Processes have MULTIPLE executors, not one. Two mechanisms:
+     transient ST executors from rclcpp::spin() / spin_some() helpers,
+     and deliberate persistent parallel executors (e.g., px4_interface
+     runs one 20-thread MT + one ST side-by-side).
+   - Nodes have MULTIPLE callback groups with MIXED types. AAS aircraft
+     has 14 MutuallyExclusive + 23 Reentrant CGs. PX4 /fmu/out/* sensor
+     topics specifically use Reentrant so messages can be dispatched
+     concurrently on different MT-executor threads.
+   - MultiThreadedExecutor default num_threads is
+     `std::thread::hardware_concurrency()`, i.e., 20 on this host. Not
+     specified anywhere in the AAS source. Same binary on a 4-core
+     machine would use 4 threads — scheduling analysis done offline
+     from source is structurally blind to this.
+   - The canonical ROS 2 scheduling model (1 process = 1 executor,
+     1 node = 1 CG) does not match any of the 3 AAS containers.
+
+7. fish_viz.html tweak
+   - Tooltip on EX hover: shows "(SingleThreaded)" / "(MultiThreaded,
+     20 thr) · N CG".
+   - Tooltip on E/F hover: "[MX]" or "[RE]" badge when callback_group
+     present.
+
+8. Documentation
+   - notes/graph_store.txt (dev reference)
+   - notes/EXPECTED_OBSERVED.txt (expected vs observed, paper material)
+   - docs/graph_store.md (user-facing)
+   - docs/api/postprocess/postprocess.graph_store.rst (Sphinx autodoc)
+   - docs/index.md toctree updated
+   - notes/immediate_work.txt item 13 (invariant validation — deferred)
+
+
+rclpy note (don't assume the Python side silently works)
+---------------------------------------------------------
+
+The yolo_py process (the only rclpy-based node in this mission)
+produced ZERO scheduler events. I concluded "rclpy doesn't have
+scheduler tracepoints", which is TRUE for the scheduler-specific
+tracepoints (install_rclpy.sh / fish_rclpy_trace.py do NOT yet patch
+rclpy/executors.py or its CallbackGroup classes), but the observation
+is also muddied by yolo_py's own rough start:
+
+  - PID 712 ran normally: 1 rcl_node_init, 12,374 callback_start
+  - GPU daemon killed it to relaunch under nsys → PID 1228
+  - PID 1228 never initialized (0 rcl_node_init, 0 callback_start) —
+    silent crash during Python/CUDA startup under nsys
+  - Eventually recovered as PID 1249: 1 rcl_node_init,
+    40,718 callback_start (rclpy subscription / timer / service
+    tracepoints were firing normally here)
+
+So the existing rclpy tracepoints (rclpy_*_callback_added,
+rclpy_callback_register) ARE working — we have PID-1249 callbacks and
+subscription links. What is MISSING is the rclpy-specific
+counterparts for the 4 new scheduler tracepoints. Adding them is
+mechanically straightforward: patch rclpy/executors.py
+SingleThreadedExecutor.__init__, MultiThreadedExecutor.__init__,
+MutuallyExclusiveCallbackGroup.__init__, ReentrantCallbackGroup.__init__,
+Executor.add_node to call via the existing fish_rclpy_trace ctypes
+bridge into the tracetools library.
+
+Also worth calling out for the paper: rclpy's MT executor runs under
+the GIL, so concurrency behavior is materially different from rclcpp
+MT even with the same CG types. When the rclpy scheduler patch is
+added, an additional `lang: "python"` flag on the EX vertex would let
+analysis correctly apply GIL constraints.
+
+
+Next up
+-------
+  1. Commit (this).
+  2. rclpy scheduler tracepoints (above).
+  3. Per-callback roofline (immediate_work.txt #9).
+  4. Invariant validation on graph mutations (immediate_work.txt #13).

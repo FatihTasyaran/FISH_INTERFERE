@@ -1,0 +1,138 @@
+graph_store — persistent FISH graphs in MongoDB
+================================================
+
+File: postprocess/graph_store.py
+
+Why:
+  Trace → MongoDB ingest → model extraction takes minutes. Analysis
+  iterates many times on the same graph, so we cache the extracted
+  graph in MongoDB (mutable) and feed it back into fish_compose,
+  fish_viz, roofline, etc.
+
+
+Storage
+-------
+
+  MongoDB database: fish_meta (override with FISH_META_DB env var)
+  MongoDB URI:      FISH_MONGO_URI env, default mongodb://localhost:27017
+
+  Collections (shared across all sessions):
+    fish_graphs     one doc per session_name (metadata, stats, timestamps)
+    fish_nodes      one doc per (session_name, node_id)
+    fish_edges      one doc per (session_name, source, target)
+    fish_mutations  one doc per mutation — audit log (op, actor, changes, ts)
+
+  Session_name conventions:
+    standalone run:    whatever --session was given to model_improved.py
+                       (typically the ingest DB name, e.g. "aircraft")
+    compose per-ct:    "<compose_name>_<role>" e.g. "fish_compose_20260414_003054_aircraft"
+    composed graph:    "<compose_name>" — metadata has is_composed=True
+
+
+Python API (from postprocess.graph_store)
+------------------------------------------
+
+  Query:
+    graph_exists(session) -> bool
+    get_metadata(session) -> dict | None
+    list_graphs() -> [dict]
+
+  Read/Write whole graphs:
+    save_graph(G, session, source_trace=..., container_role=...,
+               is_composed=False, replace=True, actor=..., note=...)
+    load_graph(session) -> nx.DiGraph (node data "v" is a Vertex dataclass)
+    delete_graph(session, actor=..., note=...)
+
+  Targeted mutations (append to fish_mutations):
+    update_node(session, node_id, attrs={}, label=None, children=None,
+                level=None, actor=..., note=...)
+    update_edge(session, source, target, attrs={}, actor=..., note=...)
+    add_node(session, vertex, actor=..., note=...)
+    add_edge(session, source, target, attrs={}, actor=..., note=...)
+    remove_node(session, node_id, actor=...)        # cascades edges
+    remove_edge(session, source, target, actor=...)
+
+  Export:
+    to_viz_json(session) -> {"nodes":[...], "edges":[...]}   (dict)
+    export_json(session, output_path)                        (file)
+
+  Utilities:
+    remap_graph(G, offset) -> nx.DiGraph   (used by fish_compose for ID offsetting)
+    ensure_indexes(db=None)                (idempotent)
+    Vertex  (FishVertex-compatible: .t_v, .id_v, .A_v, .Z_v, .level)
+
+
+CLI
+---
+
+  python3 -m postprocess.graph_store list
+  python3 -m postprocess.graph_store info       <session>
+  python3 -m postprocess.graph_store export     <session> [-o fish_graph.json]
+  python3 -m postprocess.graph_store mutations  <session> [-n 20]
+  python3 -m postprocess.graph_store delete     <session> --yes
+
+  Or directly from postprocess/ dir:
+    python3 graph_store.py list
+
+
+Integration points
+------------------
+
+  model_improved.py
+    After create_graph + add_horizontal_edges, auto-calls save_graph
+    (unless --no-db is passed). New flags:
+      --no-db                 skip MongoDB persist (keep local JSON)
+      --source-trace PATH     stored as metadata
+      --container-role ROLE   stored as metadata
+
+  fish_compose.py
+    For each container, caches per-container graph under
+    "<compose>_<role>". Flags:
+      --skip-ingest           don't re-ingest raw traces
+      --from-cache            load per-container graphs from graph_store
+                              (implies --skip-ingest; errors if missing)
+      --force-reextract       ignore cache, rerun extraction
+
+    Default policy:
+      cache exists AND --skip-ingest  → load from cache
+      otherwise                        → ingest (unless skipped) + extract + save
+
+    Composed graph is always saved under the compose_name with
+    is_composed=True. Always exports fish_graph.json next to the session.
+
+
+Typical workflow
+----------------
+
+  1. Run mission       → fish_orchestrator produces fish_compose_<ts>/ dir
+  2. Compose          → python3 -m postprocess.fish_compose <dir>
+  3. Inspect          → python3 -m postprocess.graph_store list
+                        python3 -m postprocess.graph_store info <ts>
+  4. Analyze          → load_graph(session), mutate via update_node/update_edge,
+                        actor names tracked in fish_mutations
+  5. Re-viz           → python3 -m postprocess.graph_store export <session>
+
+  If the model extraction code changes:
+    fish_compose ... --skip-ingest --force-reextract
+  (keeps the ingested raw-trace DBs, rebuilds the per-container graphs)
+
+
+Not yet covered (see immediate_work.txt item 13)
+-------------------------------------------------
+
+  Invariant validation on mutations:
+    CN→EX→N→E→F containment, allowed edge types, level monotonicity.
+    Currently any call to update_* or add_* is accepted as-is.
+    Deferred until analysis passes start producing non-trivial mutations.
+
+
+Tests performed
+---------------
+
+  Round-trip: load fish_graph.json (108 nodes, 155 edges) → save_graph →
+    load_graph → to_viz_json → compare. Identical node/edge set, aspects
+    and edge attributes preserved. update_node + mutations log verified.
+
+  Compose merge: synthetic 2-container test with /foo, /bar cross-topics.
+    Produces 2 real→real cross-container L2 edges and 2 aggregated
+    CN→CN L-1 edges. No lingering ext placeholders.
