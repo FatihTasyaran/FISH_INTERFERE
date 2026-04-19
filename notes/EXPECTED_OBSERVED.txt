@@ -744,6 +744,154 @@ backtraces — sync points are meaningful boundaries in the DAG.
 
 
 ============================================================================
+10. "One GPU task = one DAG" is not observed even in a simple workload
+============================================================================
+
+EXPECTED
+--------
+A deterministic, pre-compiled GPU inference pipeline (yolo26n ONNX
+fed fixed-size 320×320 frames) should produce IDENTICAL CUDA API
+call sequences every iteration — same kernels, same launch order,
+same memcpys. Therefore the Typed DAG per invocation should also
+be identical, and the "set of unique DAGs per oort thread" should
+have size 1.
+
+The paper's task model §4.7 algorithm hinges on extracting the
+"longest period" DAG; the assumption was that variability across
+invocations is rare.
+
+OBSERVED
+--------
+Per-invocation DAG extraction on yolo_py over 1,980 inference
+invocations (fish_compose_20260419_161633, aircraft, tid=1252,
+gap>10ms period threshold) yielded:
+
+  1,980 invocations
+     44 unique DAG shapes (by canonical signature over (pe, name)
+                           sequence + edge set, ignoring durations)
+
+Distribution:
+
+  shape  count  fraction   description
+  ─────  ─────  ────────   ─────────────────────────────────────
+  [0]    1,818   91.8 %   canonical yolo26n pipeline:
+                          1050 nodes (550 CPU + 458 SM + 42 CE),
+                          1548 edges
+  [1]       99    5.0 %   2 CPU nodes only (cudaStreamSynchronize
+                          ×2) — idle main-loop tick (no frame
+                          available, thread blocks on queue.get)
+  [2]       12    0.6 %   "double pipeline" — 2100 nodes, 2× shape
+                          [0]. Artifact of the gap>10ms period
+                          detector when two consecutive frames hit
+                          back-to-back with <10ms idle between.
+  [3]        5    0.25%   shape [0] minus 5 CPU nodes — likely a
+                          small init-path branch skipped
+  [4..43]   ~46    2.4 %   assorted minor variations (extra launch
+                          here, missing memset there). Many at
+                          count=1-2.
+
+CAUSE (initial diagnosis — later refined, see UPDATE below)
+-------------------------------------------------------------
+Two distinct sources of variability:
+
+  (a) Detector artifact.  Shape [2] (12 invocations) is almost
+      certainly two frames stuck together because the real inter-
+      frame idle dropped below the 10ms gap threshold.
+
+  (b) Runtime non-determinism in ONNX Runtime — minor per-frame
+      variations in kernel launch count.
+
+UPDATE (2026-04-19 late) — pattern-based period detection
+----------------------------------------------------------
+The original period detection was time-gap-based: any gap
+> gap_ms_threshold ends a period. This over-counted unique shapes
+because it arbitrarily cut sequences that happened to have a brief
+quiet moment (e.g., a short memcpy wait during the middle of an
+inference). Most "unique" shapes in the 44 were actually noise
+from this arbitrary slicing.
+
+The replacement detector (postprocess/gpu_dag.py) uses a PATTERN:
+
+    a period ends at a cudaStreamSynchronize* whose gap to the
+    next CUDA API call exceeds gap_ms (default 5ms)
+
+This matches the actual shape of a yolo inference cycle:
+    [boundary sync] (frame-wait idle) → cudaMemcpyAsync (H2D) →
+    many cudaLaunchKernels + cudaMemcpyAsyncs → final
+    cudaStreamSynchronize (next boundary).
+
+After the switch, the same 1980-ish invocations yield:
+
+    6 unique DAG shapes
+    [0] 1,857 invocations (99.7%)  1050 nodes (550 CPU + 458 SM + 42 CE), 1548 edges
+        ← canonical yolo26n inference, matches expected determinism
+    [1]     2 invocations (0.1%)   "double" pipeline (edge case: two
+                                   inferences still with no idle between)
+    [2]-[5] 1 invocation each       startup / shutdown / tail artifacts
+
+For scheduling-analysis purposes, shape [0] is effectively THE task
+DAG. The four 1-count outliers at init/teardown are not part of the
+steady-state task set.
+
+Idle-filter: periods with fewer than 2 GPU ops (min_gpu_ops=2) are
+dropped — these are no-work spans where the main loop was simply
+polling the frame queue.
+
+LESSON FOR FISH
+---------------
+  - Time-gap period detection is too blunt for heterogeneous
+    workloads. Use workload-specific pattern anchors (stream sync,
+    NVTX ranges, or explicit application markers) to get
+    deterministic period boundaries.
+  - When the pattern holds, observed DAG variance drops by orders
+    of magnitude (44 → 6 here, dominant shape coverage 91.8% →
+    99.7%). The residual variance is genuine ONNX Runtime non-
+    determinism plus startup/shutdown tails — those are expected
+    in real systems, not detector bugs.
+
+IMPLICATION FOR SCHEDULING ANALYSIS
+-----------------------------------
+  - The Typed DAG task model (PDF §4.5) needs a notion of
+    "dominant DAG" (covers ≥95% of invocations) plus optional
+    "secondary DAGs" for robust WCRT analysis. In yolo_py, the
+    dominant shape [0] covers 91.8% — treating it as the single
+    task DAG is defensible but gives a small tail-latency blind
+    spot for shapes [2]-[4].
+  - For roofline/WCET analysis, aggregate the per-node c_min_ns /
+    c_max_ns within the dominant shape (we do this already —
+    gpu_dag.py tracks BCET/WCET per node across invocations that
+    match the same signature).
+  - The "idle" shape [1] is NOT a task — it's a gap where the main
+    loop was waiting for input. Future gpu_dag.py revisions should
+    filter these (threshold on total DAG compute time, or require
+    ≥1 SM/CE node to qualify).
+
+FISH RESPONSE
+-------------
+postprocess/gpu_dag.py already produces the full unique-DAG set
+with per-node c_min/c_max, signatures, and invocation counts. No
+code collapses the set into "one dominant DAG" — downstream
+analysis can pick the policy (dominant-only, top-k, all).
+
+Pipeline:
+  1. detect_oort_threads creates F ptype="oort" under N (step done).
+  2. gpu_dag.py per-F: period-detect CUDA bursts on the thread,
+     build Typed DAG per invocation, canonicalize, collect unique,
+     persist as F.A_v['gpu_dags'] = [{signature, count, nodes, edges}, ...]
+     (step done).
+  3. fish_compose --from-cache propagates per-container graphs into
+     the composed scope so the unified graph also carries the DAGs.
+     (Works today.)
+
+Next improvements (not yet done):
+  - Filter shape [1]-like "idle" DAGs (no SM/CE nodes).
+  - Tune period threshold or switch to sync-based boundaries to
+    eliminate "double frame" artifacts.
+  - When CUDA backtraces arrive (§9 → immediate_work 0a), enrich
+    CPU node labels with the user function that called each API.
+
+
+============================================================================
 Summary: why this matters for the paper
 ============================================================================
 
