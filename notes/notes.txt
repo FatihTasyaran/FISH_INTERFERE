@@ -2,6 +2,89 @@ FISH Development Notes — chronological journal
 ================================================
 
 
+2026-04-19
+----------
+
+rclpy scheduler tracepoints — parity with the C++ side.
+
+1. Patches
+   - fish_rclpy_trace.py ctypes bridge: 4 new wrappers
+     (trace_executor_init / trace_cbgroup_init / trace_cbgroup_add /
+     trace_executor_add_cbgroup). entity_addr uses
+     `entity.handle.pointer` (rcl handle) so events join with existing
+     rcl_*_init tracepoints — same schema as C++ side.
+   - rclpy/executors.py: fire trace_executor_init at
+     SingleThreadedExecutor and MultiThreadedExecutor __init__
+     (after num_threads is resolved for MT). Fire
+     trace_executor_add_cbgroup at the end of Executor.add_node for
+     the node's default callback group.
+   - rclpy/callback_groups.py: fire trace_cbgroup_init in
+     CallbackGroup.__init__ (type inferred from subclass name — MX
+     or Reentrant). Fire trace_cbgroup_add in CallbackGroup.add_entity.
+   - install_fish_tracepoints extended with all of the above; Python
+     anchors verified against real rclpy source + dry-run compiled
+     before deploy.
+
+2. First deploy — LTTng buffer overflow
+   fish_compose_20260419_154439 (first rclpy run):
+     aircraft fish_executor_add_cbgroup: 103,466 events
+     aircraft fish_publish_link:              1 event
+   fish_publish_link dropped from 88 (C++-only baseline) to 1 because
+   the over-firing add_cbgroup events displaced it in the trace
+   buffer. yolo_py alone produced ~25,000 add_cbgroup events from
+   rclpy.spin_once's add_node/remove_node cycle.
+
+3. Root cause
+   rclcpp's Executor::add_callback_group_to_map is one-shot by
+   construction (atomic exchange on an `associated_with_executor_`
+   flag). rclpy's Executor.add_node is NOT one-shot — it returns
+   True on every call where the node is not currently in the set.
+   rclpy.spin_once(node) cycles add_node → spin → remove_node every
+   iteration, so each iteration looks like a fresh add.
+
+   The rclpy executor itself is NOT recreated each cycle, even
+   though spin_once is a standalone function rather than a method.
+   `get_global_executor()` returns a module-scoped singleton; each
+   Python process has one long-lived rclpy executor. Confirmed by
+   the trace: yolo_py (PID 1252) fired fish_executor_init exactly
+   once.
+
+4. Fix — bridge-side dedup
+   fish_rclpy_trace._SEEN_EXEC_CG: a process-scoped set of
+   (id(executor), id(group), id(node)) triples. trace_executor_add_cbgroup
+   short-circuits on repeat triples. See notes/dedup_rclpy_exec.txt
+   for design rationale, alternative designs rejected, and an
+   audit-health snippet.
+
+5. Second deploy — clean counts
+   fish_compose_20260419_161633 (same mission, with dedup):
+     aircraft fish_executor_add_cbgroup:  34 events (~3000x reduction)
+     aircraft fish_publish_link:          89 events (recovered)
+     aircraft fish_executor_init:         26  (13 C++ + 13 rclpy)
+     aircraft fish_callback_group_init:   50  (24 C++ + 26 rclpy)
+     yolo_py (PID 1252) EX vertex:  SingleThreaded, 1 thread, 1 CG
+     9/9 EX vertices in unified graph have executor_type + cb_groups
+     (previously 8/9, yolo_py was ?)
+
+6. Paper material
+   EXPECTED_OBSERVED.txt now has §7 documenting the rclpy
+   add_node/remove_node cycle, the observation-side vs construction-
+   side invariant mismatch, and the measured before/after impact.
+   dedup_rclpy_exec.txt captures the mechanism in detail.
+
+   The generic lesson for the paper: structurally "the same" API in
+   rclcpp vs rclpy can have different invariants when observed at
+   runtime. Dedup belongs on the observation side, not baked into
+   the tracepoint firing convention.
+
+7. Not yet rclpy-visible
+   Multiple rclpy processes showed 1 or 2 exec_init events. Short-
+   lived ros2 CLI subprocesses (action send_goal): 1 executor each
+   (expected). rviz2: 3 executors (unusual — probably explicit
+   application-level executors inside rviz, different from the
+   transient spin-helper pattern seen in C++ kiss_icp_node). TBI.
+
+
 2026-04-18
 ----------
 

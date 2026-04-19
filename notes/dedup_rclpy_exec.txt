@@ -1,0 +1,192 @@
+Dedup mechanism for rclpy fish_executor_add_cbgroup
+====================================================
+
+Purpose:
+  Prevent the `fish_executor_add_cbgroup` tracepoint from firing
+  thousands of times per second in rclpy processes. Without dedup,
+  the event floods LTTng buffers and displaces other trace events
+  (we measured 103,466 add_cbgroup events in one aircraft trace
+  and fish_publish_link dropped from 88 to 1 as a result).
+
+  Cross-reference:
+    notes/EXPECTED_OBSERVED.txt §7 — problem statement, paper context
+    notes/rclpy_tracepoints.txt — prior id() reuse caveat (related)
+
+
+Why the fire site cannot be trusted to be one-shot in rclpy
+-----------------------------------------------------------
+
+Our fire site is `Executor.add_node(node)` in rclpy/executors.py.
+In rclcpp, the analogous location (`Executor::add_callback_group_to_map`)
+has a structural one-shot guarantee via an atomic flag:
+
+    std::atomic_bool & has_executor = group_ptr->get_associated_with_executor_atomic();
+    if (has_executor.exchange(true)) {
+      throw std::runtime_error("Callback group has already been added to an executor.");
+    }
+
+So the C++ tracepoint's fire count equals the number of distinct
+(executor, group) associations that ever existed. No dedup needed.
+
+rclpy's Executor.add_node has no such guarantee:
+
+    def add_node(self, node: 'Node') -> bool:
+        with self._nodes_lock:
+            if node not in self._nodes:
+                self._nodes.add(node)
+                node.executor = self
+                self._guard.trigger()
+                return True
+            return False
+
+It succeeds every time the node is not currently in the set. The
+`rclpy.spin_once(node)` helper function (rclpy/__init__.py) calls
+`add_node` then `remove_node` each invocation — so every iteration
+looks like a fresh add. yolo_py burned ~25,000 of these cycles during
+one ~45 s mission.
+
+
+The dedup mechanism
+-------------------
+
+Lives in `/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/fish_rclpy_trace.py`
+(installed by `install_fish_tracepoints`). Relevant code:
+
+    _SEEN_EXEC_CG = set()   # module-level, process-scoped
+
+    def trace_executor_add_cbgroup(executor, group, node):
+        if not _enabled:
+            return
+        key = (id(executor), id(group), id(node))
+        if key in _SEEN_EXEC_CG:
+            return
+        _SEEN_EXEC_CG.add(key)
+        try:
+            node_ptr = _entity_rcl_handle(node)
+            _lib.ros_trace_fish_executor_add_cbgroup(
+                ctypes.c_void_p(id(executor)),
+                ctypes.c_void_p(id(group)),
+                ctypes.c_void_p(node_ptr))
+        except (OSError, AttributeError):
+            pass
+
+Semantics:
+  - First call with a novel (executor, group, node) triple: event
+    fires once, triple is remembered.
+  - Any subsequent call with the same triple: short-circuited, event
+    does not fire.
+  - Set is module-scoped → lives for the process lifetime. Across
+    processes (e.g., a fresh `ros2 action send_goal` subprocess) the
+    set resets, as expected.
+  - Check uses `id(x)` (CPython object address). Within a single
+    process, id() is unique per live object.
+
+
+Invariants and caveats
+----------------------
+
+1. Correct within a single process.
+   Every logical (executor, group, node) association that occurs
+   during the process lifetime is reported exactly once in the trace.
+
+2. Coverage vs the C++ tracepoint: equivalent semantics.
+   rclcpp fires once per (executor, group) because of the atomic
+   guard. We fire once per (executor, group, node) because that is
+   what the rclpy call site offers us. For the analysis pipeline
+   these are equivalent — model_improved.py's `attach_callback_groups`
+   treats a single event as "this group belongs to this executor".
+
+3. id() reuse across object destruction.
+   CPython may reuse an address after an object is garbage-collected.
+   If an executor is destroyed and a new executor is allocated at the
+   same address, `id()` returns the same integer. Our dedup set would
+   then silently drop the new association.
+
+   For rclpy scheduler tracepoints this is effectively impossible:
+   - rclpy.get_global_executor() returns a module-scoped singleton
+     that lives for the entire process lifetime.
+   - CallbackGroups are referenced from each entity's weak-ref set
+     (in addition to the user's own reference), so they outlive any
+     short-lived executor scope.
+   - Nodes are application-managed and typically live for the process
+     lifetime.
+
+   The rclpy_tracepoints.txt note discusses an analogous risk for
+   callback IDs (id(callable) reuse after GC). The mitigation is the
+   same: structural entities in ROS 2 have long lifetimes, so in
+   practice the collision is vanishingly rare. If it ever becomes
+   observed, extend the dedup key with a creation-time counter.
+
+4. Why dedup here but not for other rclpy scheduler tracepoints?
+
+     trace_executor_init:   fired in executor ctor, runs once per
+                            executor construction by definition.
+     trace_cbgroup_init:    fired in CallbackGroup ctor, runs once
+                            per CG construction by definition.
+     trace_cbgroup_add:     fired in CallbackGroup.add_entity, which
+                            is called once per entity creation
+                            (subscription/timer/service/client/...).
+                            Entities are not re-added in normal flows.
+     trace_executor_add_cbgroup:  THIS IS THE ONLY HOT-PATH CALL —
+                            rclpy.spin_once(node) cycles add_node/
+                            remove_node every iteration. Dedup needed.
+
+   Verified empirically (2026-04-19 trace, aircraft container):
+
+     fish_executor_init         26 events
+     fish_callback_group_init   50 events
+     fish_cbgroup_add          351 events  (~1 per entity per creation)
+     fish_executor_add_cbgroup  34 events  (WITHOUT dedup: 103,466)
+
+
+Alternative designs considered
+-------------------------------
+
+A. Dedup on the C side (tracetools.c).
+   Rejected: the C fire-point wrapper has no process-scoped state
+   mechanism that is cheap and thread-safe; adding one would match
+   the `fish_pub_cache` pattern used for fish_publish_link but would
+   tax the C++ call site unnecessarily (C++ doesn't have the
+   over-firing problem).
+
+B. Move the fire site out of add_node, e.g. into Node.__init__.
+   Rejected: Node creation does not know which executor the node
+   will be added to. We'd have to observe add_node anyway to link
+   them.
+
+C. Check `if node_was_added` (i.e. the return value) on the caller
+   side rather than inside add_node.
+   Not applicable: rclpy.spin_once reads the return but only uses
+   it to decide whether to remove later — the node IS added fresh
+   each iteration, and the return IS True each iteration. Nothing
+   to gate on.
+
+D. Python-side dedup with process-scoped set (chosen).
+   Simple, O(1) lookup, no C changes, scoped correctly. One set per
+   bridge module per process.
+
+
+How to audit dedup health
+-------------------------
+
+If you suspect dedup is the wrong answer (e.g., you are analyzing
+an application that DOES construct many distinct CGs rapidly and
+want each association event), check:
+
+  1. Event count vs distinct triples:
+       python3 -c "
+       from pymongo import MongoClient
+       from collections import Counter
+       c = MongoClient()['<session>']
+       docs = list(c.ros2_trace.find({'event':'ros2:fish_executor_add_cbgroup'}, {'payload':1}))
+       total = len(docs)
+       triples = Counter((d['payload']['executor_addr'], d['payload']['group_addr'], d['payload']['node_addr']) for d in docs)
+       print(f'{total} events, {len(triples)} distinct triples')
+       "
+     After dedup these should be EQUAL. If not, the bridge isn't
+     taking the dedup path and something broke.
+
+  2. Per-pid distribution:
+       Processes with many distinct CGs (lifecycle nodes) may legitimately
+     have high event counts. Suspicion threshold: > a few hundred
+     distinct triples for a single process warrants investigation.

@@ -3,18 +3,18 @@
     {
       "id": 100001,
       "type": "EX",
-      "label": "parameter_bridg (PID:905)",
+      "label": "parameter_bridg (PID:1004)",
       "level": 0,
       "children": [
         100002
       ],
-      "pid": 905,
-      "executor_addr": "0x7FFCD1A35B30",
+      "pid": 1004,
+      "executor_addr": "0x7FFEAEC72030",
       "executor_type": "SingleThreaded",
       "num_threads": 1,
       "cb_groups": [
         {
-          "id": "0x5BF41A043030",
+          "id": "0x60069554C560",
           "type": "MutuallyExclusive",
           "automatic_add": true
         }
@@ -33,18 +33,18 @@
     {
       "id": 100003,
       "type": "EX",
-      "label": "parameter_bridg (PID:915)",
+      "label": "parameter_bridg (PID:1040)",
       "level": 0,
       "children": [
         100004
       ],
-      "pid": 915,
-      "executor_addr": "0x7FFF7BA471B0",
+      "pid": 1040,
+      "executor_addr": "0x7FFFCC23F080",
       "executor_type": "SingleThreaded",
       "num_threads": 1,
       "cb_groups": [
         {
-          "id": "0x5A3899AAB2C0",
+          "id": "0x575665E4D110",
           "type": "MutuallyExclusive",
           "automatic_add": true
         }
@@ -63,18 +63,18 @@
     {
       "id": 100005,
       "type": "EX",
-      "label": "parameter_bridg (PID:914)",
+      "label": "parameter_bridg (PID:1037)",
       "level": 0,
       "children": [
         100006
       ],
-      "pid": 914,
-      "executor_addr": "0x7FFEB919E970",
+      "pid": 1037,
+      "executor_addr": "0x7FFD3BCAB2D0",
       "executor_type": "SingleThreaded",
       "num_threads": 1,
       "cb_groups": [
         {
-          "id": "0x60281EEF85B0",
+          "id": "0x58112D113AD0",
           "type": "MutuallyExclusive",
           "automatic_add": true
         }
@@ -102,7 +102,7 @@
       "aspects": [],
       "period_ns": 1000000000,
       "callback_group": {
-        "id": "0x5BF41A043030",
+        "id": "0x60069554C560",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
@@ -124,7 +124,7 @@
       ],
       "period_ns": 1000000000,
       "callback_group": {
-        "id": "0x5A3899AAB2C0",
+        "id": "0x575665E4D110",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
@@ -138,15 +138,10 @@
         100012
       ],
       "etype": "tmr",
-      "aspects": [
-        {
-          "aspect": "pub",
-          "topic": "/clock"
-        }
-      ],
+      "aspects": [],
       "period_ns": 1000000000,
       "callback_group": {
-        "id": "0x60281EEF85B0",
+        "id": "0x58112D113AD0",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
@@ -159,7 +154,7 @@
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5BF41A043030",
+        "id": "0x60069554C560",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
@@ -172,7 +167,7 @@
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5A3899AAB2C0",
+        "id": "0x575665E4D110",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
@@ -185,7 +180,7 @@
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x60281EEF85B0",
+        "id": "0x58112D113AD0",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
@@ -212,30 +207,30 @@
     {
       "id": 200001,
       "type": "EX",
-      "label": "ground_system (PID:428)",
+      "label": "ground_system (PID:446)",
       "level": 0,
       "children": [
         200002
       ],
-      "pid": 428,
-      "executor_addr": "0x7FFF6881ECD0",
+      "pid": 446,
+      "executor_addr": "0x59C4F29566E0",
       "executor_type": "SingleThreaded",
       "num_threads": 1,
       "cb_groups": [
         {
-          "id": "0x57D343ECB470",
-          "type": "MutuallyExclusive",
-          "automatic_add": true
-        },
-        {
-          "id": "0x57D343FC41C0",
+          "id": "0x59C4F2975350",
           "type": "MutuallyExclusive",
           "automatic_add": false
+        },
+        {
+          "id": "0x59C4F287E7E0",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
         }
       ],
       "extra_executors": [
         {
-          "addr": "0x57D343FA34A0",
+          "addr": "0x7FFDB1CC53C0",
           "type": "SingleThreaded",
           "num_threads": 1
         }
@@ -269,7 +264,7 @@
         }
       ],
       "callback_group": {
-        "id": "0x57D343FC41C0",
+        "id": "0x59C4F2975350",
         "type": "MutuallyExclusive",
         "automatic_add": false
       }
@@ -291,7 +286,7 @@
       ],
       "period_ns": 1000000000,
       "callback_group": {
-        "id": "0x57D343ECB470",
+        "id": "0x59C4F287E7E0",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
@@ -304,7 +299,7 @@
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x57D343FC41C0",
+        "id": "0x59C4F2975350",
         "type": "MutuallyExclusive",
         "automatic_add": false
       }
@@ -317,7 +312,7 @@
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x57D343ECB470",
+        "id": "0x59C4F287E7E0",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
@@ -350,192 +345,219 @@
     {
       "id": 300001,
       "type": "EX",
-      "label": "kiss_icp_node (PID:843)",
+      "label": "python3 (PID:1252)",
       "level": 0,
       "children": [
-        300002,
-        300003
+        300002
       ],
-      "pid": 843,
-      "executor_addr": "0x570AB596FEB0",
+      "pid": 1252,
+      "executor_addr": "0x7498CC7C9870",
       "executor_type": "SingleThreaded",
       "num_threads": 1,
       "cb_groups": [
         {
-          "id": "0x570AB5946B00",
-          "type": "MutuallyExclusive",
-          "automatic_add": false
-        },
-        {
-          "id": "0x570AB5926CC0",
-          "type": "MutuallyExclusive",
-          "automatic_add": false
-        },
-        {
-          "id": "0x570AB58573A0",
-          "type": "MutuallyExclusive",
-          "automatic_add": false
-        },
-        {
-          "id": "0x570AB5758210",
+          "id": "0x7498FC6ECBB0",
           "type": "MutuallyExclusive",
           "automatic_add": true
-        }
-      ],
-      "extra_executors": [
-        {
-          "addr": "0x570AB591FF50",
-          "type": "SingleThreaded",
-          "num_threads": 1
-        },
-        {
-          "addr": "0x570AB5830560",
-          "type": "SingleThreaded",
-          "num_threads": 1
-        },
-        {
-          "addr": "0x7FFC3456BC40",
-          "type": "SingleThreaded",
-          "num_threads": 1
         }
       ]
     },
     {
       "id": 300002,
       "type": "N",
-      "label": "transform_listener_impl_570ab590e9f0",
+      "label": "yolo_inference_node",
       "level": 1,
       "children": [
-        300012,
-        300013,
-        300014
+        300012
       ],
-      "full_name": "/transform_listener_impl_570ab590e9f0"
+      "full_name": "/yolo_inference_node"
     },
     {
       "id": 300003,
-      "type": "N",
-      "label": "kiss_icp_node",
-      "level": 1,
-      "children": [
-        300015,
-        300016,
-        300017
-      ],
-      "full_name": "/kiss_icp_node"
-    },
-    {
-      "id": 300004,
       "type": "EX",
-      "label": "state_sharing_n (PID:719)",
+      "label": "kiss_icp_node (PID:845)",
       "level": 0,
       "children": [
+        300004,
         300005
       ],
-      "pid": 719,
-      "executor_addr": "0x7FFF07A8F040",
-      "executor_type": "MultiThreaded",
-      "num_threads": 20,
+      "pid": 845,
+      "executor_addr": "0x6018A4532820",
+      "executor_type": "SingleThreaded",
+      "num_threads": 1,
       "cb_groups": [
         {
-          "id": "0x5F3705CF3E40",
+          "id": "0x6018A45092A0",
+          "type": "MutuallyExclusive",
+          "automatic_add": false
+        },
+        {
+          "id": "0x6018A4315E90",
           "type": "MutuallyExclusive",
           "automatic_add": true
         },
         {
-          "id": "0x5F3705E25320",
-          "type": "Reentrant",
-          "automatic_add": true
+          "id": "0x6018A4417430",
+          "type": "MutuallyExclusive",
+          "automatic_add": false
         },
         {
-          "id": "0x5F3705E25060",
-          "type": "Reentrant",
-          "automatic_add": true
-        },
-        {
-          "id": "0x5F3705DF5D60",
+          "id": "0x6018A44E8660",
           "type": "MutuallyExclusive",
           "automatic_add": false
         }
       ],
       "extra_executors": [
         {
-          "addr": "0x5F3705DCEB70",
+          "addr": "0x7FFE1659F0F0",
+          "type": "SingleThreaded",
+          "num_threads": 1
+        },
+        {
+          "addr": "0x6018A43EE320",
+          "type": "SingleThreaded",
+          "num_threads": 1
+        },
+        {
+          "addr": "0x6018A44E16F0",
           "type": "SingleThreaded",
           "num_threads": 1
         }
       ]
     },
     {
-      "id": 300005,
+      "id": 300004,
       "type": "N",
-      "label": "state_sharing_node",
+      "label": "kiss_icp_node",
       "level": 1,
       "children": [
-        300018,
-        300019,
-        300020,
-        300021
+        300013,
+        300014,
+        300015
       ],
-      "full_name": "/state_sharing_node"
+      "full_name": "/kiss_icp_node"
+    },
+    {
+      "id": 300005,
+      "type": "N",
+      "label": "transform_listener_impl_6018a44d0160",
+      "level": 1,
+      "children": [
+        300016,
+        300017,
+        300018
+      ],
+      "full_name": "/transform_listener_impl_6018a44d0160"
     },
     {
       "id": 300006,
       "type": "EX",
-      "label": "python3 (PID:1249)",
+      "label": "px4_interface (PID:766)",
       "level": 0,
       "children": [
         300007
       ],
-      "pid": 1249
-    },
-    {
-      "id": 300007,
-      "type": "N",
-      "label": "yolo_inference_node",
-      "level": 1,
-      "children": [
-        300022
-      ],
-      "full_name": "/yolo_inference_node"
-    },
-    {
-      "id": 300008,
-      "type": "EX",
-      "label": "px4_offboard (PID:713)",
-      "level": 0,
-      "children": [
-        300009
-      ],
-      "pid": 713,
-      "executor_addr": "0x7FFFB57F9AC0",
+      "pid": 766,
+      "executor_addr": "0x7FFD0129A0F0",
       "executor_type": "MultiThreaded",
       "num_threads": 20,
       "cb_groups": [
         {
-          "id": "0x5846298B0150",
+          "id": "0x5A58224DF920",
           "type": "MutuallyExclusive",
           "automatic_add": false
         },
         {
-          "id": "0x5846297BDDC0",
-          "type": "MutuallyExclusive",
-          "automatic_add": true
-        },
-        {
-          "id": "0x5846299221C0",
+          "id": "0x5A582253B670",
           "type": "Reentrant",
           "automatic_add": true
         },
         {
-          "id": "0x5846299220B0",
+          "id": "0x5A582253B920",
+          "type": "Reentrant",
+          "automatic_add": true
+        },
+        {
+          "id": "0x5A58223EDB20",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        },
+        {
+          "id": "0x5A582253B780",
+          "type": "Reentrant",
+          "automatic_add": true
+        },
+        {
+          "id": "0x5A582253B510",
           "type": "Reentrant",
           "automatic_add": true
         }
       ],
       "extra_executors": [
         {
-          "addr": "0x584629896120",
+          "addr": "0x5A58224C58F0",
+          "type": "SingleThreaded",
+          "num_threads": 1
+        }
+      ]
+    },
+    {
+      "id": 300007,
+      "type": "N",
+      "label": "px4_interface",
+      "level": 1,
+      "children": [
+        300019,
+        300020,
+        300021,
+        300022,
+        300023,
+        300024,
+        300025,
+        300026,
+        300027,
+        300028,
+        300029
+      ],
+      "full_name": "/Drone1/px4_interface"
+    },
+    {
+      "id": 300008,
+      "type": "EX",
+      "label": "state_sharing_n (PID:733)",
+      "level": 0,
+      "children": [
+        300009
+      ],
+      "pid": 733,
+      "executor_addr": "0x7FFF0851D1D0",
+      "executor_type": "MultiThreaded",
+      "num_threads": 20,
+      "cb_groups": [
+        {
+          "id": "0x5D09FBC8EB90",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        },
+        {
+          "id": "0x5D09FBDB9F10",
+          "type": "Reentrant",
+          "automatic_add": true
+        },
+        {
+          "id": "0x5D09FBDBA1D0",
+          "type": "Reentrant",
+          "automatic_add": true
+        },
+        {
+          "id": "0x5D09FBD8C5D0",
+          "type": "MutuallyExclusive",
+          "automatic_add": false
+        }
+      ],
+      "extra_executors": [
+        {
+          "addr": "0x5D09FBD668F0",
           "type": "SingleThreaded",
           "num_threads": 1
         }
@@ -544,70 +566,53 @@
     {
       "id": 300009,
       "type": "N",
-      "label": "px4_offboard",
+      "label": "state_sharing_node",
       "level": 1,
       "children": [
-        300023,
-        300024,
-        300025,
-        300026,
-        300027,
-        300028,
-        300029,
         300030,
         300031,
         300032,
         300033
       ],
-      "full_name": "/Drone1/px4_offboard"
+      "full_name": "/state_sharing_node"
     },
     {
       "id": 300010,
       "type": "EX",
-      "label": "px4_interface (PID:714)",
+      "label": "px4_offboard (PID:712)",
       "level": 0,
       "children": [
         300011
       ],
-      "pid": 714,
-      "executor_addr": "0x7FFCF14B9580",
+      "pid": 712,
+      "executor_addr": "0x7FFD3D8B0880",
       "executor_type": "MultiThreaded",
       "num_threads": 20,
       "cb_groups": [
         {
-          "id": "0x576486578820",
+          "id": "0x643D653B6B80",
           "type": "MutuallyExclusive",
           "automatic_add": false
         },
         {
-          "id": "0x5764865CE670",
+          "id": "0x643D65426640",
           "type": "Reentrant",
           "automatic_add": true
         },
         {
-          "id": "0x5764864866D0",
+          "id": "0x643D652C4B40",
           "type": "MutuallyExclusive",
           "automatic_add": true
         },
         {
-          "id": "0x5764865CE920",
-          "type": "Reentrant",
-          "automatic_add": true
-        },
-        {
-          "id": "0x5764865CE780",
-          "type": "Reentrant",
-          "automatic_add": true
-        },
-        {
-          "id": "0x5764865CE510",
+          "id": "0x643D65426530",
           "type": "Reentrant",
           "automatic_add": true
         }
       ],
       "extra_executors": [
         {
-          "addr": "0x57648655E7F0",
+          "addr": "0x643D6539CB50",
           "type": "SingleThreaded",
           "num_threads": 1
         }
@@ -616,7 +621,7 @@
     {
       "id": 300011,
       "type": "N",
-      "label": "px4_interface",
+      "label": "px4_offboard",
       "level": 1,
       "children": [
         300034,
@@ -631,7 +636,7 @@
         300043,
         300044
       ],
-      "full_name": "/Drone1/px4_interface"
+      "full_name": "/Drone1/px4_offboard"
     },
     {
       "id": 300012,
@@ -650,62 +655,18 @@
         }
       ],
       "callback_group": {
-        "id": "0x570AB5926CC0",
+        "id": "0x7498FC6ECBB0",
         "type": "MutuallyExclusive",
-        "automatic_add": false
+        "automatic_add": true
       }
     },
     {
       "id": 300013,
       "type": "E",
-      "label": "/tf",
-      "level": 2,
-      "children": [
-        300046
-      ],
-      "etype": "sub",
-      "aspects": [
-        {
-          "aspect": "sub",
-          "topic": "/tf",
-          "msg_type": "tf2_msgs/msg/TFMessage"
-        }
-      ],
-      "callback_group": {
-        "id": "0x570AB5946B00",
-        "type": "MutuallyExclusive",
-        "automatic_add": false
-      }
-    },
-    {
-      "id": 300014,
-      "type": "E",
-      "label": "/tf_static",
-      "level": 2,
-      "children": [
-        300047
-      ],
-      "etype": "sub",
-      "aspects": [
-        {
-          "aspect": "sub",
-          "topic": "/tf_static",
-          "msg_type": "tf2_msgs/msg/TFMessage"
-        }
-      ],
-      "callback_group": {
-        "id": "0x570AB5946B00",
-        "type": "MutuallyExclusive",
-        "automatic_add": false
-      }
-    },
-    {
-      "id": 300015,
-      "type": "E",
       "label": "/clock",
       "level": 2,
       "children": [
-        300048
+        300046
       ],
       "etype": "sub",
       "aspects": [
@@ -716,18 +677,18 @@
         }
       ],
       "callback_group": {
-        "id": "0x570AB58573A0",
+        "id": "0x6018A4417430",
         "type": "MutuallyExclusive",
         "automatic_add": false
       }
     },
     {
-      "id": 300016,
+      "id": 300014,
       "type": "E",
       "label": "/lidar_points",
       "level": 2,
       "children": [
-        300049
+        300047
       ],
       "etype": "sub",
       "aspects": [
@@ -738,11 +699,11 @@
         },
         {
           "aspect": "pub",
-          "topic": "/tf"
+          "topic": "/kiss/odometry"
         },
         {
           "aspect": "pub",
-          "topic": "/kiss/odometry"
+          "topic": "/tf"
         },
         {
           "aspect": "pub",
@@ -758,18 +719,18 @@
         }
       ],
       "callback_group": {
-        "id": "0x570AB5758210",
+        "id": "0x6018A4315E90",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
     },
     {
-      "id": 300017,
+      "id": 300015,
       "type": "E",
       "label": "/kiss/reset",
       "level": 2,
       "children": [
-        300050
+        300048
       ],
       "etype": "serv",
       "aspects": [
@@ -783,15 +744,59 @@
         }
       ],
       "callback_group": {
-        "id": "0x570AB5758210",
+        "id": "0x6018A4315E90",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
     },
     {
+      "id": 300016,
+      "type": "E",
+      "label": "/clock",
+      "level": 2,
+      "children": [
+        300049
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/clock",
+          "msg_type": "rosgraph_msgs/msg/Clock"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6018A44E8660",
+        "type": "MutuallyExclusive",
+        "automatic_add": false
+      }
+    },
+    {
+      "id": 300017,
+      "type": "E",
+      "label": "/tf",
+      "level": 2,
+      "children": [
+        300050
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/tf",
+          "msg_type": "tf2_msgs/msg/TFMessage"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6018A45092A0",
+        "type": "MutuallyExclusive",
+        "automatic_add": false
+      }
+    },
+    {
       "id": 300018,
       "type": "E",
-      "label": "/Drone1/fmu/out/vehicle_global_position",
+      "label": "/tf_static",
       "level": 2,
       "children": [
         300051
@@ -800,106 +805,23 @@
       "aspects": [
         {
           "aspect": "sub",
-          "topic": "/Drone1/fmu/out/vehicle_global_position",
-          "msg_type": "px4_msgs/msg/VehicleGlobalPosition"
+          "topic": "/tf_static",
+          "msg_type": "tf2_msgs/msg/TFMessage"
         }
       ],
       "callback_group": {
-        "id": "0x5F3705E25320",
-        "type": "Reentrant",
-        "automatic_add": true
-      }
-    },
-    {
-      "id": 300019,
-      "type": "E",
-      "label": "/Drone1/fmu/out/vehicle_local_position",
-      "level": 2,
-      "children": [
-        300052
-      ],
-      "etype": "sub",
-      "aspects": [
-        {
-          "aspect": "sub",
-          "topic": "/Drone1/fmu/out/vehicle_local_position",
-          "msg_type": "px4_msgs/msg/VehicleLocalPosition"
-        }
-      ],
-      "callback_group": {
-        "id": "0x5F3705E25320",
-        "type": "Reentrant",
-        "automatic_add": true
-      }
-    },
-    {
-      "id": 300020,
-      "type": "E",
-      "label": "/clock",
-      "level": 2,
-      "children": [
-        300053
-      ],
-      "etype": "sub",
-      "aspects": [
-        {
-          "aspect": "sub",
-          "topic": "/clock",
-          "msg_type": "rosgraph_msgs/msg/Clock"
-        }
-      ],
-      "callback_group": {
-        "id": "0x5F3705DF5D60",
+        "id": "0x6018A45092A0",
         "type": "MutuallyExclusive",
         "automatic_add": false
       }
     },
     {
-      "id": 300021,
-      "type": "E",
-      "label": "timer_1000000000ns",
-      "level": 2,
-      "children": [
-        300054
-      ],
-      "etype": "tmr",
-      "aspects": [
-        {
-          "aspect": "pub",
-          "topic": "/state_sharing_drone_1"
-        }
-      ],
-      "period_ns": 1000000000,
-      "callback_group": {
-        "id": "0x5F3705E25060",
-        "type": "Reentrant",
-        "automatic_add": true
-      }
-    },
-    {
-      "id": 300022,
-      "type": "E",
-      "label": "/clock",
-      "level": 2,
-      "children": [
-        300055
-      ],
-      "etype": "sub",
-      "aspects": [
-        {
-          "aspect": "sub",
-          "topic": "/clock",
-          "msg_type": "rosgraph_msgs/msg/Clock"
-        }
-      ]
-    },
-    {
-      "id": 300023,
+      "id": 300019,
       "type": "E",
       "label": "/Drone1/fmu/out/airspeed_validated",
       "level": 2,
       "children": [
-        300056
+        300052
       ],
       "etype": "sub",
       "aspects": [
@@ -910,18 +832,40 @@
         }
       ],
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5A582253B670",
         "type": "Reentrant",
         "automatic_add": true
       }
     },
     {
-      "id": 300024,
+      "id": 300020,
+      "type": "E",
+      "label": "/Drone1/fmu/out/vehicle_command_ack",
+      "level": 2,
+      "children": [
+        300053
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/Drone1/fmu/out/vehicle_command_ack",
+          "msg_type": "px4_msgs/msg/VehicleCommandAck"
+        }
+      ],
+      "callback_group": {
+        "id": "0x5A582253B670",
+        "type": "Reentrant",
+        "automatic_add": true
+      }
+    },
+    {
+      "id": 300021,
       "type": "E",
       "label": "/Drone1/fmu/out/vehicle_global_position",
       "level": 2,
       "children": [
-        300057
+        300054
       ],
       "etype": "sub",
       "aspects": [
@@ -932,18 +876,18 @@
         }
       ],
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5A582253B670",
         "type": "Reentrant",
         "automatic_add": true
       }
     },
     {
-      "id": 300025,
+      "id": 300022,
       "type": "E",
       "label": "/Drone1/fmu/out/vehicle_local_position",
       "level": 2,
       "children": [
-        300058
+        300055
       ],
       "etype": "sub",
       "aspects": [
@@ -954,18 +898,18 @@
         }
       ],
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5A582253B670",
         "type": "Reentrant",
         "automatic_add": true
       }
     },
     {
-      "id": 300026,
+      "id": 300023,
       "type": "E",
       "label": "/Drone1/fmu/out/vehicle_odometry",
       "level": 2,
       "children": [
-        300059
+        300056
       ],
       "etype": "sub",
       "aspects": [
@@ -976,18 +920,40 @@
         }
       ],
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5A582253B670",
         "type": "Reentrant",
         "automatic_add": true
       }
     },
     {
-      "id": 300027,
+      "id": 300024,
+      "type": "E",
+      "label": "/Drone1/fmu/out/vehicle_status_v1",
+      "level": 2,
+      "children": [
+        300057
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/Drone1/fmu/out/vehicle_status_v1",
+          "msg_type": "px4_msgs/msg/VehicleStatus"
+        }
+      ],
+      "callback_group": {
+        "id": "0x5A582253B670",
+        "type": "Reentrant",
+        "automatic_add": true
+      }
+    },
+    {
+      "id": 300025,
       "type": "E",
       "label": "/clock",
       "level": 2,
       "children": [
-        300060
+        300058
       ],
       "etype": "sub",
       "aspects": [
@@ -998,29 +964,74 @@
         }
       ],
       "callback_group": {
-        "id": "0x5846298B0150",
+        "id": "0x5A58224DF920",
         "type": "MutuallyExclusive",
         "automatic_add": false
       }
     },
     {
+      "id": 300026,
+      "type": "E",
+      "label": "/Drone1/set_reposition",
+      "level": 2,
+      "children": [
+        300059
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/Drone1/set_reposition"
+        },
+        {
+          "aspect": "pub",
+          "service": "/Drone1/set_reposition"
+        }
+      ],
+      "callback_group": {
+        "id": "0x5A582253B780",
+        "type": "Reentrant",
+        "automatic_add": true
+      }
+    },
+    {
+      "id": 300027,
+      "type": "E",
+      "label": "/Drone1/set_speed",
+      "level": 2,
+      "children": [
+        300060
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/Drone1/set_speed"
+        },
+        {
+          "aspect": "pub",
+          "service": "/Drone1/set_speed"
+        }
+      ],
+      "callback_group": {
+        "id": "0x5A582253B780",
+        "type": "Reentrant",
+        "automatic_add": true
+      }
+    },
+    {
       "id": 300028,
       "type": "E",
-      "label": "/detections",
+      "label": "timer_3000000000ns",
       "level": 2,
       "children": [
         300061
       ],
-      "etype": "sub",
-      "aspects": [
-        {
-          "aspect": "sub",
-          "topic": "/detections",
-          "msg_type": "vision_msgs/msg/Detection2DArray"
-        }
-      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 3000000000,
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5A582253B510",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1028,21 +1039,21 @@
     {
       "id": 300029,
       "type": "E",
-      "label": "/kiss/odometry",
+      "label": "timer_100000000ns",
       "level": 2,
       "children": [
         300062
       ],
-      "etype": "sub",
+      "etype": "tmr",
       "aspects": [
         {
-          "aspect": "sub",
-          "topic": "/kiss/odometry",
-          "msg_type": "nav_msgs/msg/Odometry"
+          "aspect": "pub",
+          "topic": "/offboard_flag"
         }
       ],
+      "period_ns": 100000000,
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5A582253B510",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1050,7 +1061,7 @@
     {
       "id": 300030,
       "type": "E",
-      "label": "/offboard_flag",
+      "label": "/Drone1/fmu/out/vehicle_global_position",
       "level": 2,
       "children": [
         300063
@@ -1059,12 +1070,12 @@
       "aspects": [
         {
           "aspect": "sub",
-          "topic": "/offboard_flag",
-          "msg_type": "autopilot_interface_msgs/msg/OffboardFlag"
+          "topic": "/Drone1/fmu/out/vehicle_global_position",
+          "msg_type": "px4_msgs/msg/VehicleGlobalPosition"
         }
       ],
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5D09FBDBA1D0",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1072,7 +1083,7 @@
     {
       "id": 300031,
       "type": "E",
-      "label": "/tracks",
+      "label": "/Drone1/fmu/out/vehicle_local_position",
       "level": 2,
       "children": [
         300064
@@ -1081,12 +1092,12 @@
       "aspects": [
         {
           "aspect": "sub",
-          "topic": "/tracks",
-          "msg_type": "ground_system_msgs/msg/SwarmObs"
+          "topic": "/Drone1/fmu/out/vehicle_local_position",
+          "msg_type": "px4_msgs/msg/VehicleLocalPosition"
         }
       ],
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5D09FBDBA1D0",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1094,33 +1105,43 @@
     {
       "id": 300032,
       "type": "E",
-      "label": "timer_3000000000ns",
+      "label": "/clock",
       "level": 2,
       "children": [
         300065
       ],
-      "etype": "tmr",
-      "aspects": [],
-      "period_ns": 3000000000,
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/clock",
+          "msg_type": "rosgraph_msgs/msg/Clock"
+        }
+      ],
       "callback_group": {
-        "id": "0x5846299220B0",
-        "type": "Reentrant",
-        "automatic_add": true
+        "id": "0x5D09FBD8C5D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": false
       }
     },
     {
       "id": 300033,
       "type": "E",
-      "label": "timer_20000000ns",
+      "label": "timer_1000000000ns",
       "level": 2,
       "children": [
         300066
       ],
       "etype": "tmr",
-      "aspects": [],
-      "period_ns": 20000000,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/state_sharing_drone_1"
+        }
+      ],
+      "period_ns": 1000000000,
       "callback_group": {
-        "id": "0x5846299220B0",
+        "id": "0x5D09FBDB9F10",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1142,7 +1163,7 @@
         }
       ],
       "callback_group": {
-        "id": "0x5764865CE670",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1150,32 +1171,10 @@
     {
       "id": 300035,
       "type": "E",
-      "label": "/Drone1/fmu/out/vehicle_command_ack",
-      "level": 2,
-      "children": [
-        300068
-      ],
-      "etype": "sub",
-      "aspects": [
-        {
-          "aspect": "sub",
-          "topic": "/Drone1/fmu/out/vehicle_command_ack",
-          "msg_type": "px4_msgs/msg/VehicleCommandAck"
-        }
-      ],
-      "callback_group": {
-        "id": "0x5764865CE670",
-        "type": "Reentrant",
-        "automatic_add": true
-      }
-    },
-    {
-      "id": 300036,
-      "type": "E",
       "label": "/Drone1/fmu/out/vehicle_global_position",
       "level": 2,
       "children": [
-        300069
+        300068
       ],
       "etype": "sub",
       "aspects": [
@@ -1186,18 +1185,18 @@
         }
       ],
       "callback_group": {
-        "id": "0x5764865CE670",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
     },
     {
-      "id": 300037,
+      "id": 300036,
       "type": "E",
       "label": "/Drone1/fmu/out/vehicle_local_position",
       "level": 2,
       "children": [
-        300070
+        300069
       ],
       "etype": "sub",
       "aspects": [
@@ -1208,18 +1207,18 @@
         }
       ],
       "callback_group": {
-        "id": "0x5764865CE670",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
     },
     {
-      "id": 300038,
+      "id": 300037,
       "type": "E",
       "label": "/Drone1/fmu/out/vehicle_odometry",
       "level": 2,
       "children": [
-        300071
+        300070
       ],
       "etype": "sub",
       "aspects": [
@@ -1230,40 +1229,18 @@
         }
       ],
       "callback_group": {
-        "id": "0x5764865CE670",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
     },
     {
-      "id": 300039,
-      "type": "E",
-      "label": "/Drone1/fmu/out/vehicle_status_v1",
-      "level": 2,
-      "children": [
-        300072
-      ],
-      "etype": "sub",
-      "aspects": [
-        {
-          "aspect": "sub",
-          "topic": "/Drone1/fmu/out/vehicle_status_v1",
-          "msg_type": "px4_msgs/msg/VehicleStatus"
-        }
-      ],
-      "callback_group": {
-        "id": "0x5764865CE670",
-        "type": "Reentrant",
-        "automatic_add": true
-      }
-    },
-    {
-      "id": 300040,
+      "id": 300038,
       "type": "E",
       "label": "/clock",
       "level": 2,
       "children": [
-        300073
+        300071
       ],
       "etype": "sub",
       "aspects": [
@@ -1274,32 +1251,73 @@
         }
       ],
       "callback_group": {
-        "id": "0x576486578820",
+        "id": "0x643D653B6B80",
         "type": "MutuallyExclusive",
         "automatic_add": false
       }
     },
     {
+      "id": 300039,
+      "type": "E",
+      "label": "/detections",
+      "level": 2,
+      "children": [
+        300072
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/detections",
+          "msg_type": "vision_msgs/msg/Detection2DArray"
+        }
+      ],
+      "callback_group": {
+        "id": "0x643D65426640",
+        "type": "Reentrant",
+        "automatic_add": true
+      }
+    },
+    {
+      "id": 300040,
+      "type": "E",
+      "label": "/kiss/odometry",
+      "level": 2,
+      "children": [
+        300073
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/kiss/odometry",
+          "msg_type": "nav_msgs/msg/Odometry"
+        }
+      ],
+      "callback_group": {
+        "id": "0x643D65426640",
+        "type": "Reentrant",
+        "automatic_add": true
+      }
+    },
+    {
       "id": 300041,
       "type": "E",
-      "label": "/Drone1/set_reposition",
+      "label": "/offboard_flag",
       "level": 2,
       "children": [
         300074
       ],
-      "etype": "serv",
+      "etype": "sub",
       "aspects": [
         {
           "aspect": "sub",
-          "service": "/Drone1/set_reposition"
-        },
-        {
-          "aspect": "pub",
-          "service": "/Drone1/set_reposition"
+          "topic": "/offboard_flag",
+          "msg_type": "autopilot_interface_msgs/msg/OffboardFlag"
         }
       ],
       "callback_group": {
-        "id": "0x5764865CE780",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1307,24 +1325,21 @@
     {
       "id": 300042,
       "type": "E",
-      "label": "/Drone1/set_speed",
+      "label": "/tracks",
       "level": 2,
       "children": [
         300075
       ],
-      "etype": "serv",
+      "etype": "sub",
       "aspects": [
         {
           "aspect": "sub",
-          "service": "/Drone1/set_speed"
-        },
-        {
-          "aspect": "pub",
-          "service": "/Drone1/set_speed"
+          "topic": "/tracks",
+          "msg_type": "ground_system_msgs/msg/SwarmObs"
         }
       ],
       "callback_group": {
-        "id": "0x5764865CE780",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1341,7 +1356,7 @@
       "aspects": [],
       "period_ns": 3000000000,
       "callback_group": {
-        "id": "0x5764865CE510",
+        "id": "0x643D65426530",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1349,21 +1364,16 @@
     {
       "id": 300044,
       "type": "E",
-      "label": "timer_100000000ns",
+      "label": "timer_20000000ns",
       "level": 2,
       "children": [
         300077
       ],
       "etype": "tmr",
-      "aspects": [
-        {
-          "aspect": "pub",
-          "topic": "/offboard_flag"
-        }
-      ],
-      "period_ns": 100000000,
+      "aspects": [],
+      "period_ns": 20000000,
       "callback_group": {
-        "id": "0x5764865CE510",
+        "id": "0x643D65426530",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1371,25 +1381,26 @@
     {
       "id": 300045,
       "type": "F",
-      "label": "rclcpp::TimeSource::NodeState::create_clock_sub()::{lambda(std::shared_ptr<rosgraph_msgs::msg::Clock_<std::allocator<void> > const>)#2}",
+      "label": "rclpy.time_source.TimeSource.clock_callback",
       "level": 3,
       "children": [],
       "ptype": "cpu",
+      "gpu_node": true,
       "callback_group": {
-        "id": "0x570AB5926CC0",
+        "id": "0x7498FC6ECBB0",
         "type": "MutuallyExclusive",
-        "automatic_add": false
+        "automatic_add": true
       }
     },
     {
       "id": 300046,
       "type": "F",
-      "label": "std::_Bind<void (tf2_ros::TransformListener::*(tf2_ros::TransformListener*, std::_Placeholder<1>, bool))(std::shared_ptr<tf2_msgs::msg::TFMessage_<std::allocator<void> > const>, bool)>",
+      "label": "rclcpp::TimeSource::NodeState::create_clock_sub()::{lambda(std::shared_ptr<rosgraph_msgs::msg::Clock_<std::allocator<void> > const>)#2}",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x570AB5946B00",
+        "id": "0x6018A4417430",
         "type": "MutuallyExclusive",
         "automatic_add": false
       }
@@ -1397,77 +1408,77 @@
     {
       "id": 300047,
       "type": "F",
-      "label": "std::_Bind<void (tf2_ros::TransformListener::*(tf2_ros::TransformListener*, std::_Placeholder<1>, bool))(std::shared_ptr<tf2_msgs::msg::TFMessage_<std::allocator<void> > const>, bool)>",
-      "level": 3,
-      "children": [],
-      "ptype": "cpu",
-      "callback_group": {
-        "id": "0x570AB5946B00",
-        "type": "MutuallyExclusive",
-        "automatic_add": false
-      }
-    },
-    {
-      "id": 300048,
-      "type": "F",
-      "label": "rclcpp::TimeSource::NodeState::create_clock_sub()::{lambda(std::shared_ptr<rosgraph_msgs::msg::Clock_<std::allocator<void> > const>)#2}",
-      "level": 3,
-      "children": [],
-      "ptype": "cpu",
-      "callback_group": {
-        "id": "0x570AB58573A0",
-        "type": "MutuallyExclusive",
-        "automatic_add": false
-      }
-    },
-    {
-      "id": 300049,
-      "type": "F",
       "label": "std::_Bind<void (kiss_icp_ros::OdometryServer::*(kiss_icp_ros::OdometryServer*, std::_Placeholder<1>))(std::shared_ptr<sensor_msgs::msg::PointCloud2_<std::allocator<void> > const> const&)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x570AB5758210",
+        "id": "0x6018A4315E90",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
     },
     {
-      "id": 300050,
+      "id": 300048,
       "type": "F",
       "label": "std::_Bind<void (kiss_icp_ros::OdometryServer::*(kiss_icp_ros::OdometryServer*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<std_srvs::srv::Empty_Request_<std::allocator<void> > >, std::shared_ptr<std_srvs::srv::Empty_Response_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x570AB5758210",
+        "id": "0x6018A4315E90",
         "type": "MutuallyExclusive",
         "automatic_add": true
       }
     },
     {
-      "id": 300051,
+      "id": 300049,
       "type": "F",
-      "label": "std::_Bind<void (StateSharingNode::*(StateSharingNode*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleGlobalPosition_<std::allocator<void> > >)>",
+      "label": "rclcpp::TimeSource::NodeState::create_clock_sub()::{lambda(std::shared_ptr<rosgraph_msgs::msg::Clock_<std::allocator<void> > const>)#2}",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5F3705E25320",
-        "type": "Reentrant",
-        "automatic_add": true
+        "id": "0x6018A44E8660",
+        "type": "MutuallyExclusive",
+        "automatic_add": false
+      }
+    },
+    {
+      "id": 300050,
+      "type": "F",
+      "label": "std::_Bind<void (tf2_ros::TransformListener::*(tf2_ros::TransformListener*, std::_Placeholder<1>, bool))(std::shared_ptr<tf2_msgs::msg::TFMessage_<std::allocator<void> > const>, bool)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6018A45092A0",
+        "type": "MutuallyExclusive",
+        "automatic_add": false
+      }
+    },
+    {
+      "id": 300051,
+      "type": "F",
+      "label": "std::_Bind<void (tf2_ros::TransformListener::*(tf2_ros::TransformListener*, std::_Placeholder<1>, bool))(std::shared_ptr<tf2_msgs::msg::TFMessage_<std::allocator<void> > const>, bool)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6018A45092A0",
+        "type": "MutuallyExclusive",
+        "automatic_add": false
       }
     },
     {
       "id": 300052,
       "type": "F",
-      "label": "std::_Bind<void (StateSharingNode::*(StateSharingNode*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleLocalPosition_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::AirspeedValidated_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5F3705E25320",
+        "id": "0x5A582253B670",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1475,25 +1486,25 @@
     {
       "id": 300053,
       "type": "F",
-      "label": "rclcpp::TimeSource::NodeState::create_clock_sub()::{lambda(std::shared_ptr<rosgraph_msgs::msg::Clock_<std::allocator<void> > const>)#2}",
+      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleCommandAck_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5F3705DF5D60",
-        "type": "MutuallyExclusive",
-        "automatic_add": false
+        "id": "0x5A582253B670",
+        "type": "Reentrant",
+        "automatic_add": true
       }
     },
     {
       "id": 300054,
       "type": "F",
-      "label": "std::_Bind<void (StateSharingNode::*(StateSharingNode*))()>",
+      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleGlobalPosition_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5F3705E25060",
+        "id": "0x5A582253B670",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1501,21 +1512,25 @@
     {
       "id": 300055,
       "type": "F",
-      "label": "rclpy.time_source.TimeSource.clock_callback",
-      "level": 3,
-      "children": [],
-      "ptype": "cpu",
-      "gpu_node": true
-    },
-    {
-      "id": 300056,
-      "type": "F",
-      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::AirspeedValidated_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleLocalPosition_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5A582253B670",
+        "type": "Reentrant",
+        "automatic_add": true
+      }
+    },
+    {
+      "id": 300056,
+      "type": "F",
+      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleOdometry_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x5A582253B670",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1523,12 +1538,12 @@
     {
       "id": 300057,
       "type": "F",
-      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleGlobalPosition_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleStatus_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5A582253B670",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1536,25 +1551,25 @@
     {
       "id": 300058,
       "type": "F",
-      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleLocalPosition_<std::allocator<void> > >)>",
+      "label": "rclcpp::TimeSource::NodeState::create_clock_sub()::{lambda(std::shared_ptr<rosgraph_msgs::msg::Clock_<std::allocator<void> > const>)#2}",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5846299221C0",
-        "type": "Reentrant",
-        "automatic_add": true
+        "id": "0x5A58224DF920",
+        "type": "MutuallyExclusive",
+        "automatic_add": false
       }
     },
     {
       "id": 300059,
       "type": "F",
-      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleOdometry_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<autopilot_interface_msgs::srv::SetReposition_Request_<std::allocator<void> > >, std::shared_ptr<autopilot_interface_msgs::srv::SetReposition_Response_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5A582253B780",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1562,25 +1577,25 @@
     {
       "id": 300060,
       "type": "F",
-      "label": "rclcpp::TimeSource::NodeState::create_clock_sub()::{lambda(std::shared_ptr<rosgraph_msgs::msg::Clock_<std::allocator<void> > const>)#2}",
+      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<autopilot_interface_msgs::srv::SetSpeed_Request_<std::allocator<void> > >, std::shared_ptr<autopilot_interface_msgs::srv::SetSpeed_Response_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5846298B0150",
-        "type": "MutuallyExclusive",
-        "automatic_add": false
+        "id": "0x5A582253B780",
+        "type": "Reentrant",
+        "automatic_add": true
       }
     },
     {
       "id": 300061,
       "type": "F",
-      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<vision_msgs::msg::Detection2DArray_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*))()>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5A582253B510",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1588,12 +1603,12 @@
     {
       "id": 300062,
       "type": "F",
-      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<nav_msgs::msg::Odometry_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*))()>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5A582253B510",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1601,12 +1616,12 @@
     {
       "id": 300063,
       "type": "F",
-      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<autopilot_interface_msgs::msg::OffboardFlag_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (StateSharingNode::*(StateSharingNode*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleGlobalPosition_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5D09FBDBA1D0",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1614,12 +1629,12 @@
     {
       "id": 300064,
       "type": "F",
-      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<ground_system_msgs::msg::SwarmObs_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (StateSharingNode::*(StateSharingNode*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleLocalPosition_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5846299221C0",
+        "id": "0x5D09FBDBA1D0",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1627,25 +1642,25 @@
     {
       "id": 300065,
       "type": "F",
-      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*))()>",
+      "label": "rclcpp::TimeSource::NodeState::create_clock_sub()::{lambda(std::shared_ptr<rosgraph_msgs::msg::Clock_<std::allocator<void> > const>)#2}",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5846299220B0",
-        "type": "Reentrant",
-        "automatic_add": true
+        "id": "0x5D09FBD8C5D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": false
       }
     },
     {
       "id": 300066,
       "type": "F",
-      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*))()>",
+      "label": "std::_Bind<void (StateSharingNode::*(StateSharingNode*))()>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5846299220B0",
+        "id": "0x5D09FBDB9F10",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1653,12 +1668,12 @@
     {
       "id": 300067,
       "type": "F",
-      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::AirspeedValidated_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::AirspeedValidated_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5764865CE670",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1666,12 +1681,12 @@
     {
       "id": 300068,
       "type": "F",
-      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleCommandAck_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleGlobalPosition_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5764865CE670",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1679,12 +1694,12 @@
     {
       "id": 300069,
       "type": "F",
-      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleGlobalPosition_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleLocalPosition_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5764865CE670",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1692,12 +1707,12 @@
     {
       "id": 300070,
       "type": "F",
-      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleLocalPosition_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleOdometry_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5764865CE670",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1705,25 +1720,25 @@
     {
       "id": 300071,
       "type": "F",
-      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleOdometry_<std::allocator<void> > >)>",
+      "label": "rclcpp::TimeSource::NodeState::create_clock_sub()::{lambda(std::shared_ptr<rosgraph_msgs::msg::Clock_<std::allocator<void> > const>)#2}",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5764865CE670",
-        "type": "Reentrant",
-        "automatic_add": true
+        "id": "0x643D653B6B80",
+        "type": "MutuallyExclusive",
+        "automatic_add": false
       }
     },
     {
       "id": 300072,
       "type": "F",
-      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>))(std::shared_ptr<px4_msgs::msg::VehicleStatus_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<vision_msgs::msg::Detection2DArray_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5764865CE670",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1731,25 +1746,25 @@
     {
       "id": 300073,
       "type": "F",
-      "label": "rclcpp::TimeSource::NodeState::create_clock_sub()::{lambda(std::shared_ptr<rosgraph_msgs::msg::Clock_<std::allocator<void> > const>)#2}",
+      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<nav_msgs::msg::Odometry_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x576486578820",
-        "type": "MutuallyExclusive",
-        "automatic_add": false
+        "id": "0x643D65426640",
+        "type": "Reentrant",
+        "automatic_add": true
       }
     },
     {
       "id": 300074,
       "type": "F",
-      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<autopilot_interface_msgs::srv::SetReposition_Request_<std::allocator<void> > >, std::shared_ptr<autopilot_interface_msgs::srv::SetReposition_Response_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<autopilot_interface_msgs::msg::OffboardFlag_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5764865CE780",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1757,12 +1772,12 @@
     {
       "id": 300075,
       "type": "F",
-      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<autopilot_interface_msgs::srv::SetSpeed_Request_<std::allocator<void> > >, std::shared_ptr<autopilot_interface_msgs::srv::SetSpeed_Response_<std::allocator<void> > >)>",
+      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*, std::_Placeholder<1>))(std::shared_ptr<ground_system_msgs::msg::SwarmObs_<std::allocator<void> > >)>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5764865CE780",
+        "id": "0x643D65426640",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1770,12 +1785,12 @@
     {
       "id": 300076,
       "type": "F",
-      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*))()>",
+      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*))()>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5764865CE510",
+        "id": "0x643D65426530",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1783,12 +1798,12 @@
     {
       "id": 300077,
       "type": "F",
-      "label": "std::_Bind<void (PX4Interface::*(PX4Interface*))()>",
+      "label": "std::_Bind<void (PX4Offboard::*(PX4Offboard*))()>",
       "level": 3,
       "children": [],
       "ptype": "cpu",
       "callback_group": {
-        "id": "0x5764865CE510",
+        "id": "0x643D65426530",
         "type": "Reentrant",
         "automatic_add": true
       }
@@ -1800,7 +1815,7 @@
       "level": -1,
       "children": [
         300001,
-        300004,
+        300003,
         300006,
         300008,
         300010
@@ -1817,35 +1832,10 @@
     {
       "id": 300081,
       "type": "E",
-      "label": "ext:/tf_static",
-      "level": 2,
-      "children": [
-        300082
-      ],
-      "etype": "sub",
-      "external": true,
-      "aspects": [
-        {
-          "aspect": "pub",
-          "topic": "/tf_static"
-        }
-      ]
-    },
-    {
-      "id": 300082,
-      "type": "F",
-      "label": "ext:/tf_static",
-      "level": 3,
-      "children": [],
-      "ptype": "ext"
-    },
-    {
-      "id": 300083,
-      "type": "E",
       "label": "ext:/lidar_points",
       "level": 2,
       "children": [
-        300084
+        300082
       ],
       "etype": "sub",
       "external": true,
@@ -1857,7 +1847,7 @@
       ]
     },
     {
-      "id": 300084,
+      "id": 300082,
       "type": "F",
       "label": "ext:/lidar_points",
       "level": 3,
@@ -1865,62 +1855,37 @@
       "ptype": "ext"
     },
     {
+      "id": 300083,
+      "type": "E",
+      "label": "ext:/tf_static",
+      "level": 2,
+      "children": [
+        300084
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/tf_static"
+        }
+      ]
+    },
+    {
+      "id": 300084,
+      "type": "F",
+      "label": "ext:/tf_static",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
       "id": 300085,
-      "type": "E",
-      "label": "ext:/Drone1/fmu/out/vehicle_global_position",
-      "level": 2,
-      "children": [
-        300086
-      ],
-      "etype": "sub",
-      "external": true,
-      "aspects": [
-        {
-          "aspect": "pub",
-          "topic": "/Drone1/fmu/out/vehicle_global_position"
-        }
-      ]
-    },
-    {
-      "id": 300086,
-      "type": "F",
-      "label": "ext:/Drone1/fmu/out/vehicle_global_position",
-      "level": 3,
-      "children": [],
-      "ptype": "ext"
-    },
-    {
-      "id": 300087,
-      "type": "E",
-      "label": "ext:/Drone1/fmu/out/vehicle_local_position",
-      "level": 2,
-      "children": [
-        300088
-      ],
-      "etype": "sub",
-      "external": true,
-      "aspects": [
-        {
-          "aspect": "pub",
-          "topic": "/Drone1/fmu/out/vehicle_local_position"
-        }
-      ]
-    },
-    {
-      "id": 300088,
-      "type": "F",
-      "label": "ext:/Drone1/fmu/out/vehicle_local_position",
-      "level": 3,
-      "children": [],
-      "ptype": "ext"
-    },
-    {
-      "id": 300089,
       "type": "E",
       "label": "ext:/Drone1/fmu/out/airspeed_validated",
       "level": 2,
       "children": [
-        300090
+        300086
       ],
       "etype": "sub",
       "external": true,
@@ -1932,7 +1897,7 @@
       ]
     },
     {
-      "id": 300090,
+      "id": 300086,
       "type": "F",
       "label": "ext:/Drone1/fmu/out/airspeed_validated",
       "level": 3,
@@ -1940,70 +1905,12 @@
       "ptype": "ext"
     },
     {
-      "id": 300091,
-      "type": "E",
-      "label": "ext:/Drone1/fmu/out/vehicle_odometry",
-      "level": 2,
-      "children": [
-        300092
-      ],
-      "etype": "sub",
-      "external": true,
-      "aspects": [
-        {
-          "aspect": "pub",
-          "topic": "/Drone1/fmu/out/vehicle_odometry"
-        }
-      ]
-    },
-    {
-      "id": 300092,
-      "type": "F",
-      "label": "ext:/Drone1/fmu/out/vehicle_odometry",
-      "level": 3,
-      "children": [],
-      "ptype": "ext"
-    },
-    {
-      "id": 300093,
-      "type": "E",
-      "label": "ext:/detections",
-      "level": 2,
-      "children": [
-        300094
-      ],
-      "etype": "sub",
-      "external": true,
-      "aspects": [
-        {
-          "aspect": "pub",
-          "topic": "/detections"
-        }
-      ]
-    },
-    {
-      "id": 300094,
-      "type": "F",
-      "label": "ext:/detections",
-      "level": 3,
-      "children": [],
-      "ptype": "ext"
-    },
-    {
-      "id": 300096,
-      "type": "F",
-      "label": "ext:/tracks",
-      "level": 3,
-      "children": [],
-      "ptype": "ext"
-    },
-    {
-      "id": 300097,
+      "id": 300087,
       "type": "E",
       "label": "ext:/Drone1/fmu/out/vehicle_command_ack",
       "level": 2,
       "children": [
-        300098
+        300088
       ],
       "etype": "sub",
       "external": true,
@@ -2015,7 +1922,7 @@
       ]
     },
     {
-      "id": 300098,
+      "id": 300088,
       "type": "F",
       "label": "ext:/Drone1/fmu/out/vehicle_command_ack",
       "level": 3,
@@ -2023,12 +1930,87 @@
       "ptype": "ext"
     },
     {
-      "id": 300099,
+      "id": 300089,
+      "type": "E",
+      "label": "ext:/Drone1/fmu/out/vehicle_global_position",
+      "level": 2,
+      "children": [
+        300090
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/Drone1/fmu/out/vehicle_global_position"
+        }
+      ]
+    },
+    {
+      "id": 300090,
+      "type": "F",
+      "label": "ext:/Drone1/fmu/out/vehicle_global_position",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 300091,
+      "type": "E",
+      "label": "ext:/Drone1/fmu/out/vehicle_local_position",
+      "level": 2,
+      "children": [
+        300092
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/Drone1/fmu/out/vehicle_local_position"
+        }
+      ]
+    },
+    {
+      "id": 300092,
+      "type": "F",
+      "label": "ext:/Drone1/fmu/out/vehicle_local_position",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 300093,
+      "type": "E",
+      "label": "ext:/Drone1/fmu/out/vehicle_odometry",
+      "level": 2,
+      "children": [
+        300094
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/Drone1/fmu/out/vehicle_odometry"
+        }
+      ]
+    },
+    {
+      "id": 300094,
+      "type": "F",
+      "label": "ext:/Drone1/fmu/out/vehicle_odometry",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 300095,
       "type": "E",
       "label": "ext:/Drone1/fmu/out/vehicle_status_v1",
       "level": 2,
       "children": [
-        300100
+        300096
       ],
       "etype": "sub",
       "external": true,
@@ -2040,9 +2022,42 @@
       ]
     },
     {
-      "id": 300100,
+      "id": 300096,
       "type": "F",
       "label": "ext:/Drone1/fmu/out/vehicle_status_v1",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 300097,
+      "type": "E",
+      "label": "ext:/detections",
+      "level": 2,
+      "children": [
+        300098
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/detections"
+        }
+      ]
+    },
+    {
+      "id": 300098,
+      "type": "F",
+      "label": "ext:/detections",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 300100,
+      "type": "F",
+      "label": "ext:/tracks",
       "level": 3,
       "children": [],
       "ptype": "ext"
@@ -2221,7 +2236,7 @@
     },
     {
       "source": 100008,
-      "target": 300015,
+      "target": 300013,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
@@ -2232,7 +2247,7 @@
     },
     {
       "source": 100008,
-      "target": 300020,
+      "target": 300016,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
@@ -2243,7 +2258,7 @@
     },
     {
       "source": 100008,
-      "target": 300022,
+      "target": 300025,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
@@ -2254,7 +2269,7 @@
     },
     {
       "source": 100008,
-      "target": 300027,
+      "target": 300032,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
@@ -2265,7 +2280,7 @@
     },
     {
       "source": 100008,
-      "target": 300040,
+      "target": 300038,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
@@ -2281,93 +2296,7 @@
       "level": "L2_L3"
     },
     {
-      "source": 100009,
-      "target": 200003,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/clock",
-      "cross_container": true,
-      "src_container": "simulation",
-      "dst_container": "ground"
-    },
-    {
-      "source": 100009,
-      "target": 300012,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/clock",
-      "cross_container": true,
-      "src_container": "simulation",
-      "dst_container": "aircraft"
-    },
-    {
-      "source": 100009,
-      "target": 300015,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/clock",
-      "cross_container": true,
-      "src_container": "simulation",
-      "dst_container": "aircraft"
-    },
-    {
-      "source": 100009,
-      "target": 300020,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/clock",
-      "cross_container": true,
-      "src_container": "simulation",
-      "dst_container": "aircraft"
-    },
-    {
-      "source": 100009,
-      "target": 300022,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/clock",
-      "cross_container": true,
-      "src_container": "simulation",
-      "dst_container": "aircraft"
-    },
-    {
-      "source": 100009,
-      "target": 300027,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/clock",
-      "cross_container": true,
-      "src_container": "simulation",
-      "dst_container": "aircraft"
-    },
-    {
-      "source": 100009,
-      "target": 300040,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/clock",
-      "cross_container": true,
-      "src_container": "simulation",
-      "dst_container": "aircraft"
-    },
-    {
       "source": 100011,
-      "target": 100015,
-      "rel": "comm",
-      "level": "L3",
-      "nature": "msg",
-      "topic": "/clock",
-      "external": true
-    },
-    {
-      "source": 100012,
       "target": 100015,
       "rel": "comm",
       "level": "L3",
@@ -2402,7 +2331,7 @@
       "topics": [
         "/clock"
       ],
-      "comm_count": 4,
+      "comm_count": 2,
       "cross_container": true
     },
     {
@@ -2414,7 +2343,7 @@
       "topics": [
         "/clock"
       ],
-      "comm_count": 24,
+      "comm_count": 12,
       "cross_container": true
     },
     {
@@ -2449,7 +2378,7 @@
     },
     {
       "source": 200004,
-      "target": 300031,
+      "target": 300042,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
@@ -2502,40 +2431,34 @@
       "level": "L0_L1"
     },
     {
-      "source": 300001,
-      "target": 300003,
-      "rel": "contains",
-      "level": "L0_L1"
-    },
-    {
-      "source": 300001,
-      "target": 300008,
-      "rel": "comm",
-      "level": "L0",
-      "comm_count": 1,
-      "tau": "InterP"
-    },
-    {
       "source": 300002,
       "target": 300012,
       "rel": "contains",
       "level": "L1_L2"
     },
     {
-      "source": 300002,
-      "target": 300013,
+      "source": 300003,
+      "target": 300004,
       "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300002,
-      "target": 300014,
-      "rel": "contains",
-      "level": "L1_L2"
+      "level": "L0_L1"
     },
     {
       "source": 300003,
-      "target": 300002,
+      "target": 300005,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 300003,
+      "target": 300010,
+      "rel": "comm",
+      "level": "L0",
+      "comm_count": 1,
+      "tau": "InterP"
+    },
+    {
+      "source": 300004,
+      "target": 300005,
       "rel": "comm",
       "level": "L1",
       "topics": [
@@ -2544,8 +2467,8 @@
       "comm_count": 1
     },
     {
-      "source": 300003,
-      "target": 300009,
+      "source": 300004,
+      "target": 300011,
       "rel": "comm",
       "level": "L1",
       "topics": [
@@ -2554,50 +2477,38 @@
       "comm_count": 1
     },
     {
-      "source": 300003,
-      "target": 300015,
-      "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300003,
-      "target": 300016,
-      "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300003,
-      "target": 300017,
+      "source": 300004,
+      "target": 300013,
       "rel": "contains",
       "level": "L1_L2"
     },
     {
       "source": 300004,
-      "target": 300005,
+      "target": 300014,
       "rel": "contains",
-      "level": "L0_L1"
+      "level": "L1_L2"
+    },
+    {
+      "source": 300004,
+      "target": 300015,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 300005,
+      "target": 300016,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 300005,
+      "target": 300017,
+      "rel": "contains",
+      "level": "L1_L2"
     },
     {
       "source": 300005,
       "target": 300018,
-      "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300005,
-      "target": 300019,
-      "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300005,
-      "target": 300020,
-      "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300005,
-      "target": 300021,
       "rel": "contains",
       "level": "L1_L2"
     },
@@ -2608,8 +2519,86 @@
       "level": "L0_L1"
     },
     {
+      "source": 300006,
+      "target": 300010,
+      "rel": "comm",
+      "level": "L0",
+      "comm_count": 1,
+      "tau": "InterP"
+    },
+    {
+      "source": 300007,
+      "target": 300011,
+      "rel": "comm",
+      "level": "L1",
+      "topics": [
+        "/offboard_flag"
+      ],
+      "comm_count": 1
+    },
+    {
+      "source": 300007,
+      "target": 300019,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 300007,
+      "target": 300020,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 300007,
+      "target": 300021,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
       "source": 300007,
       "target": 300022,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 300007,
+      "target": 300023,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 300007,
+      "target": 300024,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 300007,
+      "target": 300025,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 300007,
+      "target": 300026,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 300007,
+      "target": 300027,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 300007,
+      "target": 300028,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 300007,
+      "target": 300029,
       "rel": "contains",
       "level": "L1_L2"
     },
@@ -2618,48 +2607,6 @@
       "target": 300009,
       "rel": "contains",
       "level": "L0_L1"
-    },
-    {
-      "source": 300009,
-      "target": 300023,
-      "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300009,
-      "target": 300024,
-      "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300009,
-      "target": 300025,
-      "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300009,
-      "target": 300026,
-      "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300009,
-      "target": 300027,
-      "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300009,
-      "target": 300028,
-      "rel": "contains",
-      "level": "L1_L2"
-    },
-    {
-      "source": 300009,
-      "target": 300029,
-      "rel": "contains",
-      "level": "L1_L2"
     },
     {
       "source": 300009,
@@ -2687,27 +2634,9 @@
     },
     {
       "source": 300010,
-      "target": 300008,
-      "rel": "comm",
-      "level": "L0",
-      "comm_count": 1,
-      "tau": "InterP"
-    },
-    {
-      "source": 300010,
       "target": 300011,
       "rel": "contains",
       "level": "L0_L1"
-    },
-    {
-      "source": 300011,
-      "target": 300009,
-      "rel": "comm",
-      "level": "L1",
-      "topics": [
-        "/offboard_flag"
-      ],
-      "comm_count": 1
     },
     {
       "source": 300011,
@@ -2789,9 +2718,54 @@
     },
     {
       "source": 300014,
+      "target": 300017,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/tf",
+      "msg_type": "tf2_msgs/msg/TFMessage"
+    },
+    {
+      "source": 300014,
+      "target": 300040,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/kiss/odometry",
+      "msg_type": "nav_msgs/msg/Odometry"
+    },
+    {
+      "source": 300014,
       "target": 300047,
       "rel": "contains",
       "level": "L2_L3"
+    },
+    {
+      "source": 300014,
+      "target": 300101,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/kiss/frame",
+      "external": true
+    },
+    {
+      "source": 300014,
+      "target": 300103,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/kiss/keypoints",
+      "external": true
+    },
+    {
+      "source": 300014,
+      "target": 300105,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/kiss/local_map",
+      "external": true
     },
     {
       "source": 300015,
@@ -2801,54 +2775,9 @@
     },
     {
       "source": 300016,
-      "target": 300013,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/tf",
-      "msg_type": "tf2_msgs/msg/TFMessage"
-    },
-    {
-      "source": 300016,
-      "target": 300029,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/kiss/odometry",
-      "msg_type": "nav_msgs/msg/Odometry"
-    },
-    {
-      "source": 300016,
       "target": 300049,
       "rel": "contains",
       "level": "L2_L3"
-    },
-    {
-      "source": 300016,
-      "target": 300101,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/kiss/frame",
-      "external": true
-    },
-    {
-      "source": 300016,
-      "target": 300103,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/kiss/keypoints",
-      "external": true
-    },
-    {
-      "source": 300016,
-      "target": 300105,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/kiss/local_map",
-      "external": true
     },
     {
       "source": 300017,
@@ -2879,15 +2808,6 @@
       "target": 300054,
       "rel": "contains",
       "level": "L2_L3"
-    },
-    {
-      "source": 300021,
-      "target": 300107,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/state_sharing_drone_1",
-      "external": true
     },
     {
       "source": 300022,
@@ -2933,6 +2853,15 @@
     },
     {
       "source": 300029,
+      "target": 300041,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/offboard_flag",
+      "msg_type": "autopilot_interface_msgs/msg/OffboardFlag"
+    },
+    {
+      "source": 300029,
       "target": 300062,
       "rel": "contains",
       "level": "L2_L3"
@@ -2960,6 +2889,15 @@
       "target": 300066,
       "rel": "contains",
       "level": "L2_L3"
+    },
+    {
+      "source": 300033,
+      "target": 300107,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/state_sharing_drone_1",
+      "external": true
     },
     {
       "source": 300034,
@@ -3023,22 +2961,13 @@
     },
     {
       "source": 300044,
-      "target": 300030,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/offboard_flag",
-      "msg_type": "autopilot_interface_msgs/msg/OffboardFlag"
-    },
-    {
-      "source": 300044,
       "target": 300077,
       "rel": "contains",
       "level": "L2_L3"
     },
     {
-      "source": 300049,
-      "target": 300046,
+      "source": 300047,
+      "target": 300050,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
@@ -3046,8 +2975,8 @@
       "msg_type": "tf2_msgs/msg/TFMessage"
     },
     {
-      "source": 300049,
-      "target": 300062,
+      "source": 300047,
+      "target": 300073,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
@@ -3055,7 +2984,7 @@
       "msg_type": "nav_msgs/msg/Odometry"
     },
     {
-      "source": 300049,
+      "source": 300047,
       "target": 300102,
       "rel": "comm",
       "level": "L3",
@@ -3064,7 +2993,7 @@
       "external": true
     },
     {
-      "source": 300049,
+      "source": 300047,
       "target": 300104,
       "rel": "comm",
       "level": "L3",
@@ -3073,7 +3002,7 @@
       "external": true
     },
     {
-      "source": 300049,
+      "source": 300047,
       "target": 300106,
       "rel": "comm",
       "level": "L3",
@@ -3082,22 +3011,22 @@
       "external": true
     },
     {
-      "source": 300054,
+      "source": 300062,
+      "target": 300074,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/offboard_flag",
+      "msg_type": "autopilot_interface_msgs/msg/OffboardFlag"
+    },
+    {
+      "source": 300066,
       "target": 300108,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
       "topic": "/state_sharing_drone_1",
       "external": true
-    },
-    {
-      "source": 300077,
-      "target": 300063,
-      "rel": "comm",
-      "level": "L3",
-      "nature": "msg",
-      "topic": "/offboard_flag",
-      "msg_type": "autopilot_interface_msgs/msg/OffboardFlag"
     },
     {
       "source": 300078,
@@ -3107,7 +3036,7 @@
     },
     {
       "source": 300078,
-      "target": 300004,
+      "target": 300003,
       "rel": "contains",
       "level": "L-1_L0"
     },
@@ -3141,7 +3070,7 @@
     },
     {
       "source": 300080,
-      "target": 300048,
+      "target": 300046,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
@@ -3151,7 +3080,7 @@
     },
     {
       "source": 300080,
-      "target": 300053,
+      "target": 300049,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
@@ -3161,7 +3090,7 @@
     },
     {
       "source": 300080,
-      "target": 300055,
+      "target": 300058,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
@@ -3171,7 +3100,7 @@
     },
     {
       "source": 300080,
-      "target": 300060,
+      "target": 300065,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
@@ -3181,7 +3110,7 @@
     },
     {
       "source": 300080,
-      "target": 300073,
+      "target": 300071,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
@@ -3195,8 +3124,8 @@
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
-      "topic": "/tf_static",
-      "msg_type": "tf2_msgs/msg/TFMessage",
+      "topic": "/lidar_points",
+      "msg_type": "sensor_msgs/msg/PointCloud2",
       "external": true
     },
     {
@@ -3211,18 +3140,18 @@
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
-      "topic": "/tf_static",
-      "msg_type": "tf2_msgs/msg/TFMessage",
+      "topic": "/lidar_points",
+      "msg_type": "sensor_msgs/msg/PointCloud2",
       "external": true
     },
     {
       "source": 300083,
-      "target": 300016,
+      "target": 300018,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
-      "topic": "/lidar_points",
-      "msg_type": "sensor_msgs/msg/PointCloud2",
+      "topic": "/tf_static",
+      "msg_type": "tf2_msgs/msg/TFMessage",
       "external": true
     },
     {
@@ -3233,42 +3162,32 @@
     },
     {
       "source": 300084,
-      "target": 300049,
+      "target": 300051,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
-      "topic": "/lidar_points",
-      "msg_type": "sensor_msgs/msg/PointCloud2",
+      "topic": "/tf_static",
+      "msg_type": "tf2_msgs/msg/TFMessage",
       "external": true
     },
     {
       "source": 300085,
-      "target": 300018,
+      "target": 300019,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_global_position",
-      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
+      "topic": "/Drone1/fmu/out/airspeed_validated",
+      "msg_type": "px4_msgs/msg/AirspeedValidated",
       "external": true
     },
     {
       "source": 300085,
-      "target": 300024,
+      "target": 300034,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_global_position",
-      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
-      "external": true
-    },
-    {
-      "source": 300085,
-      "target": 300036,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_global_position",
-      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
+      "topic": "/Drone1/fmu/out/airspeed_validated",
+      "msg_type": "px4_msgs/msg/AirspeedValidated",
       "external": true
     },
     {
@@ -3279,62 +3198,32 @@
     },
     {
       "source": 300086,
-      "target": 300051,
+      "target": 300052,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_global_position",
-      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
+      "topic": "/Drone1/fmu/out/airspeed_validated",
+      "msg_type": "px4_msgs/msg/AirspeedValidated",
       "external": true
     },
     {
       "source": 300086,
-      "target": 300057,
+      "target": 300067,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_global_position",
-      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
-      "external": true
-    },
-    {
-      "source": 300086,
-      "target": 300069,
-      "rel": "comm",
-      "level": "L3",
-      "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_global_position",
-      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
+      "topic": "/Drone1/fmu/out/airspeed_validated",
+      "msg_type": "px4_msgs/msg/AirspeedValidated",
       "external": true
     },
     {
       "source": 300087,
-      "target": 300019,
+      "target": 300020,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_local_position",
-      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
-      "external": true
-    },
-    {
-      "source": 300087,
-      "target": 300025,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_local_position",
-      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
-      "external": true
-    },
-    {
-      "source": 300087,
-      "target": 300037,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_local_position",
-      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
+      "topic": "/Drone1/fmu/out/vehicle_command_ack",
+      "msg_type": "px4_msgs/msg/VehicleCommandAck",
       "external": true
     },
     {
@@ -3345,52 +3234,42 @@
     },
     {
       "source": 300088,
-      "target": 300052,
+      "target": 300053,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_local_position",
-      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
-      "external": true
-    },
-    {
-      "source": 300088,
-      "target": 300058,
-      "rel": "comm",
-      "level": "L3",
-      "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_local_position",
-      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
-      "external": true
-    },
-    {
-      "source": 300088,
-      "target": 300070,
-      "rel": "comm",
-      "level": "L3",
-      "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_local_position",
-      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
+      "topic": "/Drone1/fmu/out/vehicle_command_ack",
+      "msg_type": "px4_msgs/msg/VehicleCommandAck",
       "external": true
     },
     {
       "source": 300089,
-      "target": 300023,
+      "target": 300021,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/airspeed_validated",
-      "msg_type": "px4_msgs/msg/AirspeedValidated",
+      "topic": "/Drone1/fmu/out/vehicle_global_position",
+      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
       "external": true
     },
     {
       "source": 300089,
-      "target": 300034,
+      "target": 300030,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/airspeed_validated",
-      "msg_type": "px4_msgs/msg/AirspeedValidated",
+      "topic": "/Drone1/fmu/out/vehicle_global_position",
+      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
+      "external": true
+    },
+    {
+      "source": 300089,
+      "target": 300035,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/Drone1/fmu/out/vehicle_global_position",
+      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
       "external": true
     },
     {
@@ -3401,42 +3280,62 @@
     },
     {
       "source": 300090,
-      "target": 300056,
+      "target": 300054,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/airspeed_validated",
-      "msg_type": "px4_msgs/msg/AirspeedValidated",
+      "topic": "/Drone1/fmu/out/vehicle_global_position",
+      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
       "external": true
     },
     {
       "source": 300090,
-      "target": 300067,
+      "target": 300063,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/airspeed_validated",
-      "msg_type": "px4_msgs/msg/AirspeedValidated",
+      "topic": "/Drone1/fmu/out/vehicle_global_position",
+      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
+      "external": true
+    },
+    {
+      "source": 300090,
+      "target": 300068,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/Drone1/fmu/out/vehicle_global_position",
+      "msg_type": "px4_msgs/msg/VehicleGlobalPosition",
       "external": true
     },
     {
       "source": 300091,
-      "target": 300026,
+      "target": 300022,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_odometry",
-      "msg_type": "px4_msgs/msg/VehicleOdometry",
+      "topic": "/Drone1/fmu/out/vehicle_local_position",
+      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
       "external": true
     },
     {
       "source": 300091,
-      "target": 300038,
+      "target": 300031,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_odometry",
-      "msg_type": "px4_msgs/msg/VehicleOdometry",
+      "topic": "/Drone1/fmu/out/vehicle_local_position",
+      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
+      "external": true
+    },
+    {
+      "source": 300091,
+      "target": 300036,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/Drone1/fmu/out/vehicle_local_position",
+      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
       "external": true
     },
     {
@@ -3447,19 +3346,39 @@
     },
     {
       "source": 300092,
-      "target": 300059,
+      "target": 300055,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_odometry",
-      "msg_type": "px4_msgs/msg/VehicleOdometry",
+      "topic": "/Drone1/fmu/out/vehicle_local_position",
+      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
       "external": true
     },
     {
       "source": 300092,
-      "target": 300071,
+      "target": 300064,
       "rel": "comm",
       "level": "L3",
+      "nature": "msg",
+      "topic": "/Drone1/fmu/out/vehicle_local_position",
+      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
+      "external": true
+    },
+    {
+      "source": 300092,
+      "target": 300069,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/Drone1/fmu/out/vehicle_local_position",
+      "msg_type": "px4_msgs/msg/VehicleLocalPosition",
+      "external": true
+    },
+    {
+      "source": 300093,
+      "target": 300023,
+      "rel": "comm",
+      "level": "L2",
       "nature": "msg",
       "topic": "/Drone1/fmu/out/vehicle_odometry",
       "msg_type": "px4_msgs/msg/VehicleOdometry",
@@ -3467,12 +3386,12 @@
     },
     {
       "source": 300093,
-      "target": 300028,
+      "target": 300037,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
-      "topic": "/detections",
-      "msg_type": "vision_msgs/msg/Detection2DArray",
+      "topic": "/Drone1/fmu/out/vehicle_odometry",
+      "msg_type": "px4_msgs/msg/VehicleOdometry",
       "external": true
     },
     {
@@ -3483,32 +3402,58 @@
     },
     {
       "source": 300094,
-      "target": 300061,
+      "target": 300056,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
-      "topic": "/detections",
-      "msg_type": "vision_msgs/msg/Detection2DArray",
+      "topic": "/Drone1/fmu/out/vehicle_odometry",
+      "msg_type": "px4_msgs/msg/VehicleOdometry",
       "external": true
     },
     {
-      "source": 300096,
-      "target": 300064,
+      "source": 300094,
+      "target": 300070,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
-      "topic": "/tracks",
-      "msg_type": "ground_system_msgs/msg/SwarmObs",
+      "topic": "/Drone1/fmu/out/vehicle_odometry",
+      "msg_type": "px4_msgs/msg/VehicleOdometry",
+      "external": true
+    },
+    {
+      "source": 300095,
+      "target": 300024,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/Drone1/fmu/out/vehicle_status_v1",
+      "msg_type": "px4_msgs/msg/VehicleStatus",
+      "external": true
+    },
+    {
+      "source": 300095,
+      "target": 300096,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 300096,
+      "target": 300057,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/Drone1/fmu/out/vehicle_status_v1",
+      "msg_type": "px4_msgs/msg/VehicleStatus",
       "external": true
     },
     {
       "source": 300097,
-      "target": 300035,
+      "target": 300039,
       "rel": "comm",
       "level": "L2",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_command_ack",
-      "msg_type": "px4_msgs/msg/VehicleCommandAck",
+      "topic": "/detections",
+      "msg_type": "vision_msgs/msg/Detection2DArray",
       "external": true
     },
     {
@@ -3519,38 +3464,22 @@
     },
     {
       "source": 300098,
-      "target": 300068,
-      "rel": "comm",
-      "level": "L3",
-      "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_command_ack",
-      "msg_type": "px4_msgs/msg/VehicleCommandAck",
-      "external": true
-    },
-    {
-      "source": 300099,
-      "target": 300039,
-      "rel": "comm",
-      "level": "L2",
-      "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_status_v1",
-      "msg_type": "px4_msgs/msg/VehicleStatus",
-      "external": true
-    },
-    {
-      "source": 300099,
-      "target": 300100,
-      "rel": "contains",
-      "level": "V"
-    },
-    {
-      "source": 300100,
       "target": 300072,
       "rel": "comm",
       "level": "L3",
       "nature": "msg",
-      "topic": "/Drone1/fmu/out/vehicle_status_v1",
-      "msg_type": "px4_msgs/msg/VehicleStatus",
+      "topic": "/detections",
+      "msg_type": "vision_msgs/msg/Detection2DArray",
+      "external": true
+    },
+    {
+      "source": 300100,
+      "target": 300075,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/tracks",
+      "msg_type": "ground_system_msgs/msg/SwarmObs",
       "external": true
     },
     {

@@ -431,6 +431,132 @@ analysis time.
 
 
 ============================================================================
+7. rclpy add_node / remove_node cycles cause naive tracepoint blow-up
+============================================================================
+
+EXPECTED
+--------
+"Per-process executor" intuition suggests that a scheduler-introspection
+tracepoint placed at Executor.add_node should fire approximately once
+per node per process lifetime — the same semantics as the rclcpp
+`Executor::add_callback_group_to_map` fire site, which is guarded by
+an atomic one-shot flag.
+
+One might further assume that the rclpy Executor object itself is
+destroyed and recreated on every spin cycle (since `rclpy.spin_once`
+is a standalone function rather than a method on an executor instance).
+
+Both intuitions are wrong, and they fail in opposite directions.
+
+OBSERVED
+--------
+In the 2026-04-19 AAS mission (fish_compose_20260419_154439) with an
+initial non-deduplicated `fish_executor_add_cbgroup` tracepoint patch
+in rclpy, we measured:
+
+  aircraft container total fish_executor_add_cbgroup events: 103,466
+  yolo_py process (PID 1252) alone:                          ~25,000
+  Distinct (executor_addr, group_addr, node_addr) triples in
+    yolo_py:                                                         1
+
+So the SAME logical association fired ~25,000 times inside yolo_py.
+
+At the same time, the rclpy Executor was NOT being recreated:
+  yolo_py (PID 1252) fish_executor_init events:                     1
+  (SingleThreaded, 1 thread)
+
+So exactly one executor lived for the entire yolo_py lifetime.
+
+The ~25,000 add_cbgroup events came from the cycle inside
+`rclpy.spin_once(node)`:
+
+    def spin_once(node, executor=None, timeout_sec=None):
+        executor = get_global_executor() if executor is None else executor
+        node_was_added = False
+        try:
+            node_was_added = executor.add_node(node)
+            executor.spin_once(timeout_sec=timeout_sec)
+        finally:
+            if node_was_added:
+                executor.remove_node(node)
+
+On each call, the executor's node set is EMPTIED (remove_node) and
+then immediately REFILLED (add_node). From the `add_node`
+implementation's perspective, each iteration looks like a brand-new
+add:
+
+    with self._nodes_lock:
+        if node not in self._nodes:   # <-- True every iteration
+            self._nodes.add(node)
+            node.executor = self
+            self._guard.trigger()
+            trace_executor_add_cbgroup(...)   # fires every time
+            return True
+        return False
+
+rclpy.spin_until_future_complete() and rclpy.spin() have the same
+shape. yolo_py's inference loop burned ~25,000 spin_once cycles,
+each firing our tracepoint once.
+
+CONSEQUENCE
+-----------
+LTTng trace buffers are finite. 25,000+ events per yolo_py plus
+similar volume from other rclpy PIDs produced ~100K redundant
+fish_executor_add_cbgroup events across the aircraft trace, which
+displaced other events: fish_publish_link events dropped from the
+expected 88 to 1 in the first run. The trace was still usable for
+graph extraction (32/33 entities got CG info via fish_cbgroup_add
+which was not affected) but cross-container comm attribution via
+fish_publish_link degraded from "88 genuine edges" to "1 residual".
+
+ROOT CAUSE
+----------
+In rclcpp, `Executor::add_callback_group_to_map` refuses to add a
+group twice:
+
+    std::atomic_bool & has_executor = group_ptr->get_associated_with_executor_atomic();
+    if (has_executor.exchange(true)) {
+      throw std::runtime_error("Callback group has already been added to an executor.");
+    }
+
+So the C++ tracepoint cannot fire more than once per (executor,
+group) pair — the structural guarantee comes from the source itself.
+
+rclpy's Executor.add_node does not provide that guarantee (and
+reasonably so: in rclpy the expected pattern is spin-helper driven).
+The guarantee has to be added on the observation side.
+
+FIX
+---
+Python-side dedup in the ctypes bridge: maintain a process-scoped
+`_SEEN_EXEC_CG = set()` of `(id(executor), id(group), id(node))`
+triples and short-circuit `trace_executor_add_cbgroup` if the triple
+has already been reported. See notes/dedup_rclpy_exec.txt for the
+full mechanism and invariants.
+
+After the fix, fish_compose_20260419_161633 (identical mission):
+
+  aircraft fish_executor_add_cbgroup: 103,466 → 34   (~3000× reduction)
+  aircraft fish_publish_link:              1 → 89    (recovered to expected)
+  yolo_py (PID 1252) fish_executor_init:              1 (unchanged)
+  yolo_py EX vertex type:  ?  →  SingleThreaded, 1 thread, 1 CG
+  9/9 EX vertices with executor_type + cb_groups (was 8/9)
+
+IMPLICATION
+-----------
+This is a generic lesson for adding tracepoints to Python observability:
+the C++ side and Python side may expose the "same" API but with very
+different invariants. In rclcpp, `add_callback_group_to_map` is
+one-shot by construction; in rclpy, `add_node` is callable in a
+tight loop by design. Dedup belongs on the observation side.
+
+See also:
+  notes/rclpy_tracepoints.txt — prior observation about id() reuse
+    across object destruction/recreation in CPython.
+  notes/dedup_rclpy_exec.txt — full dedup mechanism + invariants.
+
+
+============================================================================
 Summary: why this matters for the paper
 ============================================================================
 

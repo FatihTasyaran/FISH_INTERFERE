@@ -1852,6 +1852,23 @@ def _init():
         except AttributeError:
             pass  # link tracepoints not installed yet
 
+        # Scheduler introspection tracepoints (optional — only if --scheduler installed)
+        try:
+            _lib.ros_trace_fish_executor_init.argtypes = [
+                ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+            _lib.ros_trace_fish_executor_init.restype = None
+            _lib.ros_trace_fish_callback_group_init.argtypes = [
+                ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint8]
+            _lib.ros_trace_fish_callback_group_init.restype = None
+            _lib.ros_trace_fish_cbgroup_add.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p]
+            _lib.ros_trace_fish_cbgroup_add.restype = None
+            _lib.ros_trace_fish_executor_add_cbgroup.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            _lib.ros_trace_fish_executor_add_cbgroup.restype = None
+        except AttributeError:
+            pass  # scheduler tracepoints not installed
+
         _enabled = True
     except (OSError, AttributeError):
         _enabled = False
@@ -1973,6 +1990,110 @@ def trace_publish_link(publisher_handle_ptr):
                 ctypes.c_void_p(publisher_handle_ptr), ctypes.c_void_p(cb))
         except (OSError, AttributeError):
             pass
+
+
+# ── Scheduler introspection (rclpy-side of the 4 scheduler tracepoints) ──
+
+def _entity_rcl_handle(entity):
+    """Best effort to extract an rcl handle pointer from an rclpy entity.
+
+    Subscriptions / Services / Timers / Clients / Guards expose
+    `.handle.pointer` (the rcl_*_t address). Waitables and composite
+    objects (ActionServer, ActionClient) do not — fall back to id(entity).
+    """
+    h = getattr(entity, 'handle', None)
+    ptr = getattr(h, 'pointer', None) if h is not None else None
+    if ptr is None:
+        return id(entity)
+    return ptr
+
+
+_ENTITY_KIND = {
+    'Subscription': 'sub',
+    'Timer':        'tmr',
+    'Service':      'srv',
+    'Client':       'cli',
+    # Everything else (Waitable, GuardCondition, ActionServer, ActionClient,
+    # LifecycleService, etc.) collapses to "wait" — matches the C++ side.
+}
+
+
+def trace_executor_init(executor, executor_type, num_threads):
+    """Fire fish_executor_init — executor type + thread count."""
+    if not _enabled:
+        return
+    try:
+        _lib.ros_trace_fish_executor_init(
+            ctypes.c_void_p(id(executor)),
+            executor_type.encode('utf-8'),
+            ctypes.c_uint32(num_threads))
+    except (OSError, AttributeError):
+        pass
+
+
+def trace_cbgroup_init(group, group_type, automatic_add=True):
+    """Fire fish_callback_group_init — CG type + automatic_add flag.
+
+    `group_type` is "MutuallyExclusive" or "Reentrant" (match C++ literal
+    so the model code does not need to special-case rclpy).
+    """
+    if not _enabled:
+        return
+    try:
+        _lib.ros_trace_fish_callback_group_init(
+            ctypes.c_void_p(id(group)),
+            group_type.encode('utf-8'),
+            ctypes.c_uint8(1 if automatic_add else 0))
+    except (OSError, AttributeError):
+        pass
+
+
+def trace_cbgroup_add(group, entity):
+    """Fire fish_cbgroup_add — entity-to-CG association.
+
+    entity_addr is the rcl handle when available, so the event joins
+    directly with rcl_*_init tracepoints (same convention as C++ side).
+    """
+    if not _enabled:
+        return
+    try:
+        handle_ptr = _entity_rcl_handle(entity)
+        kind = _ENTITY_KIND.get(type(entity).__name__, 'wait')
+        _lib.ros_trace_fish_cbgroup_add(
+            ctypes.c_void_p(id(group)),
+            ctypes.c_void_p(handle_ptr),
+            kind.encode('utf-8'))
+    except (OSError, AttributeError):
+        pass
+
+
+# rclpy.spin_once / spin_until_future_complete do add_node → spin →
+# remove_node every iteration. Without dedup, trace_executor_add_cbgroup
+# would fire thousands of times per second and overflow LTTng buffers.
+_SEEN_EXEC_CG = set()
+
+
+def trace_executor_add_cbgroup(executor, group, node):
+    """Fire fish_executor_add_cbgroup — executor ↔ CG association.
+
+    Deduplicates on (executor, group, node) id triple: each logical
+    association is reported once per process lifetime, matching the C++
+    side where add_callback_group_to_map can only succeed once.
+    """
+    if not _enabled:
+        return
+    key = (id(executor), id(group), id(node))
+    if key in _SEEN_EXEC_CG:
+        return
+    _SEEN_EXEC_CG.add(key)
+    try:
+        node_ptr = _entity_rcl_handle(node)
+        _lib.ros_trace_fish_executor_add_cbgroup(
+            ctypes.c_void_p(id(executor)),
+            ctypes.c_void_p(id(group)),
+            ctypes.c_void_p(node_ptr))
+    except (OSError, AttributeError):
+        pass
 PYBRIDGE
 
     log "    Created $RCLPY_DIR/fish_rclpy_trace.py"
@@ -2165,6 +2286,148 @@ else:
     with open(path, "w") as f:
         f.write(content)
     print("    executors.py patched")
+
+# ── executors.py: scheduler introspection (independent of callback patches above) ──
+path = f"{RCLPY}/executors.py"
+with open(path) as f:
+    content = f.read()
+
+if "trace_executor_init" in content:
+    print("    executors.py scheduler patches already present")
+else:
+    # SingleThreadedExecutor.__init__
+    old_st = """class SingleThreadedExecutor(Executor):
+    \"\"\"Runs callbacks in the thread that calls :meth:\`Executor.spin\`.\"\"\"
+
+    def __init__(self, *, context: Context = None) -> None:
+        super().__init__(context=context)"""
+    new_st = """class SingleThreadedExecutor(Executor):
+    \"\"\"Runs callbacks in the thread that calls :meth:\`Executor.spin\`.\"\"\"
+
+    def __init__(self, *, context: Context = None) -> None:
+        super().__init__(context=context)
+        try:
+            from rclpy.fish_rclpy_trace import trace_executor_init
+            trace_executor_init(self, "SingleThreaded", 1)
+        except Exception:
+            pass"""
+    if old_st in content:
+        content = content.replace(old_st, new_st, 1)
+    else:
+        print("    WARNING: SingleThreadedExecutor anchor not found")
+
+    # MultiThreadedExecutor.__init__ (fire after num_threads resolved + ThreadPoolExecutor created)
+    old_mt = """    def __init__(self, num_threads: int = None, *, context: Context = None) -> None:
+        super().__init__(context=context)
+        if num_threads is None:
+            try:
+                num_threads = multiprocessing.cpu_count()
+            except NotImplementedError:
+                num_threads = 1
+        self._futures = []
+        self._executor = ThreadPoolExecutor(num_threads)"""
+    new_mt = """    def __init__(self, num_threads: int = None, *, context: Context = None) -> None:
+        super().__init__(context=context)
+        if num_threads is None:
+            try:
+                num_threads = multiprocessing.cpu_count()
+            except NotImplementedError:
+                num_threads = 1
+        self._futures = []
+        self._executor = ThreadPoolExecutor(num_threads)
+        try:
+            from rclpy.fish_rclpy_trace import trace_executor_init
+            trace_executor_init(self, "MultiThreaded", num_threads)
+        except Exception:
+            pass"""
+    if old_mt in content:
+        content = content.replace(old_mt, new_mt, 1)
+    else:
+        print("    WARNING: MultiThreadedExecutor anchor not found")
+
+    # Executor.add_node — emit fish_executor_add_cbgroup for the node's default CG
+    old_an = """        with self._nodes_lock:
+            if node not in self._nodes:
+                self._nodes.add(node)
+                node.executor = self
+                # Rebuild the wait set so it includes this new node
+                self._guard.trigger()
+                return True
+            return False"""
+    new_an = """        with self._nodes_lock:
+            if node not in self._nodes:
+                self._nodes.add(node)
+                node.executor = self
+                # Rebuild the wait set so it includes this new node
+                self._guard.trigger()
+                # FISH: trace executor ↔ node's default callback group
+                try:
+                    from rclpy.fish_rclpy_trace import trace_executor_add_cbgroup
+                    _cg = getattr(node, '_default_callback_group', None) or \\
+                          getattr(node, 'default_callback_group', None)
+                    if _cg is not None:
+                        trace_executor_add_cbgroup(self, _cg, node)
+                except Exception:
+                    pass
+                return True
+            return False"""
+    if old_an in content:
+        content = content.replace(old_an, new_an, 1)
+    else:
+        print("    WARNING: Executor.add_node anchor not found")
+
+    with open(path, "w") as f:
+        f.write(content)
+    print("    executors.py scheduler patches applied")
+
+# ── callback_groups.py: scheduler introspection (init + add_entity) ──
+path = f"{RCLPY}/callback_groups.py"
+with open(path) as f:
+    content = f.read()
+
+if "trace_cbgroup_init" in content:
+    print("    callback_groups.py already patched")
+else:
+    # CallbackGroup.__init__ — fire once per CG construction, infer type from subclass
+    old_base = """    def __init__(self) -> None:
+        super().__init__()
+        self.entities: set = set()"""
+    new_base = """    def __init__(self) -> None:
+        super().__init__()
+        self.entities: set = set()
+        try:
+            from rclpy.fish_rclpy_trace import trace_cbgroup_init
+            _cls = type(self).__name__
+            if 'MutuallyExclusive' in _cls:
+                _t = 'MutuallyExclusive'
+            elif 'Reentrant' in _cls:
+                _t = 'Reentrant'
+            else:
+                _t = _cls
+            trace_cbgroup_init(self, _t, True)
+        except Exception:
+            pass"""
+    if old_base in content:
+        content = content.replace(old_base, new_base, 1)
+    else:
+        print("    WARNING: CallbackGroup.__init__ anchor not found")
+
+    # CallbackGroup.add_entity — fire fish_cbgroup_add for every entity addition
+    old_add = "        self.entities.add(weakref.ref(entity))"
+    new_add = """        self.entities.add(weakref.ref(entity))
+        try:
+            from rclpy.fish_rclpy_trace import trace_cbgroup_add
+            trace_cbgroup_add(self, entity)
+        except Exception:
+            pass"""
+    if old_add in content:
+        content = content.replace(old_add, new_add, 1)
+    else:
+        print("    WARNING: CallbackGroup.add_entity anchor not found")
+
+    with open(path, "w") as f:
+        f.write(content)
+    print("    callback_groups.py scheduler patches applied")
 
 # ── client.py ──
 path = f"{RCLPY}/client.py"
