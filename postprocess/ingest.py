@@ -571,7 +571,13 @@ def ingest_ros2_trace(db, session_dir: str, tz_name: str = "Europe/Amsterdam"):
 # 9. nsys SQLite → InfluxDB3
 # ---------------------------------------------------------------------------
 
-def ingest_nsys(session_dir: str, session_name: str):
+def ingest_nsys(session_dir: str, db_name: str, *,
+                session: str = "", container: str = ""):
+    """Ingest nsys sqlite into the shared `fish` InfluxDB database.
+
+    Points get `session` and `container` tags so rows across sessions
+    coexist in the same database and can be filtered per mission.
+    """
     nsys_dir = os.path.join(session_dir, "nsys")
     if not os.path.isdir(nsys_dir):
         log("  nsys/ not found, skipping")
@@ -583,7 +589,6 @@ def ingest_nsys(session_dir: str, session_name: str):
         return
 
     token = load_influx_token()
-    db_name = session_name
 
     for sqlite_file in sqlite_files:
         sqlite_path = os.path.join(nsys_dir, sqlite_file)
@@ -650,6 +655,13 @@ def ingest_nsys(session_dir: str, session_name: str):
 
         errors = []
 
+        # Fixed tags added to every point written by this ingest pass.
+        session_tags = []
+        if session:
+            session_tags.append(f"session={session}")
+        if container:
+            session_tags.append(f"container={container}")
+
         def ingest_table_worker(spec):
             try:
                 t_conn = sqlite3.connect(sqlite_path)
@@ -659,7 +671,8 @@ def ingest_nsys(session_dir: str, session_name: str):
                     write_options={"precision": WritePrecision.NS},
                 )
                 _ingest_nsys_table(
-                    t_client, t_conn, source_tag, epoch_offset, resolve, **spec)
+                    t_client, t_conn, source_tag, epoch_offset, resolve,
+                    extra_tags=session_tags, **spec)
                 t_conn.close()
                 t_client.close()
             except Exception as e:
@@ -674,7 +687,8 @@ def ingest_nsys(session_dir: str, session_name: str):
                     host=INFLUX_HOST, token=token, database=db_name,
                     write_options={"precision": WritePrecision.NS},
                 )
-                _ingest_nvtx(t_client, t_conn, source_tag, epoch_offset)
+                _ingest_nvtx(t_client, t_conn, source_tag, epoch_offset,
+                             extra_tags=session_tags)
                 t_conn.close()
                 t_client.close()
             except Exception as e:
@@ -700,12 +714,14 @@ def ingest_nsys(session_dir: str, session_name: str):
             for meas, e in errors:
                 log(f"    FAILED: {meas}: {e}")
 
-    log(f"  nsys ingest complete → InfluxDB database: {db_name}")
+    log(f"  nsys ingest complete → InfluxDB {db_name} "
+        f"(session={session} container={container})")
 
 
 def _ingest_nsys_table(client, conn, source_tag, epoch_offset, resolve,
                        table, measurement, tag_cols, field_cols,
-                       string_cols, has_duration, num_writers=2):
+                       string_cols, has_duration, num_writers=2,
+                       extra_tags=None):
     """Generic nsys table → InfluxDB line protocol with parallel writers."""
     try:
         count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -747,7 +763,8 @@ def _ingest_nsys_table(client, conn, source_tag, epoch_offset, resolve,
         abs_ts = ts_ns + epoch_offset
 
         # Tags
-        tags = [f"source={source_tag}"]
+        tags = list(extra_tags) if extra_tags else []
+        tags.append(f"source={source_tag}")
         for tc in tag_cols:
             val = row_dict.get(tc)
             if val is not None:
@@ -811,7 +828,7 @@ def _ingest_nsys_table(client, conn, source_tag, epoch_offset, resolve,
     log(f"    {measurement}: done")
 
 
-def _ingest_nvtx(client, conn, source_tag, epoch_offset):
+def _ingest_nvtx(client, conn, source_tag, epoch_offset, extra_tags=None):
     """NVTX events need special handling (text field, optional end)."""
     try:
         count = conn.execute("SELECT COUNT(*) FROM NVTX_EVENTS").fetchone()[0]
@@ -831,7 +848,8 @@ def _ingest_nvtx(client, conn, source_tag, epoch_offset):
             continue
         abs_ts = ts_ns + epoch_offset
 
-        tags = [f"source={source_tag}"]
+        tags = list(extra_tags) if extra_tags else []
+        tags.append(f"source={source_tag}")
         domain = row_dict.get("domainId")
         if domain is not None:
             tags.append(f"domainId={domain}")
@@ -869,19 +887,44 @@ def _ingest_nvtx(client, conn, source_tag, epoch_offset):
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
-def ingest_session(session_dir: str, tz_name: str = "Europe/Amsterdam"):
-    session_dir = os.path.abspath(session_dir)
-    session_name = os.path.basename(session_dir)
+def ingest_session(session_dir: str, *,
+                   role: str | None = None,
+                   db_name: str | None = None,
+                   tz_name: str = "Europe/Amsterdam"):
+    """Ingest a FISH trace session into MongoDB + InfluxDB3.
 
-    log(f"Session: {session_name}")
-    log(f"Path:    {session_dir}")
+    Parameters
+    ----------
+    session_dir : str
+        Path to the session directory (containing ros2/, nsys/, snapshot/, ...).
+    role : str | None
+        Container role for multi-container sessions (e.g. "aircraft"). When set,
+        MongoDB collections are suffixed with _{role}, and the InfluxDB DB name
+        gets the same suffix. For standalone sessions pass None.
+    db_name : str | None
+        Override for the MongoDB database name. Defaults to basename(session_dir).
+        For compose flows, pass the compose-session name (e.g.
+        "fish_compose_20260419_161633") so all containers share one DB.
+    tz_name : str
+        IANA timezone of the trace clock.
+    """
+    from db_scope import ScopedMongo
+
+    session_dir = os.path.abspath(session_dir)
+    default_name = os.path.basename(session_dir)
+    if db_name is None:
+        db_name = default_name
+
+    log(f"Session dir:     {session_dir}")
+    log(f"MongoDB db:      {db_name}" + (f"  (role={role})" if role else ""))
 
     t0 = time.time()
 
-    # --- Small MongoDB collections (fast, sequential) ---
-    log(f"MongoDB database: {session_name}")
     mongo = MongoClient(MONGO_URI)
-    db = mongo[session_name]
+    raw_db = mongo[db_name]
+    # ScopedMongo transparently maps bare names like "ros2_trace" to
+    # "ros2_trace_<role>" when role is set; unknown names pass through.
+    db = ScopedMongo(raw_db, role=role)
 
     ingest_process_tree(db, session_dir)
     ingest_node_info(db, session_dir)
@@ -891,14 +934,22 @@ def ingest_session(session_dir: str, tz_name: str = "Europe/Amsterdam"):
     ingest_node_list(db, session_dir)
     ingest_fish_events(db, session_dir)
 
-    # --- Heavy ingest: ros2_trace (MongoDB) + nsys (InfluxDB) in parallel ---
+    # nsys data goes to a single shared InfluxDB database `fish`. Points
+    # carry session + container tags so they can be filtered by either
+    # axis. This avoids InfluxDB 3 Core's 5-database limit entirely and
+    # lets cross-session queries stay natural (one DELETE/SELECT handles
+    # everything).
+    influx_db = "fish"
+    container_tag = role if role else db_name  # standalone → session name
 
     nsys_error = [None]
 
     def nsys_worker():
         try:
-            log(f"InfluxDB database: {session_name}")
-            ingest_nsys(session_dir, session_name)
+            log(f"InfluxDB database: {influx_db}  "
+                f"(session={db_name}, container={container_tag})")
+            ingest_nsys(session_dir, influx_db,
+                        session=db_name, container=container_tag)
         except Exception as e:
             nsys_error[0] = e
             log(f"ERROR in nsys ingest: {e}")
@@ -927,13 +978,20 @@ def main():
     ap.add_argument("session_dir", help="Path to session directory")
     ap.add_argument("--tz", default="Europe/Amsterdam",
                     help="IANA timezone of the trace clock")
+    ap.add_argument("--role", default=None,
+                    help="Container role (aircraft/simulation/ground/...) "
+                         "for multi-container sessions; unset for standalone")
+    ap.add_argument("--db-name", default=None,
+                    help="Override MongoDB database name "
+                         "(default: basename of session_dir)")
     args = ap.parse_args()
 
     if not os.path.isdir(args.session_dir):
         print(f"Error: '{args.session_dir}' is not a directory", file=sys.stderr)
         sys.exit(1)
 
-    ingest_session(args.session_dir, tz_name=args.tz)
+    ingest_session(args.session_dir, tz_name=args.tz,
+                   role=args.role, db_name=args.db_name)
 
 
 if __name__ == "__main__":

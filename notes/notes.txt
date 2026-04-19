@@ -2,6 +2,90 @@ FISH Development Notes — chronological journal
 ================================================
 
 
+2026-04-19 (evening) — session-per-DB refactor
+----------------------------------------------
+
+Followed up on the morning's rclpy work. The MongoDB DB layout was
+broken: raw-trace DBs were named after the container role only
+(aircraft / ground / simulation), so a second compose run clobbered
+the previous mission's raw data. Graphs lived in a separate `fish_meta`
+DB, not alongside their raw trace. Fixing this is a prerequisite for
+the GPU/roofline work coming next.
+
+New layout (see notes/db_structure.txt):
+
+  One MongoDB database per session, named after the session directory:
+    fish_compose_YYYYMMDD_HHMMSS  (multi-container)
+    fish_YYYYMMDD_HHMMSS          (standalone)
+  Collections inside:
+    ros2_trace_<role>, snapshot_<role>, ... for per-container raw data
+    graph_meta / graph_nodes / graph_edges / graph_mutations with
+    `scope` field (role name for per-container, "__composed__" for
+    the composed graph).
+
+  One shared InfluxDB database: `fish` (one per installation, never
+  per-session — InfluxDB 3 Core has a 5-DB limit). Points carry
+  `session` and `container` tags.
+
+Changes:
+  postprocess/db_scope.py          NEW. ScopedMongo proxy wraps a
+                                   pymongo Database, auto-suffixing
+                                   scoped collection names with _<role>.
+                                   Lets model_improved.py's bare
+                                   mongo["ros2_trace"] calls keep
+                                   working.
+  postprocess/graph_store.py       API: (db_name, scope) pair replaces
+                                   session_name. fish_meta DB removed.
+                                   Collections: graph_meta / _nodes /
+                                   _edges / _mutations inside each
+                                   session DB. New list_sessions()
+                                   lists all fish_* DBs. CLI grew a
+                                   drop subcommand for full-session
+                                   delete.
+  postprocess/ingest.py            ingest_session(session_dir, *,
+                                   role=None, db_name=None, ...). nsys
+                                   → fixed "fish" InfluxDB DB with
+                                   session+container tags on every
+                                   point.
+  postprocess/model_improved.py    connect_mongo returns ScopedMongo;
+                                   connect_influx points at "fish".
+                                   CLI: --role / --scope replace the
+                                   old --container-role flag.
+  postprocess/fish_compose.py      All three containers share one
+                                   session DB. Per-container graphs
+                                   saved under scope=<role>, composed
+                                   under scope="__composed__".
+  notes/db_structure.txt           NEW. Design doc — DB/collection
+                                   convention, scope values,
+                                   ScopedMongo rationale, migration
+                                   note.
+
+Legacy cleanup:
+  Dropped intermediate `aircraft` / `ground` / `simulation` MongoDB
+  DBs (they were the broken rotating state that's going away).
+  Dropped `fish_meta` entries matching fish_compose_20260419*.
+  Dropped all 5 legacy fish_YYYYMMDD_* InfluxDB databases (user
+  confirmed they're not referenced in any empirical notes).
+  Kept the MongoDB counterparts of those legacy sessions — notes
+  under notes/ still cite them.
+
+End-to-end verified on fish_compose_20260419_161633:
+  Single MongoDB DB `fish_compose_20260419_161633` with
+    ros2_trace_aircraft / ros2_trace_ground / ros2_trace_simulation
+    plus per-container snapshot/node_info/topic_info/... and
+    graph_meta/_nodes/_edges/_mutations scoped.
+  Single InfluxDB DB `fish` with 5 measurements, points tagged
+    session=fish_compose_20260419_161633 container=aircraft.
+  Composed graph preserves all scheduler attributes from the morning
+    (9/9 EX with executor_type, 37+ E with callback_group, 14 MX +
+    23 Reentrant). yolo_py (rclpy) still populated.
+
+Next: this was the last plumbing change before GPU/roofline work.
+notes/immediate_work.txt #9 (per-callback roofline) is now
+unblocked — GPU data sits in a queryable shared DB with the tags
+we need to correlate against MongoDB graph_store scope + session.
+
+
 2026-04-19
 ----------
 

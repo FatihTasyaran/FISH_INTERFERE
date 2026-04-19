@@ -1,0 +1,225 @@
+MongoDB structure — one DB per session
+========================================
+
+Date: 2026-04-19
+Context: Replacing the old "one DB per container role" convention
+(aircraft / ground / simulation / fish_meta) with a session-centric
+structure. Per the user: drop the old aircraft/ground/simulation
+pattern; keep legacy DBs (e.g. fish_20260322_212915) untouched since
+older empirical notes reference them.
+
+
+Problem with the previous structure
+-----------------------------------
+
+Collections were split across these DBs:
+  fish_meta                 — all graphs (per-container + composed),
+                              keyed by session_name
+  aircraft / ground / sim   — raw CTF trace, snapshots, node_info, ...
+                              per container but NOT per session
+
+Consequence: running `fish_compose` a second time on a different
+mission overwrote the previous mission's aircraft/ground/simulation
+raw data. The graph for the old mission stayed in fish_meta (correct)
+but the raw trace was gone (broken). We were drop + re-ingest every
+iteration, losing history.
+
+Additionally, "session" was a field inside fish_meta collections
+rather than a first-class entity — no single handle for "this
+mission" across its raw trace + derived graphs.
+
+
+New structure — one DB per session
+----------------------------------
+
+Every mission session gets its own MongoDB database. All artefacts
+(raw trace + per-container graphs + composed graph + metadata +
+audit log) live inside that one DB.
+
+Drop the session = `db.dropDatabase()` on that one name.
+
+DB naming:
+  Multi-container (fish_compose_*):    use the compose session basename
+                                       directly, e.g.
+                                       fish_compose_20260419_161633
+  Standalone (single container):       fish_YYYYMMDD_HHMMSS
+                                       (basename of trace session dir)
+
+Collection layout inside the session DB
+----------------------------------------
+
+Per-container raw data — separate collections, role suffix:
+  ros2_trace_<role>       LTTng events (from babeltrace2 stream)
+  snapshot_<role>         raw snapshot payload
+  node_info_<role>        per-node subs/pubs/srv/timers (from node_info.json)
+  topic_info_<role>       topic → msg_type registry
+  topic_hz_<role>         measured topic publish rates
+  component_list_<role>   composable container → loaded plugins
+  node_list_<role>        process → nodes mapping
+  fish_events_<role>      FISH daemon kill/resurrect log
+  process_tree_<role>     ps_tree snapshot
+
+For standalone (no role), collections drop the suffix:
+  ros2_trace, snapshot, node_info, topic_info, topic_hz,
+  component_list, node_list, fish_events, process_tree
+
+Collection name `ros2_trace` is kept for source compatibility with
+existing model_improved.py queries; the role suffix is added on top.
+
+Reason: trace data is large (tens of millions of events), bulk-inserted
+per container, indexed per container. Separate collections keep
+indexes small and ingest naturally per-container.
+
+Graphs — single collections, scope field:
+  graph_meta        one doc per scope (per-container + composed)
+                    { scope, source_trace, created_at, updated_at,
+                      is_composed, container_role, stats, ... }
+  graph_nodes       { scope, node_id, type, label, level, children, ... }
+                    unique index (scope, node_id)
+  graph_edges       { scope, source, target, rel, level, ... }
+                    unique index (scope, source, target)
+  graph_mutations   append-only audit log
+                    { scope, op, actor, timestamp, changes, note }
+                    index (scope, timestamp)
+
+Reason: graphs are small (hundreds to thousands of vertices). One
+collection with scope field is cleaner than N collections per scope;
+cross-scope queries ("how many Reentrant CGs did the composed graph
+have vs the per-container aircraft graph?") work with simple filters.
+
+`scope` values:
+  "aircraft" / "ground" / "simulation" / ...  — per-container graph
+  "__composed__"                              — unified graph built
+                                                 by fish_compose.py
+  "__main__" (or just the role name)          — standalone single-
+                                                 container session
+
+
+ScopedMongo helper
+------------------
+
+model_improved.py and other model code currently opens collections
+by bare name: `mongo["ros2_trace"]`, `mongo["node_info"]`, etc. To
+minimise caller churn, a small wrapper class lives in
+`postprocess/db_scope.py`:
+
+  class ScopedMongo:
+      """Proxies a pymongo Database; suffixes collection accesses
+      with _{role} when a role is set. Unknown collection names
+      pass through unchanged (so graph_meta etc. are not suffixed)."""
+
+      _SCOPED = {
+          "ros2_trace", "snapshot", "node_info", "topic_info",
+          "topic_hz", "component_list", "node_list",
+          "fish_events", "process_tree",
+      }
+
+      def __init__(self, db, role=None):
+          self._db = db
+          self._role = role
+
+      def __getitem__(self, name):
+          if self._role and name in self._SCOPED:
+              return self._db[f"{name}_{self._role}"]
+          return self._db[name]
+
+The collection name stays as `ros2_trace` — existing
+model_improved.py queries `mongo["ros2_trace"]` work unchanged,
+they just resolve to `ros2_trace_<role>` when a role is set.
+
+
+API impact
+----------
+
+graph_store.py — `session_name` single argument → `(db_name, scope)`:
+
+  save_graph(G, db_name, scope, *, source_trace=None,
+             container_role=None, is_composed=False, replace=True,
+             actor=..., note=..., db=None)
+  load_graph(db_name, scope) -> nx.DiGraph
+  update_node(db_name, scope, node_id, ...)
+  update_edge(db_name, scope, source, target, ...)
+  to_viz_json(db_name, scope) -> dict
+  export_json(db_name, scope, output_path)
+
+  list_graphs(db_name)  — lists all scopes in one DB
+  list_sessions()        — lists all fish_* DBs
+
+CLI:
+
+  python3 graph_store.py list                     # all sessions
+  python3 graph_store.py list <session>           # scopes inside a session
+  python3 graph_store.py info <session> <scope>
+  python3 graph_store.py export <session> <scope> -o graph.json
+  python3 graph_store.py delete <session> <scope> --yes
+  python3 graph_store.py drop <session> --yes     # drop entire session DB
+  python3 graph_store.py mutations <session> <scope> [-n 20]
+
+ingest.py — role-aware:
+
+  ingest_session(session_dir, role=None, db_name=None, tz_name=...)
+    db_name default: basename(session_dir)
+    role    default: None (→ unsuffixed collections)
+    when role is set: suffixes trace/snapshot/... with _<role>
+
+fish_compose.py — single session DB:
+
+  for role in {aircraft, ground, simulation}:
+      ingest_session(container_dir, role=role, db_name=session_name)
+      G = extract_container_model(ScopedMongo(db, role))
+      graph_store.save_graph(G, db_name=session_name, scope=role,
+                             source_trace=container_dir,
+                             container_role=role)
+  U = merge_container_graphs(...)
+  graph_store.save_graph(U, db_name=session_name, scope="__composed__",
+                         is_composed=True)
+  graph_store.export_json(session_name, "__composed__",
+                          f"{session_dir}/fish_graph.json")
+
+model_improved.py CLI:
+
+  python3 model_improved.py --session <db_name>             # standalone
+  python3 model_improved.py --session <db_name> --role aircraft  # scoped
+
+  --session drives BOTH the Mongo DB name and the graph_store
+  db_name. --role drives collection suffixes and graph_store scope.
+
+
+What gets renamed / removed
+---------------------------
+
+Removed concepts:
+  - fish_meta DB (graphs now live in each session's DB)
+  - FISH_META_DB environment variable (still read for backwards
+    compat — if set, graph_store uses it; otherwise uses db_name
+    passed explicitly)
+  - "session_name" as a field in graph_* collections (replaced by
+    the DB itself + the scope field)
+
+Legacy DBs left untouched:
+  - aircraft, ground, simulation (old multi-container pattern)
+  - fish_meta (old graph store)
+  - fish_20260322_212915, fish_20260329_182842, ... (standalone
+    old runs — referenced in notes/*.txt empirical evidence)
+
+Nothing in the new code writes to these. An optional one-shot
+`migrate_db.py` script could convert them, but per user 2026-04-19
+we're not doing that — they stay as a read-only archive.
+
+
+Migration check for humans
+--------------------------
+
+After the refactor is in, a fresh AAS mission should produce exactly
+ONE new MongoDB database named like `fish_compose_YYYYMMDD_HHMMSS`,
+containing:
+
+  ros2_trace_aircraft, ros2_trace_ground,
+    ros2_trace_simulation                           (big)
+  snapshot_aircraft, node_info_aircraft, ...        (small, per-container)
+  graph_meta                                        (3-4 docs: per-ct + composed)
+  graph_nodes, graph_edges, graph_mutations         (scope-qualified)
+
+`db.listCollectionNames()` should produce that full list. No entries
+in `fish_meta`. No `aircraft` / `ground` / `simulation` top-level DBs
+created for this session.

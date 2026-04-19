@@ -1,7 +1,9 @@
-graph_store — persistent FISH graphs in MongoDB
-================================================
+graph_store — persistent FISH graphs in MongoDB (session-per-DB layout)
+=========================================================================
 
 File: postprocess/graph_store.py
+Companion: postprocess/db_scope.py (ScopedMongo helper)
+Design doc: notes/db_structure.txt
 
 Why:
   Trace → MongoDB ingest → model extraction takes minutes. Analysis
@@ -10,111 +12,189 @@ Why:
   fish_viz, roofline, etc.
 
 
-Storage
--------
+Storage layout
+--------------
 
-  MongoDB database: fish_meta (override with FISH_META_DB env var)
-  MongoDB URI:      FISH_MONGO_URI env, default mongodb://localhost:27017
+  One MongoDB database per session:
+    fish_compose_YYYYMMDD_HHMMSS  — multi-container mission (one DB
+                                    holds all containers' data)
+    fish_YYYYMMDD_HHMMSS          — standalone single-container run
 
-  Collections (shared across all sessions):
-    fish_graphs     one doc per session_name (metadata, stats, timestamps)
-    fish_nodes      one doc per (session_name, node_id)
-    fish_edges      one doc per (session_name, source, target)
-    fish_mutations  one doc per mutation — audit log (op, actor, changes, ts)
+  Within a session DB, role-suffixed raw-trace collections (multi-ct):
+    ros2_trace_<role>, snapshot_<role>, node_info_<role>,
+    topic_info_<role>, topic_hz_<role>, component_list_<role>,
+    node_list_<role>, fish_events_<role>, process_tree_<role>
 
-  Session_name conventions:
-    standalone run:    whatever --session was given to model_improved.py
-                       (typically the ingest DB name, e.g. "aircraft")
-    compose per-ct:    "<compose_name>_<role>" e.g. "fish_compose_20260414_003054_aircraft"
-    composed graph:    "<compose_name>" — metadata has is_composed=True
+  For standalone (no role), the same collections have no suffix:
+    ros2_trace, snapshot, ...
+
+  Graph data — four collections with scope field:
+    graph_meta      one doc per scope
+    graph_nodes     indexed (scope, node_id) UNIQUE
+    graph_edges     indexed (scope, source, target) UNIQUE
+    graph_mutations audit log, indexed (scope, timestamp)
+
+  scope values:
+    "<role>"       per-container graph (e.g. "aircraft")
+    "__composed__" unified multi-container graph (fish_compose output)
+    "__main__"     default for standalone sessions
+
+
+Env vars:
+  FISH_MONGO_URI    default mongodb://localhost:27017
 
 
 Python API (from postprocess.graph_store)
 ------------------------------------------
 
   Query:
-    graph_exists(session) -> bool
-    get_metadata(session) -> dict | None
-    list_graphs() -> [dict]
+    graph_exists(db_name, scope) -> bool
+    get_metadata(db_name, scope) -> dict | None
+    list_graphs(db_name) -> [dict]      # scopes in one session
+    list_sessions() -> [str]            # all fish_* DBs
 
   Read/Write whole graphs:
-    save_graph(G, session, source_trace=..., container_role=...,
+    save_graph(G, db_name, scope, *, source_trace=..., container_role=...,
                is_composed=False, replace=True, actor=..., note=...)
-    load_graph(session) -> nx.DiGraph (node data "v" is a Vertex dataclass)
-    delete_graph(session, actor=..., note=...)
+    load_graph(db_name, scope) -> nx.DiGraph
+    delete_graph(db_name, scope)   # one scope, keeps mutations log
+    drop_session(db_name)          # drop entire session DB (irreversible)
 
-  Targeted mutations (append to fish_mutations):
-    update_node(session, node_id, attrs={}, label=None, children=None,
-                level=None, actor=..., note=...)
-    update_edge(session, source, target, attrs={}, actor=..., note=...)
-    add_node(session, vertex, actor=..., note=...)
-    add_edge(session, source, target, attrs={}, actor=..., note=...)
-    remove_node(session, node_id, actor=...)        # cascades edges
-    remove_edge(session, source, target, actor=...)
+  Targeted mutations (append to graph_mutations):
+    update_node(db_name, scope, node_id, attrs={}, label=..., ...)
+    update_edge(db_name, scope, source, target, attrs={}, ...)
+    add_node(db_name, scope, vertex, ...)
+    add_edge(db_name, scope, source, target, attrs={}, ...)
+    remove_node(db_name, scope, node_id)    # cascades edges
+    remove_edge(db_name, scope, source, target)
 
   Export:
-    to_viz_json(session) -> {"nodes":[...], "edges":[...]}   (dict)
-    export_json(session, output_path)                        (file)
+    to_viz_json(db_name, scope) -> {"nodes": [...], "edges": [...]}
+    export_json(db_name, scope, output_path)
 
   Utilities:
-    remap_graph(G, offset) -> nx.DiGraph   (used by fish_compose for ID offsetting)
-    ensure_indexes(db=None)                (idempotent)
+    remap_graph(G, offset) -> nx.DiGraph   # ID offsetting for compose
+    ensure_indexes(db_name)
     Vertex  (FishVertex-compatible: .t_v, .id_v, .A_v, .Z_v, .level)
+    COMPOSED_SCOPE = "__composed__"
+    STANDALONE_SCOPE = "__main__"
 
 
 CLI
 ---
 
-  python3 -m postprocess.graph_store list
-  python3 -m postprocess.graph_store info       <session>
-  python3 -m postprocess.graph_store export     <session> [-o fish_graph.json]
-  python3 -m postprocess.graph_store mutations  <session> [-n 20]
-  python3 -m postprocess.graph_store delete     <session> --yes
+  python3 graph_store.py sessions
+  python3 graph_store.py list       <session>
+  python3 graph_store.py info       <session> <scope>
+  python3 graph_store.py export     <session> <scope> [-o fish_graph.json]
+  python3 graph_store.py mutations  <session> <scope> [-n 20]
+  python3 graph_store.py delete     <session> <scope> --yes
+  python3 graph_store.py drop       <session> --yes
 
-  Or directly from postprocess/ dir:
-    python3 graph_store.py list
+Example:
+  python3 graph_store.py export fish_compose_20260419_161633 \
+      __composed__ -o fish_graph.json
+  python3 graph_store.py export fish_compose_20260419_161633 aircraft \
+      -o aircraft_only.json
 
 
 Integration points
 ------------------
 
+  ingest.py
+    ingest_session(session_dir, *, role=None, db_name=None,
+                   tz_name="Europe/Amsterdam")
+    - db_name default: basename(session_dir)
+    - role: container role for multi-container flows; enables
+      role-suffixed collection names via ScopedMongo.
+
   model_improved.py
     After create_graph + add_horizontal_edges, auto-calls save_graph
-    (unless --no-db is passed). New flags:
-      --no-db                 skip MongoDB persist (keep local JSON)
-      --source-trace PATH     stored as metadata
-      --container-role ROLE   stored as metadata
+    (unless --no-db is passed). CLI:
+      --session <db_name>       MongoDB DB to write to (required)
+      --role <role>             container role; enables scoped collections
+                                and sets graph_store scope to the role
+      --scope <scope>           explicit scope override
+                                (defaults to --role, or __main__ standalone)
+      --source-trace PATH       stored as metadata
+      --no-db                   skip MongoDB persist (keep local JSON only)
+
+    connect_mongo(db_name, role=None) returns a ScopedMongo so that
+    existing mongo["ros2_trace"] calls resolve to ros2_trace_<role>
+    transparently.
 
   fish_compose.py
-    For each container, caches per-container graph under
-    "<compose>_<role>". Flags:
-      --skip-ingest           don't re-ingest raw traces
+    All three containers of a mission session share one MongoDB database
+    (the session name). Per-container graphs cache under their role as
+    the scope. Composed graph saves under "__composed__". Flags:
+      --skip-ingest           skip raw-trace ingest step
       --from-cache            load per-container graphs from graph_store
                               (implies --skip-ingest; errors if missing)
       --force-reextract       ignore cache, rerun extraction
 
-    Default policy:
-      cache exists AND --skip-ingest  → load from cache
-      otherwise                        → ingest (unless skipped) + extract + save
-
-    Composed graph is always saved under the compose_name with
-    is_composed=True. Always exports fish_graph.json next to the session.
+    Composed graph is always written under COMPOSED_SCOPE. Per-container
+    graphs stay under the role scope. Always exports fish_graph.json
+    (composed view) next to the session directory.
 
 
 Typical workflow
 ----------------
 
   1. Run mission       → fish_orchestrator produces fish_compose_<ts>/ dir
-  2. Compose          → python3 -m postprocess.fish_compose <dir>
-  3. Inspect          → python3 -m postprocess.graph_store list
-                        python3 -m postprocess.graph_store info <ts>
-  4. Analyze          → load_graph(session), mutate via update_node/update_edge,
-                        actor names tracked in fish_mutations
-  5. Re-viz           → python3 -m postprocess.graph_store export <session>
+  2. Compose          → python3 fish_compose.py <dir>
+                        → creates DB fish_compose_<ts> with raw trace
+                          collections per role + per-container graphs +
+                          composed graph + fish_graph.json
+  3. Inspect          → python3 graph_store.py sessions
+                        python3 graph_store.py list <session>
+                        python3 graph_store.py info <session> __composed__
+  4. Analyze          → from postprocess import graph_store
+                        G = graph_store.load_graph(session, "aircraft")
+                        Mutate via update_node / update_edge; actor
+                        names tracked in graph_mutations.
+  5. Re-viz           → python3 graph_store.py export \
+                              <session> __composed__ -o fish_graph.json
 
   If the model extraction code changes:
     fish_compose ... --skip-ingest --force-reextract
-  (keeps the ingested raw-trace DBs, rebuilds the per-container graphs)
+  (keeps the ingested raw-trace collections, rebuilds per-container + composed graphs)
+
+
+InfluxDB side
+-------------
+
+GPU/nsys data lives in a single shared InfluxDB 3 database named `fish`
+— one per installation, never per-session. Measurements:
+  gpu_kernels, gpu_memcpy, cuda_runtime, gpu_mem_usage, nvtx_events
+
+Every point has two extra tags:
+  session    e.g. "fish_compose_20260419_161633" (= MongoDB db_name)
+  container  e.g. "aircraft" (= MongoDB role suffix;
+             for standalone sessions equals session)
+
+Existing tags (source, pid, kernel_name, api_name, etc.) stay as-is.
+
+Why one DB: InfluxDB 3 Core enforces a 5-database limit. A shared `fish`
+DB sidesteps this and avoids asking users to reconfigure InfluxDB.
+
+Filter/delete by session:
+  SELECT * FROM gpu_kernels
+    WHERE session='fish_compose_20260419_161633' AND container='aircraft'
+  DELETE FROM gpu_kernels WHERE session='fish_compose_20260419_161633'
+    (repeat per measurement)
+
+
+Legacy
+------
+
+Old DBs left in place for historical reference (referenced in earlier
+empirical notes):
+    aircraft, ground, simulation     (pre-session-per-DB pattern)
+    fish_meta                        (old graph store)
+    fish_20260322_212915,            (early standalone traces)
+    fish_20260329_182842, ...
+
+The new code never writes to these. They sit as a read-only archive.
 
 
 Not yet covered (see immediate_work.txt item 13)
@@ -129,10 +209,19 @@ Not yet covered (see immediate_work.txt item 13)
 Tests performed
 ---------------
 
-  Round-trip: load fish_graph.json (108 nodes, 155 edges) → save_graph →
-    load_graph → to_viz_json → compare. Identical node/edge set, aspects
-    and edge attributes preserved. update_node + mutations log verified.
+  Round-trip: load fish_graph.json → save_graph → load_graph →
+    to_viz_json → compare. Identical node/edge set; aspects and edge
+    attributes preserved. update_node + mutations log verified.
 
-  Compose merge: synthetic 2-container test with /foo, /bar cross-topics.
-    Produces 2 real→real cross-container L2 edges and 2 aggregated
-    CN→CN L-1 edges. No lingering ext placeholders.
+  Compose merge (synthetic 2-container, after refactor): produces 1
+    composed graph with 2 CN→CN L-1 edges + real→real cross-container
+    L2 edges. Per-container + composed scopes stored side-by-side in
+    one session DB, independently retrievable.
+
+  End-to-end AAS mission (fish_compose_20260419_161633 under new schema):
+    single MongoDB database with:
+      ros2_trace_aircraft, ros2_trace_ground, ros2_trace_simulation
+      snapshot_<role>, node_info_<role>, ... for each container
+      graph_meta (3 per-container + 1 composed doc)
+      graph_nodes, graph_edges, graph_mutations scoped
+    No writes to aircraft / ground / simulation / fish_meta legacy DBs.

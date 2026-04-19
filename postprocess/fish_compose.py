@@ -17,9 +17,12 @@ Usage:
 Output:
     <compose_session>/fish_graph.json    — unified graph for fish_viz.html
     <compose_session>/compose_report.txt — merge statistics
-    fish_meta DB:
-        fish_graphs entry per container (session_name = <compose>_<role>)
-        fish_graphs entry for the composed graph (session_name = <compose>)
+    MongoDB database named after the compose session (e.g.
+    fish_compose_20260419_161633):
+        ros2_trace_<role>, snapshot_<role>, ... per-container raw trace
+        graph_meta, graph_nodes, graph_edges, graph_mutations scope-
+        discriminated (scope = role for per-container, "__composed__"
+        for the unified graph).
 
 Architecture:
     L-1: Container (CN)   — one per container (emitted by model_improved)
@@ -64,16 +67,16 @@ def log(msg):
 # Per-container extraction
 # ---------------------------------------------------------------------------
 
-def extract_container_model(container_dir: str, role: str) -> nx.DiGraph:
+def extract_container_model(compose_db: str, role: str) -> nx.DiGraph:
     """Run the full model_improved pipeline for one container.
 
-    container_dir's basename is the MongoDB trace DB name (ingest's convention).
-    `role` becomes the CN label.
+    `compose_db` is the session DB (shared by all containers).
+    `role` is the container role — it selects the role-suffixed
+    collections (`ros2_trace_<role>`, etc.) via ScopedMongo and is
+    also the CN label.
     """
     model_improved.vertex_counter = count(1)
-
-    db_name = os.path.basename(container_dir)
-    mongo = model_improved.connect_mongo(db_name)
+    mongo = model_improved.connect_mongo(compose_db, role=role)
 
     executors, nodes = model_improved.identify_executors(mongo)
     entities = model_improved.identify_entities(mongo, nodes)
@@ -92,7 +95,7 @@ def extract_container_model(container_dir: str, role: str) -> nx.DiGraph:
     return G
 
 
-def get_container_graph(container_dir: str, compose_name: str, role: str, *,
+def get_container_graph(container_dir: str, compose_db: str, role: str, *,
                         skip_ingest: bool, from_cache: bool,
                         force_reextract: bool,
                         tz_name: str = "Europe/Amsterdam") -> nx.DiGraph:
@@ -103,38 +106,41 @@ def get_container_graph(container_dir: str, compose_name: str, role: str, *,
       from_cache     → load from graph_store or fail loudly
       default        → if cache exists and skip_ingest, load from graph_store
                        else ingest (unless skip_ingest) + extract + save
+
+    The graph cache key is the `role` (scope) inside the session DB.
     """
-    cache_key = f"{compose_name}_{role}"
-    cached = graph_store.graph_exists(cache_key)
+    cached = graph_store.graph_exists(compose_db, role)
 
     if from_cache:
         if not cached:
             raise RuntimeError(
                 f"--from-cache was set but graph_store has no entry for "
-                f"'{cache_key}'. Run without --from-cache first."
+                f"db='{compose_db}' scope='{role}'. Run without "
+                f"--from-cache first."
             )
-        log(f"  {role}: loading from graph_store (key={cache_key})")
-        return graph_store.load_graph(cache_key)
+        log(f"  {role}: loading from graph_store (db={compose_db} scope={role})")
+        return graph_store.load_graph(compose_db, role)
 
     if cached and skip_ingest and not force_reextract:
-        log(f"  {role}: cached in graph_store (key={cache_key}) → loading")
-        return graph_store.load_graph(cache_key)
+        log(f"  {role}: cached in graph_store (scope={role}) → loading")
+        return graph_store.load_graph(compose_db, role)
 
     if not skip_ingest:
         log(f"  {role}: ingesting {container_dir}")
-        ingest_session(container_dir, tz_name=tz_name)
+        ingest_session(container_dir, role=role, db_name=compose_db,
+                       tz_name=tz_name)
 
     log(f"  {role}: extracting model")
-    G = extract_container_model(container_dir, role)
+    G = extract_container_model(compose_db, role)
 
     graph_store.save_graph(
-        G, cache_key,
+        G, compose_db, role,
         source_trace=container_dir,
         container_role=role,
         is_composed=False,
         actor="fish_compose",
     )
-    log(f"  {role}: saved to graph_store (key={cache_key})")
+    log(f"  {role}: saved to graph_store (db={compose_db} scope={role})")
     return G
 
 
@@ -362,11 +368,14 @@ def compose_session(session_dir: str, *, skip_ingest: bool = False,
         return
     log(f"FISH containers: {sorted(fish_containers.keys())}")
 
+    # compose_name IS the session DB name in the new layout.
+    compose_db = compose_name
+
     t0 = time.time()
     container_graphs = []
     for role, cdir in fish_containers.items():
         G = get_container_graph(
-            cdir, compose_name, role,
+            cdir, compose_db, role,
             skip_ingest=skip_ingest,
             from_cache=from_cache,
             force_reextract=force_reextract,
@@ -379,9 +388,10 @@ def compose_session(session_dir: str, *, skip_ingest: bool = False,
     unified = merge_container_graphs(container_graphs)
     merge_time = time.time() - t1
 
-    # Persist composed graph
+    # Persist composed graph under scope "__composed__" in the session DB
+    composed_scope = graph_store.COMPOSED_SCOPE
     graph_store.save_graph(
-        unified, compose_name,
+        unified, compose_db, composed_scope,
         source_trace=session_dir,
         container_role=None,
         is_composed=True,
@@ -389,11 +399,12 @@ def compose_session(session_dir: str, *, skip_ingest: bool = False,
         note=f"Composed from {len(container_graphs)} containers: "
              f"{sorted(fish_containers.keys())}",
     )
-    log(f"Saved composed graph to graph_store (session={compose_name})")
+    log(f"Saved composed graph to graph_store "
+        f"(db={compose_db} scope={composed_scope})")
 
     # JSON export for viz
     json_path = os.path.join(session_dir, "fish_graph.json")
-    graph_store.export_json(compose_name, json_path)
+    graph_store.export_json(compose_db, composed_scope, json_path)
     log(f"Exported → {json_path}")
 
     # Report
@@ -411,7 +422,8 @@ def compose_session(session_dir: str, *, skip_ingest: bool = False,
         f"{unified.number_of_edges()} edges",
         f"Extract: {extract_time:.1f}s  Merge: {merge_time:.1f}s",
         f"Output JSON: {json_path}",
-        f"graph_store:  session='{compose_name}' (is_composed=True)",
+        f"graph_store:  db='{compose_db}' scope='{composed_scope}' "
+        f"(plus per-container scopes: {sorted(fish_containers.keys())})",
     ]
     report = "\n".join(report_lines)
     report_path = os.path.join(session_dir, "compose_report.txt")

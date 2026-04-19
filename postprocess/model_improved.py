@@ -95,17 +95,32 @@ def load_influx_token():
     raise RuntimeError(f"Could not read token from {INFLUX_TOKEN_FILE}")
 
 
-def connect_mongo(session_name):
+def connect_mongo(db_name, role=None):
+    """Connect to a session's MongoDB database, optionally role-scoped.
+
+    Returns a ScopedMongo so existing callers like `mongo["ros2_trace"]`
+    transparently resolve to `ros2_trace_<role>` when a role is set.
+    """
+    from db_scope import ScopedMongo
     client = MongoClient(MONGO_URI)
-    db = client[session_name]
-    log(f"MongoDB connected → {session_name}")
-    return db
+    db = client[db_name]
+    tag = f"{db_name}" + (f"  (role={role})" if role else "")
+    log(f"MongoDB connected → {tag}")
+    return ScopedMongo(db, role=role)
 
 
-def connect_influx(session_name):
+def connect_influx(db_name=None, role=None):
+    """Connect to the shared `fish` InfluxDB3 database.
+
+    All FISH nsys/GPU data lives in a single InfluxDB database; session
+    and container are represented as tags on each point. Parameters are
+    accepted (and ignored) for API symmetry with connect_mongo — callers
+    that need to filter by session/container do so in the SELECT.
+    """
     token = load_influx_token()
-    client = InfluxDBClient3(host=INFLUX_HOST, token=token, database=session_name)
-    log(f"InfluxDB3 connected → {session_name}")
+    client = InfluxDBClient3(host=INFLUX_HOST, token=token, database="fish")
+    log(f"InfluxDB3 connected → fish"
+        + (f"  (session={db_name}, container={role})" if db_name or role else ""))
     return client
 
 
@@ -1273,18 +1288,23 @@ if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser(description="FISH model extraction (improved)")
-    ap.add_argument("--session", required=True, help="Session/database name")
+    ap.add_argument("--session", required=True,
+                    help="MongoDB database name for this session")
+    ap.add_argument("--role", default=None,
+                    help="Container role (aircraft/simulation/ground/...) "
+                         "for multi-container sessions; unset for standalone")
+    ap.add_argument("--scope", default=None,
+                    help="Graph scope (default: --role value, or '__main__' "
+                         "for standalone)")
     ap.add_argument("--no-split", action="store_true", help="Disable callback splitting")
     ap.add_argument("--no-db", action="store_true",
-                    help="Skip persisting the graph into MongoDB (fish_meta)")
+                    help="Skip persisting the graph into graph_store")
     ap.add_argument("--source-trace", default=None,
                     help="Trace directory path, stored as metadata")
-    ap.add_argument("--container-role", default=None,
-                    help="Container role (aircraft/simulation/ground/...) stored as metadata")
     args = ap.parse_args()
 
-    mongo = connect_mongo(args.session)
-    influx = connect_influx(args.session)
+    mongo = connect_mongo(args.session, role=args.role)
+    influx = connect_influx(args.session, role=args.role)
 
     # Phase 1: Vertex discovery
     executors, nodes = identify_executors(mongo)
@@ -1298,22 +1318,25 @@ if __name__ == "__main__":
         split_callbacks(mongo, entities, functions)
 
     # Phase 2: Graph construction
-    G = create_graph(executors, nodes, entities, functions, session_name=args.session)
+    # CN label uses the role if set, else the session name.
+    cn_label = args.role or args.session
+    G = create_graph(executors, nodes, entities, functions, session_name=cn_label)
     G = add_horizontal_edges(G, mongo, executors, nodes, entities, functions)
 
     # Export
     export_json(G)
 
     if not args.no_db:
-        from graph_store import save_graph
+        from graph_store import save_graph, STANDALONE_SCOPE
+        scope = args.scope or args.role or STANDALONE_SCOPE
         meta = save_graph(
-            G, args.session,
+            G, args.session, scope,
             source_trace=args.source_trace,
-            container_role=args.container_role,
+            container_role=args.role,
             is_composed=False,
             actor="model_improved",
         )
-        log(f"Saved to MongoDB (fish_meta): "
+        log(f"Saved to graph_store: db='{args.session}' scope='{scope}' "
             f"{meta['stats']['num_nodes']} nodes, "
             f"{meta['stats']['num_edges']} edges")
 
