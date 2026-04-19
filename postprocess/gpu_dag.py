@@ -133,14 +133,21 @@ def _async_memcpy(api_name):
     return "async" in name
 
 
-def build_typed_dag(api_rows, kernels_by_corr, memcpys_by_corr):
+def build_typed_dag(api_rows, kernels_by_corr, memcpys_by_corr,
+                    memsets_by_corr=None):
     """Build a Typed DAG (CPU/SM/CE nodes + precedence edges) from one
     invocation's CUDA activity. Inputs:
-      api_rows          list of cuda_runtime rows sorted by time (the thread's CPU driver calls)
+      api_rows          list of cuda_runtime rows sorted by time
+                        (the thread's CPU driver calls)
       kernels_by_corr   {correlationId: gpu_kernels row}
       memcpys_by_corr   {correlationId: gpu_memcpy row}
+      memsets_by_corr   {correlationId: gpu_memset row}  (Volta+: fill
+                        kernels run on SM hardware, so these produce
+                        SM nodes like regular kernels)
     Returns dict with 'nodes' + 'edges'.
     """
+    if memsets_by_corr is None:
+        memsets_by_corr = {}
     nodes = []
     edges = []
 
@@ -166,24 +173,21 @@ def build_typed_dag(api_rows, kernels_by_corr, memcpys_by_corr):
             edges.append((prev_cpu, cpu_idx, "cpu_order"))
         prev_cpu = cpu_idx
 
-        # Match kernel
+        # Match to GPU-side activity via correlation id
         krow = kernels_by_corr.get(corr)
         mrow = memcpys_by_corr.get(corr)
+        msrow = memsets_by_corr.get(corr)
         gpu_node_idx = None
         if krow is not None:
             gpu_node_idx = len(nodes)
-            # Approximate number of SMs from launch config: total threads / 32 (warp),
-            # ceiled → how many warp-sized chunks the kernel launched.
             gx, gy, gz = (int(krow.get(k) or 1) for k in ("gridX", "gridY", "gridZ"))
             bx, by, bz = (int(krow.get(k) or 1) for k in ("blockX", "blockY", "blockZ"))
-            blocks = gx * gy * gz
-            threads_per_block = bx * by * bz
             nodes.append({
                 "idx": gpu_node_idx,
                 "pe": "SM",
                 "name": krow.get("kernel_short_name") or krow.get("kernel_name") or "<anon>",
-                "blocks": blocks,
-                "threads_per_block": threads_per_block,
+                "blocks": gx * gy * gz,
+                "threads_per_block": bx * by * bz,
                 "stream": int(krow.get("streamId") or 0),
                 "duration_ns": int(krow.get("duration_ns") or 0),
             })
@@ -191,7 +195,6 @@ def build_typed_dag(api_rows, kernels_by_corr, memcpys_by_corr):
         elif mrow is not None:
             gpu_node_idx = len(nodes)
             copy_kind = int(mrow.get("copyKind") or 0)
-            # 1 = H2D, 2 = D2H, 3 = D2D, 8 = HtoH (rough mapping per CUPTI)
             direction = {1: "H2D", 2: "D2H", 3: "D2D", 8: "H2H"}.get(copy_kind, f"k{copy_kind}")
             nodes.append({
                 "idx": gpu_node_idx,
@@ -204,11 +207,21 @@ def build_typed_dag(api_rows, kernels_by_corr, memcpys_by_corr):
                 "async": _async_memcpy(api_name),
             })
             edges.append((cpu_idx, gpu_node_idx, "launch"))
-            # Sync memcpy: per PDF §4.7, the CPU blocks until the CE finishes,
-            # so a second CPU node should chain from the CE. We fold this into
-            # the next CPU node's cpu_order edge naturally — the GPU work is
-            # a "hole" in CPU time that the algorithm's duration accounting
-            # already covers. (Keep simple for MVP.)
+        elif msrow is not None:
+            # cudaMemset on Volta+/Ampere+ is implemented as a fill kernel
+            # on SM hardware — NOT a copy-engine DMA operation.
+            # See notes/cuda_api_model.txt G1.
+            gpu_node_idx = len(nodes)
+            nodes.append({
+                "idx": gpu_node_idx,
+                "pe": "SM",
+                "name": f"memset_fill(value={msrow.get('value', 0)})",
+                "bytes": int(msrow.get("bytes") or 0),
+                "fill_value": int(msrow.get("value") or 0),
+                "stream": int(msrow.get("streamId") or 0),
+                "duration_ns": int(msrow.get("duration_ns") or 0),
+            })
+            edges.append((cpu_idx, gpu_node_idx, "launch"))
 
         # Within-stream FIFO ordering (A4): connect to previous GPU node on same stream
         if gpu_node_idx is not None and "stream" in nodes[gpu_node_idx]:
@@ -291,14 +304,29 @@ def extract_for_oort(db_name, scope, f_id, tid, container, *,
         WHERE session='{db_name}' AND container='{container}'
     """).to_pylist()
     memcpys_by_corr = {r["correlationId"]: r for r in memcpy_tbl}
-    log(f"  kernels={len(kernels_by_corr):,}  memcpys={len(memcpys_by_corr):,}  indexed in {time.time()-t1:.1f}s")
+
+    # gpu_memset may not exist in older traces — tolerate query failure
+    memsets_by_corr = {}
+    try:
+        memset_tbl = influx.query(f"""
+            SELECT "correlationId", "streamId", bytes, value, duration_ns
+            FROM gpu_memset
+            WHERE session='{db_name}' AND container='{container}'
+        """).to_pylist()
+        memsets_by_corr = {r["correlationId"]: r for r in memset_tbl}
+    except Exception as e:
+        log(f"  gpu_memset unavailable ({e}) — continuing without memset SM nodes")
+
+    log(f"  kernels={len(kernels_by_corr):,}  memcpys={len(memcpys_by_corr):,}  "
+        f"memsets={len(memsets_by_corr):,}  indexed in {time.time()-t1:.1f}s")
 
     # 4. Build per-invocation DAG, collect by signature
     t2 = time.time()
     unique = {}   # sig → {count, dag (template), c_min/c_max per node}
     for start, end in periods:
         api_rows = api_rows_raw[start:end+1]
-        dag = build_typed_dag(api_rows, kernels_by_corr, memcpys_by_corr)
+        dag = build_typed_dag(api_rows, kernels_by_corr, memcpys_by_corr,
+                              memsets_by_corr=memsets_by_corr)
         if not dag["nodes"]:
             continue
         sig = dag_signature(dag)

@@ -1,6 +1,51 @@
 Immediate Work Items
 ====================
 
+0c. Ingest nsys SCHED_EVENTS + SAMPLING_CALLCHAINS
+--------------------------------------------------
+Two large nsys tables we deferred while ingesting the smaller ones
+(2026-04-19). Both are time-series-adjacent and need their own
+handling pattern.
+
+SCHED_EVENTS (1.85M rows in the aircraft nsys):
+  cols: start, cpu, isSchedIn, globalTid, threadState, threadBlock
+  What: OS scheduler events — thread context-switched in/out, which
+        CPU core, what state (running/runnable/blocked/...) and what
+        blocked it. Essentially Linux `perf sched` data captured
+        via nsys.
+  Value: CPU-side response-time analysis absolutely needs this.
+        sched_migrate_task equivalents + per-thread CPU residency +
+        block-reason classification (I/O, mutex, lock).
+  Plan: InfluxDB measurement `cpu_sched` with tags
+        (session, container, cpu, globalTid, threadState,
+         threadBlock) and fields (isSchedIn). ENUM_SAMPLING_THREAD_STATE
+        and ENUM_SCHEDULING_THREAD_BLOCK resolve the state + block
+        codes.
+  Scope: large. One aircraft trace is 1.85M rows, a busy Autoware run
+        could be 10-100x that. Consider optional ingest (flag) or
+        downsampling for very large sessions.
+
+SAMPLING_CALLCHAINS (2.28M rows):
+  cols: id, symbol, module, kernelMode, thumbCode, unresolved,
+        specialEntry, originalIP, unwindMethod, stackDepth
+  What: CPU periodic sampling — every X ms nsys snapshots the call
+        stack of running threads.
+  Parent table: we need to locate the "SAMPLES" / "COMPOSITE_EVENTS" /
+        analog that gives each `id` a timestamp + globalTid. Possibly
+        in a different table name in nsys 2025.x. Needs investigation.
+  Value: per-callback "what fraction of CPU time in onnxruntime conv /
+        do_yolo / ..." — direct input to per-callback roofline and
+        CPU-bound vs memory-bound classification.
+  Plan (after parent table located): store as `cpu_samples` with
+        (session, container, globalTid, stackDepth) tags and
+        (symbol, module, originalIP) fields, time-aligned via parent
+        sample's start.
+
+Both are BLOCKING for future CPU-side analysis (per-callback PMU
+attribution, CPU-bound vs memory-bound classification) but not for
+immediate GPU-side DAG + roofline work. Keep on this list.
+
+
 0a. [URGENT] Enable CUDA + Python backtrace in nsys profiling
 --------------------------------------------------------------
 See notes/EXPECTED_OBSERVED.txt §9.

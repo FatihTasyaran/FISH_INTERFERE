@@ -1,0 +1,277 @@
+Paper TODO — things to chase down before writing
+===================================================
+
+Purpose:
+  Running list of empirical / literature / measurement items that need
+  proper sourcing or experimental backing before going into the paper.
+  Each entry: what we observed (or claim), what is missing, what needs
+  to be done (sources or experiments).
+
+
+1. Memset hardware placement (SM, not CE)
+------------------------------------------
+
+Current claim:
+  cudaMemset* on Volta+ discrete GPUs executes as a fill kernel on
+  SM hardware, NOT on a Copy Engine. See notes/modeling_memset.txt.
+
+What is missing / to do:
+
+  (a) Primary NVIDIA sources.
+      Find stable, citable NVIDIA docs that explicitly say memset is
+      SM-executed. Candidate sources:
+        - CUDA C Programming Guide (recent editions), memory-management
+          subsection — currently cites behavior generically; need exact
+          wording per CUDA 11 / 12.
+        - CUPTI Activity API reference — justifies the separate
+          CUPTI_ACTIVITY_KIND_MEMSET record but does not describe the
+          mechanism. Need any NVIDIA tech brief or whitepaper that
+          does.
+        - Nsight Systems user guide — the visual "memsets on the EE
+          lane" is our strongest circumstantial evidence; screenshot
+          from a reproducible demo for the paper.
+      Expected effort: a few hours of archive-scraping + e-mailing
+      NVIDIA devtools contact if available.
+
+  (b) NVIDIA developer-forum engineering confirmations.
+      There are known threads where NVIDIA engineers confirm memset is
+      a fill kernel on SMs post-Fermi. Archive them with Wayback
+      Machine / devzone URLs; paraphrase in the paper with proper
+      attribution.
+
+  (c) Academic literature survey.
+      Do a focused pass on GPU task-model papers (2020-2025, RTAS /
+      ECRTS / RTSS / TPDS / TACO) and record whether each explicitly
+      addresses memset placement or bundles it into "kernels" /
+      "memory ops". Target list:
+        - Olmedo et al., RTAS 2020 and follow-ups
+        - Amert et al., RTAS 2017 & sequels
+        - Capodieci et al., ECRTS 2018 and follow-ups
+        - Casini et al., ECRTS 2019 (ROS 2 executor model baseline)
+        - Yazdanbakhsh et al., profiling-oriented work
+        - Bakita & Anderson, recent (2023+) unified-memory work
+      Prediction: most say nothing about memset explicitly → paper
+      contribution-opportunity confirmed.
+
+  (d) Empirical measurement — SM counter trace during memset.
+      Run a minimal CUDA test: allocate 16 MB, issue repeated
+      cudaMemsetAsync in a loop, profile with nsys + `--gpu-metrics-devices
+      all` or ncu counters. Expected: `sm__inst_executed` increases in
+      lockstep with memset duration → confirms SM execution. Do on
+      Ampere + Ada + (if available) Volta / Turing to cover the relevant
+      generations.
+
+  (e) Size-threshold experiment.
+      At what memset size does the driver switch between SM-based fill
+      and CE-side fill (if it does on current GPUs)? Sweep
+      {32B, 64B, 128B, 256B, 512B, 1K, 2K, 4K, …, 1M} and measure:
+        - nsys CUPTI_ACTIVITY_KIND_MEMSET duration
+        - SM counter delta
+        - CE counter delta (if exposed)
+      Report the crossover (or confirm there is no CE path at all on
+      modern GPUs).
+
+Paper framing:
+  Prior work's Typed DAG task models treat memset as either invisible
+  or a copy-engine operation. We show, via CUPTI docs, Nsight Systems
+  visualization, SM-counter profiling, and size-sweep experiments,
+  that on Volta+ hardware memset is an SM-borne operation. Scheduling
+  analyses that place memset on the CE (a) underestimate SM
+  contention and (b) overestimate CE utilization. We recommend
+  modeling memset as an SM node for all discrete GPUs of this era.
+
+
+2. "Non-executor GPU thread" pattern (oort)
+--------------------------------------------
+
+Current claim:
+  Real ROS 2 applications often run their hot-path GPU work in a
+  non-executor thread (e.g. yolo_py's main while-loop + ros_spin_thread
+  does only /clock housekeeping). The GPU task therefore has NO
+  callback to anchor it, contradicting the usual "callback → GPU DAG"
+  mental model. See notes/EXPECTED_OBSERVED.txt §8.
+
+What is missing / to do:
+
+  (a) Survey of real ROS 2 perception / inference code.
+      Look at widely-used open-source packages beyond yolo_py:
+        - Autoware perception (yolox_tensorrt, lidar_centerpoint, etc.)
+        - Isaac ROS packages (nvblox, centerpose, ess, …)
+        - Various image-transport plugins
+        - Indoor robotics: open3d_ros, ouster ros drivers doing GPU
+          postprocessing
+      Record for each: does GPU work fire from a subscription callback
+      (rclcpp), a main-thread loop, a timer callback, or something
+      else? Expected split: ~50/50 with main-loop being common in
+      Python packages.
+
+  (b) Classify observed patterns in the paper taxonomy.
+      Our vertex types (oore / oort) anchor the non-executor case.
+      Need a clear taxonomy with labels and examples:
+        - Pattern A: callback-anchored GPU work (rclcpp subscription →
+          inference in callback)
+        - Pattern B: timer-driven GPU work
+        - Pattern C: main-loop GPU work (yolo_py)
+        - Pattern D: dedicated worker thread pulling from a shared
+          queue (producer/consumer — some sensor drivers)
+      Show how each maps to FISH's hierarchy.
+
+
+3. Multiple executors per process (measured in AAS, §1)
+--------------------------------------------------------
+
+Current claim (EXPECTED_OBSERVED.txt §1):
+  Many ROS 2 processes host MULTIPLE Executor instances, either via
+  rclcpp::spin() / spin_some() transient helpers or deliberate parallel
+  designs (e.g. px4_interface runs one 20-thread MT + one ST
+  side-by-side).
+
+What is missing / to do:
+
+  (a) Formalize transient vs persistent executor classification via
+      lifetime measurement. Add `Executor` destructor tracepoint to
+      FISH (tracetools patch — trivial extension). Measure each
+      executor's lifetime; short (< 100 ms?) → transient; long →
+      persistent.
+
+  (b) Survey: how many AAS / Autoware processes have > 1 persistent
+      executor? What is the motivation in each case (separation of
+      concerns, priority / CG split, etc.)?
+
+  (c) Show response-time impact: in a process with one MT + one ST
+      persistent executor, threads from the MT can be blocked waiting
+      on services that the ST handles. Construct or identify a real
+      example in AAS.
+
+
+4. Multi-callback-group per node with mixed types (§2)
+-------------------------------------------------------
+
+Current claim:
+  Nodes routinely own multiple callback groups with MIXED types
+  (MutuallyExclusive + Reentrant). In AAS aircraft: 14 MX + 23
+  Reentrant CGs across 5 nodes; PX4 /fmu/out/* sensor subs use
+  Reentrant.
+
+What is missing / to do:
+
+  (a) Cross-check with Autoware: how prevalent is CG-type mixing?
+  (b) Do any application authors document their CG-type choices?
+      (issue tracker search + design docs)
+  (c) Schedulability under mixed CG types: extend any classical model
+      to cover the mix. Partial prior work exists (Casini et al.)
+      but typically assumes uniform types per node.
+
+
+5. MultiThreadedExecutor default thread count (§3)
+---------------------------------------------------
+
+Current claim:
+  MT executor's default `number_of_threads` is
+  `std::thread::hardware_concurrency()` — i.e. it depends on the host
+  at runtime, invisible to the application source.
+
+What is missing / to do:
+
+  (a) Measure impact: re-run AAS mission on a machine with different
+      core count (4, 8, 20) without changing the binaries. Quantify
+      response-time variability.
+
+  (b) Recommendation: ROS 2 task models must treat thread count as a
+      runtime-extracted parameter, not a source-extracted one.
+
+
+6. rclpy vs rclcpp scheduler behavior under GIL (§7)
+-----------------------------------------------------
+
+Current claim:
+  rclpy's MultiThreadedExecutor runs under Python's GIL, so the
+  "multi-threaded" label doesn't buy true parallelism for CPU-bound
+  work. Need measurement showing this.
+
+What is missing / to do:
+
+  (a) Measure actual parallelism of an rclpy MT executor with N
+      threads on a CPU-bound callback (e.g. pure-Python number
+      crunching). Compare against rclcpp MT.
+
+  (b) Document implications for mixed-language deployments.
+
+
+7. CUDA backtraces — "which user code launched this kernel" (§9)
+-----------------------------------------------------------------
+
+Current claim:
+  Without `--cudabacktrace=true`, nsys records backtraces for only
+  ~0.4 % of CUDA runtime calls (sync points). User-code attribution
+  requires enabling this flag plus ingesting CUDA_CALLCHAINS into
+  InfluxDB. Being worked on in immediate_work.txt #0a.
+
+What is missing / to do:
+
+  Test on real hardware after updating FISH GPU daemon to invoke nsys
+  with the flag. Verify coverage jumps to ~99 %+. Repeat yolo + one
+  rclcpp-callback-anchored app.
+
+
+8. The "44 → 6 unique DAGs" lesson (detector design, §10)
+---------------------------------------------------------
+
+Current claim:
+  Time-gap period detection over-fragments DAGs. Pattern-based
+  (sync + idle) detection drops unique-DAG count from 44 to 6 on
+  yolo, and the dominant shape jumps from 91.8 % to 99.7 %.
+
+What is missing / to do:
+
+  (a) Test the same detector on a different application (Autoware
+      perception). Record whether the dominant-shape fraction holds.
+
+  (b) For apps with NVTX ranges (TensorRT, PyTorch+profiler), use
+      NVTX as primary boundary source and compare to sync-based
+      detection. Do they agree? Where do they differ?
+
+
+9. Period / deadline extraction
+-------------------------------
+
+Current claim:
+  The Typed DAG task model requires T (period) and D (deadline). T
+  can be inferred from consecutive invocation timestamps; D is
+  application-defined.
+
+What is missing / to do:
+
+  (a) Extract T automatically from `gpu_dag.py`'s invocation set
+      (inter-invocation time median, variance).
+
+  (b) Propose D-extraction strategies (use T; or use downstream
+      consumer's timing requirement; or query user).
+
+
+10. Cross-container comm modeling
+---------------------------------
+
+Current claim:
+  fish_compose.merge_container_graphs produces real→real
+  cross-container comm edges via topic matching. We see 30 such
+  edges in AAS.
+
+What is missing / to do:
+
+  (a) Measure end-to-end latency per cross-container topic:
+      publish-ts in container A → take-ts in container B. Compare to
+      intra-container.
+
+  (b) If notable difference: paper contribution — "cross-container
+      message delivery adds a non-trivial latency term that is
+      invisible to intra-container task models".
+
+
+Notation / editing cleanup
+--------------------------
+
+  - All the notes/EXPECTED_OBSERVED.txt §-numbers will need re-indexing
+    when sections get reordered for the paper.
+  - cuda_api_model.txt's G1-G5 gaps should be explicitly addressed in
+    the paper's limitations section.

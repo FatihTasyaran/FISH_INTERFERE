@@ -641,10 +641,33 @@ def ingest_nsys(session_dir: str, db_name: str, *,
                  tag_cols=["deviceId", "contextId", "streamId", "copyKind"],
                  field_cols=["correlationId", "bytes"],
                  string_cols={}, has_duration=True),
+            # Memsets run on SM hardware as fill kernels (Volta+/Ampere+) —
+            # we ingest them as their own measurement so gpu_dag.py can
+            # attach them as SM nodes. See notes/cuda_api_model.txt (G1).
+            dict(table="CUPTI_ACTIVITY_KIND_MEMSET", measurement="gpu_memset",
+                 tag_cols=["deviceId", "contextId", "streamId", "memKind"],
+                 field_cols=["correlationId", "bytes", "value"],
+                 string_cols={}, has_duration=True),
+            # GPU-side synchronization events (cudaStreamSynchronize,
+            # event-wait, etc. as OBSERVED ON GPU side; cuda_runtime has the
+            # host-side view). Useful to refine period boundaries and model
+            # cross-stream waits. See notes/cuda_api_model.txt §sync.
+            dict(table="CUPTI_ACTIVITY_KIND_SYNCHRONIZATION",
+                 measurement="gpu_sync",
+                 tag_cols=["deviceId", "contextId", "streamId", "syncType"],
+                 field_cols=["correlationId", "eventId", "eventSyncId"],
+                 string_cols={}, has_duration=True),
             dict(table="CUPTI_ACTIVITY_KIND_RUNTIME", measurement="cuda_runtime",
                  tag_cols=["eventClass"],
-                 field_cols=["correlationId", "returnValue"],
+                 field_cols=["correlationId", "returnValue", "callchainId"],
                  string_cols={"nameId": "api_name"},
+                 has_duration=True),
+            # CUPTI overhead: profiler's own cost, so we know how much of
+            # observed latency is noise. Small volume.
+            dict(table="CUPTI_ACTIVITY_KIND_OVERHEAD", measurement="gpu_overhead",
+                 tag_cols=["eventClass", "overheadType"],
+                 field_cols=["correlationId"],
+                 string_cols={"nameId": "overhead_name"},
                  has_duration=True),
             dict(table="CUDA_GPU_MEMORY_USAGE_EVENTS", measurement="gpu_mem_usage",
                  tag_cols=["deviceId", "contextId", "memKind",
@@ -713,6 +736,12 @@ def ingest_nsys(session_dir: str, db_name: str, *,
         if errors:
             for meas, e in errors:
                 log(f"    FAILED: {meas}: {e}")
+
+    # Static metadata → MongoDB (per-container). Small, one-shot.
+    _ingest_nsys_metadata(sqlite_path, session=session, container=container)
+
+    # Reference/non-time-series tables → InfluxDB as lookup-style measurements
+    _ingest_callchains(sqlite_path, token=token, session=session, container=container)
 
     log(f"  nsys ingest complete → InfluxDB {db_name} "
         f"(session={session} container={container})")
@@ -826,6 +855,141 @@ def _ingest_nsys_table(client, conn, source_tag, epoch_offset, resolve,
         log(f"    {measurement}: {len(writer_errors)} write errors")
 
     log(f"    {measurement}: done")
+
+
+def _ingest_callchains(sqlite_path: str, *, token: str, session: str,
+                       container: str):
+    """Ingest CUDA_CALLCHAINS (per-runtime-call stack frames) into the
+    `fish` InfluxDB as a `cuda_callchain` measurement.
+
+    Reference-data pattern: rows are NOT timestamped, they are keyed by
+    callchainId (multiple rows per id, one per frame). We write each
+    row with the session-start timestamp plus stackDepth nanoseconds as
+    the pseudo-time (ordering within a chain is preserved; absolute time
+    is irrelevant for callchain data — joined later on callchainId).
+
+    Frame fields:
+      callchainId + stackDepth (tags)
+      symbol_str, module_str (resolved strings, fields)
+      originalIP, unresolved (fields for diagnostics)
+    """
+    conn = sqlite3.connect(sqlite_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM CUDA_CALLCHAINS").fetchone()[0]
+    except Exception:
+        conn.close()
+        return
+    if n == 0:
+        conn.close()
+        return
+
+    log(f"  CUDA_CALLCHAINS: {n:,} rows → cuda_callchain")
+    ss = conn.execute("SELECT utcEpochNs FROM TARGET_INFO_SESSION_START_TIME").fetchone()
+    base_ts = ss["utcEpochNs"] if ss else 0
+
+    strings = {r["id"]: r["value"]
+               for r in conn.execute("SELECT id, value FROM StringIds")}
+
+    client = InfluxDBClient3(host=INFLUX_HOST, token=token, database="fish",
+                             write_options={"precision": WritePrecision.NS})
+
+    lines = []
+    for r in conn.execute("SELECT id, symbol, module, unresolved, "
+                          "originalIP, stackDepth FROM CUDA_CALLCHAINS"):
+        sym = strings.get(r["symbol"], hex(r["originalIP"] or 0))
+        mod = strings.get(r["module"], "")
+        # Escape spaces/commas in tag values — InfluxDB tag restriction
+        sym_esc = str(sym).replace(" ", "\\ ").replace(",", "\\,").replace("=", "\\=")
+        mod_esc = str(mod).replace(" ", "\\ ").replace(",", "\\,").replace("=", "\\=")
+        tags = [f"session={session}", f"container={container}",
+                f"callchainId={r['id']}", f"stackDepth={r['stackDepth']}"]
+        fields = [f'symbol="{sym}"'.replace('\n', ' '),
+                  f'module="{mod}"'.replace('\n', ' '),
+                  f"unresolved={int(r['unresolved'] or 0)}i",
+                  f"originalIP={int(r['originalIP'] or 0)}i"]
+        # Pseudo-timestamp: base + id*1000 + stackDepth so entries stay
+        # ordered within an id without collisions.
+        ts = base_ts + (int(r["id"]) * 1000) + int(r["stackDepth"])
+        lines.append(f"cuda_callchain,{','.join(tags)} {','.join(fields)} {ts}")
+        if len(lines) >= BATCH_SIZE:
+            client.write(lines)
+            lines.clear()
+    if lines:
+        client.write(lines)
+
+    client.close()
+    conn.close()
+    log(f"  cuda_callchain: done")
+
+
+def _ingest_nsys_metadata(sqlite_path: str, *, session: str, container: str):
+    """Ingest nsys STATIC metadata tables into MongoDB as reference collections.
+
+    Pulls TARGET_INFO_GPU / CUDA_DEVICE / CUDA_CONTEXT_INFO /
+    CUDA_STREAM / SYSTEM_ENV / SESSION_START_TIME plus all ENUM_* tables
+    so downstream analyses can resolve numeric IDs to human labels and
+    have full hardware specs (smCount, mem bandwidth, etc.) for roofline.
+
+    Collections in the session's Mongo DB, role-suffixed:
+      gpu_info_<role>          (TARGET_INFO_GPU)
+      cuda_device_<role>       (TARGET_INFO_CUDA_DEVICE)
+      cuda_context_<role>      (TARGET_INFO_CUDA_CONTEXT_INFO)
+      cuda_streams_<role>      (TARGET_INFO_CUDA_STREAM)
+      system_env_<role>        (TARGET_INFO_SYSTEM_ENV)
+      cuda_session_<role>      (TARGET_INFO_SESSION_START_TIME)
+
+    Plus an `nsys_enums` collection keyed by enum table name — shared
+    across containers since enum definitions are per-CUDA-version.
+    """
+    from db_scope import ScopedMongo
+
+    conn = sqlite3.connect(sqlite_path)
+    conn.row_factory = sqlite3.Row
+
+    mongo = MongoClient(MONGO_URI)
+    raw_db = mongo[session]
+    db = ScopedMongo(raw_db, role=container)
+
+    target_tables = {
+        "gpu_info":        "TARGET_INFO_GPU",
+        "cuda_device":     "TARGET_INFO_CUDA_DEVICE",
+        "cuda_context":    "TARGET_INFO_CUDA_CONTEXT_INFO",
+        "cuda_streams":    "TARGET_INFO_CUDA_STREAM",
+        "system_env":      "TARGET_INFO_SYSTEM_ENV",
+        "cuda_session":    "TARGET_INFO_SESSION_START_TIME",
+    }
+    for coll_key, tbl in target_tables.items():
+        try:
+            rows = [dict(r) for r in conn.execute(f"SELECT * FROM {tbl}")]
+        except Exception:
+            continue
+        if not rows:
+            continue
+        coll = db[coll_key]
+        # Idempotent: wipe existing docs for this role before insert
+        coll.delete_many({})
+        coll.insert_many(rows)
+        log(f"    {coll_key}: {len(rows)} docs")
+
+    # Enum tables — shared, idempotent, per-session (enum IDs can change between
+    # CUDA versions so keeping them with the session is safer)
+    enums = raw_db["nsys_enums"]
+    enum_tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'ENUM_%' ORDER BY name")]
+    for tbl in enum_tables:
+        try:
+            rows = [dict(r) for r in conn.execute(f"SELECT * FROM {tbl}")]
+        except Exception:
+            continue
+        if not rows:
+            continue
+        enums.replace_one(
+            {"enum": tbl}, {"enum": tbl, "entries": rows}, upsert=True)
+    log(f"    nsys_enums: {len(enum_tables)} enum tables stored")
+
+    mongo.close()
+    conn.close()
 
 
 def _ingest_nvtx(client, conn, source_tag, epoch_offset, extra_tags=None):

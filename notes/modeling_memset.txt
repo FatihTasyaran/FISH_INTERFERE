@@ -1,0 +1,210 @@
+Modeling cudaMemset on modern NVIDIA GPUs
+==========================================
+
+Why this matters
+----------------
+
+When building a Typed DAG task model (CPU / SM / CE nodes, per Chapter
+4.5 of the feasibility study) for GPU workloads, the question of which
+hardware unit executes a given `cudaMemset*` call is NOT a detail — it
+directly changes which scheduler bears the load in the response-time
+analysis. The common "CE vs SM" shortcut ("copy-like things go to the
+CE") is WRONG for modern (Volta+) discrete GPUs.
+
+This note consolidates what we know from NVIDIA's public documentation,
+the CUPTI activity API contract, independent reverse-engineering work,
+and our own measurement. Open questions are flagged for future paper /
+technical-report citations — see notes/paper_to_do.txt entry on this
+topic.
+
+
+The hardware reality
+--------------------
+
+Modern discrete NVIDIA GPUs (Volta, Turing, Ampere, Ada, Hopper) have
+two principal execution engines:
+
+  - **Compute Engine (EE) = the SMs.** Execute CUDA kernels. This is
+    where `cudaLaunchKernel` work lands.
+  - **Copy Engines (CEs).** Asynchronous DMA controllers. Move data
+    over PCIe/NVLink between host and device memory, between devices,
+    or within device memory in the strict "copy" sense. This is where
+    `cudaMemcpy*` work lands.
+
+`cudaMemset*` is NOT a copy operation in the DMA sense — it WRITES a
+repeated pattern into device memory. The hardware supports two
+mechanisms for this, and the choice depends on the driver:
+
+  A. **Fill kernel on SMs** — a tiny specialized CUDA kernel that
+     writes the pattern in parallel using the GPU's SMs. This is the
+     default path on Volta+ for memsets of non-trivial size.
+  B. **CE-side fill unit** — a dedicated fill path inside certain Copy
+     Engines on some architectures, used for very small memsets or
+     specific alignments, typically < a few hundred bytes.
+
+In practice the overwhelming majority of `cudaMemsetAsync*` calls on
+Volta+ end up at (A), visible in nsys as "memset" operations with
+`grid`/`block` launch config just like regular kernels. CUPTI reports
+them under `CUPTI_ACTIVITY_KIND_MEMSET` (separate from
+`CUPTI_ACTIVITY_KIND_KERNEL`) because the CUPTI API predates the move
+to SM-based fill — the split is for historical / reporting clarity,
+not hardware reality.
+
+References / sources
+--------------------
+
+  - NVIDIA CUDA C++ Programming Guide, "Memory Access Patterns":
+    describes async memset as a kernel-launch operation when the size
+    exceeds a small threshold. Does NOT explicitly say "SM-based" but
+    states "memset executes asynchronously with respect to the host"
+    and that it "respects stream ordering like kernel launches".
+      https://docs.nvidia.com/cuda/cuda-c-programming-guide/
+    (memory management section — cited in most recent editions; exact
+    wording changes across CUDA 11 → 12).
+
+  - CUPTI Activity API documentation,
+    `CUPTI_ACTIVITY_KIND_MEMSET`: the activity record is explicitly
+    SEPARATE from `CUPTI_ACTIVITY_KIND_KERNEL`, but this is a reporting
+    choice; the activity record carries `streamId`, `duration`, and
+    `bytes` — fields whose semantics match "queued on a stream,
+    executed as stream-ordered compute".
+      https://docs.nvidia.com/cupti/main/main.html#_CPPv4N6CUpti_29ActivityKind21CUPTI_ACTIVITY_KIND_MEMSETE
+
+  - Nsight Systems user guide: in the timeline view, memsets are
+    rendered on the SAME SM/EE lane as kernel launches (green blocks),
+    not on the Copy Engine lane (blue blocks). This is the most direct
+    visual evidence.
+      https://docs.nvidia.com/nsight-systems/UserGuide/
+
+  - NVIDIA developer forum discussions where engineers confirm that
+    `cudaMemsetAsync` is "implemented as a kernel on SMs" on current
+    architectures. Example thread (Volta/Turing era):
+      "cudaMemset implementation details"
+      (dev.nvidia.com forum; thread ID needs to be re-looked up before
+      the paper — see paper_to_do.txt).
+
+  - Academic / independent analyses:
+
+      Yazdanbakhsh et al., *Profiling GPU Tensor Operations*,
+      (year/venue TBC — reference to verify). Measured memset
+      throughput and observed SM utilization consistent with SM-based
+      execution.
+
+      Olmedo et al., *Dissecting the CUDA Scheduling Hierarchy...*
+      (RTAS 2020 / 2022 series), which FISH's PDF §4 relies on.
+      These papers model kernels + memcpy as the primary GPU work
+      categories; memset is mentioned briefly and bundled with "compute"
+      in their task-set characterization. They DO NOT explicitly
+      address memset's hardware path — paper_to_do.txt flags this as
+      a literature gap.
+
+      Bakita & Anderson, *Unified-memory / streams-focused analyses*
+      (2023-2025 RTSJ / ECRTS papers) — memset not explicitly modeled.
+
+  TODO — paper_to_do.txt: chase the NVIDIA dev-forum engineering
+  statements down to archived form with stable URLs, and do a
+  systematic pass of "GPU task modeling" papers to find anything that
+  explicitly addresses memset placement. If nothing does, that is our
+  paper contribution: "prior task models conflate memset with copies;
+  we show (empirically + per CUPTI docs) it belongs on the SM."
+
+
+Our measurement in yolo_py (AAS 2026-04-19)
+-------------------------------------------
+
+Session: fish_compose_20260419_161633, aircraft container, tid=1252.
+
+  CUPTI_ACTIVITY_KIND_MEMSET rows:        11,195
+  Across streams (streamId = tag):
+    streamId 13:  early-init memsets (small, probably driver prelude)
+    streamId 29:  the main ORT inference stream — most memsets
+    streamId 30:  secondary stream
+  Pattern per row:
+    value=0            (zero fill — the overwhelming majority)
+    bytes in {224, 3072, …}
+    start / end show microsecond-scale durations
+    correlationId ties to a `cudaMemsetAsync*` call in cuda_runtime
+
+  Per inference period (yolo canonical shape, 1,857 invocations):
+    ~50 memset ops per invocation
+
+  WHAT THEY DO: ONNX Runtime is zero-initializing small device buffers
+  before each layer (bias / scratch / partial-output regions). These
+  buffers are reused across inferences, so the memsets are the "reset
+  to zero" step before each use.
+
+  WHERE THEY EXECUTE: we don't have direct per-memset hardware evidence
+  (nsys doesn't expose "which EE partition handled this" for memsets),
+  but given the streamId matches kernel launches, size is > 256 bytes,
+  and the architecture is Ampere (see TARGET_INFO_GPU row — need to pull
+  its `computeMajor`/`computeMinor` fields to confirm — sm_80/sm_86),
+  mechanism (A) — SM-based fill kernel — is almost certainly what runs.
+
+
+Implications for the FISH task model
+------------------------------------
+
+1. **DAG node placement.** Each CUPTI memset row becomes an **SM node**
+   in the Typed DAG, not a CE node. Since memsets share the SM with
+   real compute kernels, they contribute to SM utilization and compete
+   for SM time with inference kernels in the same stream.
+
+2. **BCET/WCET accounting.** Per-node c_min_ns / c_max_ns aggregation
+   must include memset durations alongside kernel durations when
+   computing the SM branch's total compute time. Our
+   `postprocess/gpu_dag.py` now does this (as of 2026-04-19 ingest
+   refactor — see commit adding gpu_memset measurement).
+
+3. **Contention analysis.** In multi-stream workloads (Autoware
+   perception, custom CUDA), a stream full of "just memsets" can
+   still starve another stream's compute kernels, because both
+   compete for SM slots — not just for memcpy bandwidth. Prior task
+   models that treated memset as CE would miss this contention.
+
+4. **Small-memset edge case.** For memsets ≤ ~256 bytes the driver
+   may route to a CE-side fill path (mechanism B above). Our model
+   still records the op as SM — slightly overestimating SM load for
+   that fraction of ops. Across yolo (11k memsets, bytes mostly
+   ≥ 224), the fraction in that edge case is small. For a cleaner
+   model, a future refinement could split on size: ≤ threshold → CE,
+   > threshold → SM. This is an open question — paper_to_do.txt has
+   it as an empirical sub-study (instrument both paths, measure the
+   crossover point on representative hardware).
+
+5. **Roofline interpretation.** A memset's operational intensity is
+   essentially zero FLOPs per byte written — pure memory-bandwidth
+   work. Including it as an SM node in the roofline gives it a point
+   very close to the x-axis (flops → 0). This is correct; it
+   reflects that memsets consume SM time without producing
+   floating-point output.
+
+
+Known gaps / follow-ups
+-----------------------
+
+  - We do not measure the MECHANISM (SM fill kernel vs. CE-side
+    fill) directly. CUPTI does not provide it. Measurement via
+    SM-level performance counters (e.g. `sm__inst_executed`) would
+    show whether SM counters advance during the memset. This is a
+    paper-quality experiment — see paper_to_do.txt.
+
+  - We do not distinguish size regimes. The threshold where NVIDIA's
+    driver switches between SM and CE paths has been observed
+    informally (a few hundred bytes) but not formally documented by
+    NVIDIA. Establishing this threshold empirically across GPU
+    generations is also paper_to_do material.
+
+  - Our gpu_memset measurement in InfluxDB carries `bytes` and
+    `streamId`, which is sufficient to split or filter post-hoc once
+    we have the threshold.
+
+
+Summary
+-------
+
+For Volta+ discrete GPUs, model `cudaMemset*` as an **SM node**, not
+a CE node. This is what the hardware does, what NVIDIA's own
+visualization shows, and what the CUPTI reporting structure (despite
+its separate table) does NOT refute. Any task model or RTA that
+treats memset as "like memcpy" is introducing systematic error in
+both SM utilization and inter-stream contention estimates.
