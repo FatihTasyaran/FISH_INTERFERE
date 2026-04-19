@@ -9,3 +9,4 @@ docs/_build/
 postprocess/png/
 postprocess/pdf/
 postprocess/dot/
+postprocess/dag_out/
