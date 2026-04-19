@@ -349,6 +349,262 @@ Known gaps / TODOs in the current gpu_dag.py
 
 
 ========================================================================
+Empirical per-shape analysis from yolo_py
+(session fish_compose_20260419_161633, aircraft, tid=1252)
+========================================================================
+
+After sync-pattern period detection + min_gpu_ops=2 filter we get
+1,863 productive invocations distributed across exactly 6 unique
+DAG signatures. Every one of those signatures has a clean semantic
+explanation — the process's ENTIRE CUDA lifetime is covered by 6
+logical shapes, not an uncategorized outlier set.
+
+
+  [0]  CANONICAL INFERENCE             — count=1,857 (99.7%)
+  ----------------------------------------------------------
+
+  Signature:        45f12736fc58daf2
+  Nodes:            1,056  (CPU=550, SM=464, CE=42)
+  Edges:            1,560
+  Stream:           single (29)
+  WCET sum per PE:  CPU=710ms  SM=3.0ms  CE=1.5ms  (per invocation, from
+                    aggregated c_max across all 1,857 invocations)
+
+  Content: yolo26n forward pass on a 320×320×3 input.
+    1× H2D memcpy (1,228,800 B input tensor)
+    458 kernel launches — implicit GEMM convs, elementwise
+                          activations, pool/concat/split, layout
+                          conversions (NCHW↔NHWC)
+    6   memset fills    — small buffer resets between layers
+    1× D2H memcpy       — detection output
+    4   stream sync     — layer pipeline boundaries
+
+  Top kernels:
+    ampere_sgemm_128x32_nn                                ×14
+    sm86_xmma_fprop_implicit_gemm_indexed_tf32f32_...     ×11
+    implicit_convolve_sgemm                               × 9
+    op_generic_tensor_kernel                              ×102
+    _UnaryElementWise (activations)                       × 89
+    nchwToNhwcKernel  +  nhwcToNchwKernel                 ×52 + ×15
+    _ConcatKernelSameConcatDim                            ×17
+    _SplitKernelSameSplitDim                              × 9
+    _BinaryElementWiseSimple                              ×24
+    Kernel2, generateWinogradTilesKernel, splitKreduce…
+
+  Interpretation: this IS the task DAG for yolo_py. Treat as the
+  dominant-shape Typed DAG for any scheduling / roofline analysis.
+
+
+  [2]  INIT PHASE (process startup)    — count=1  (once per process)
+  ------------------------------------------------------------------
+
+  Signature:        9c0b1bfa7cd8b3e8
+  Nodes:            2,153  (CPU=1,944, SM=1, CE=208)
+  Edges:            2,359
+  Top ops:
+    cuGetProcAddress_v2                 × 1,257  (!)
+    cudaMemcpy_v3020  (synchronous)     ×   208
+    memcpy_H2D                          ×   208
+    cudaStreamSynchronize               ×   208
+    cudaStreamSynchronize_v3020         ×   208
+    cudaEventCreateWithFlags_v3020      ×    19
+    cudaStreamCreateWithFlags_v5000     ×    16
+    cudaMalloc_v3020                    ×     8
+    cuInit                              ×     5
+    cuModuleGetLoadingMode              ×     4
+    cudaGetDeviceProperties_v12000      ×     2   (2.8 ms each — expensive!)
+    cudaFree_v3020                      ×     2
+
+  Interpretation: the FULL "boot the CUDA world" sequence:
+
+    1. Driver bootstrap.
+       cuInit ×5 + cuGetProcAddress_v2 ×1,257 — libcuda.so's dynamic
+       symbol table is being walked to resolve every entry point the
+       ORT CUDA provider will ever call.  This cost is amortized
+       because it happens ONCE.
+
+    2. Capability discovery.
+       cudaGetDeviceProperties + cudaMemGetInfo + cuModuleGetLoadingMode.
+       2.8 ms per property query — these are NOT free.
+
+    3. Resource pool allocation.
+       16 streams + 19 events + 8 persistent allocations (cudaMalloc).
+       Steady state uses only stream 29 for compute; the other 15
+       are ORT-internal scratch streams that mostly sit idle.
+
+    4. Model weight upload — 208 synchronous H2D transfers.
+       For yolo26n every weight tensor is moved host→device one by
+       one with `cudaMemcpy_v3020` (blocking), surrounded by pre/post
+       `cudaStreamSynchronize` pairs. This is EXACTLY the PDF §4.7
+       "sync memcpy = 2×CPU + 1×CE bracket" pattern, observed in the
+       wild 208 times in a single init phase.
+
+    5. ONE kernel executes.
+       Almost certainly a cuBLAS / cuDNN library-probe kernel (these
+       libraries benchmark candidate algorithms on first use to pick
+       the fastest for the target GPU).
+
+  Detector implication (G5 — init-phase detector).
+  If a period contains ≥5 `cuInit` OR ≥100 `cuGetProcAddress_v2` OR
+  ≥5 `cudaMalloc`, classify it as the init phase and exclude from
+  steady-state DAG aggregation. yolo's init burst contains all three
+  flags; a sharper threshold based on just one of them is sufficient.
+
+
+  [5]  END PHASE (truncated last inference)  — count=1
+  -----------------------------------------------------
+
+  Signature:        3a63b3495a4ca84d
+  Nodes:            718  (CPU=373, SM=328, CE=17)
+  Edges:            (~0.68 × canonical)
+  Content: first 15 ops are IDENTICAL to the canonical DAG — opens
+  with the H2D input memcpy, implicit_convolve_sgemm, generic tensor
+  ops, unary elementwise… Then cuts off partway through. Roughly
+  two-thirds of a yolo26n forward pass.
+
+  Interpretation: process was killed mid-inference. fish_orchestrator
+  calls `ros2 run fish stop` on the aircraft container, which in turn
+  sends SIGTERM to yolo_py. The signal arrived while the main loop
+  was in the middle of `do_yolo(frame)` — `cudaLaunchKernel` returned
+  but nsys's buffer flush captured only the ops that had reached it
+  before the process died. Whatever was mid-flight on the GPU was
+  abandoned (no `cudaDeviceReset`, no `cudaFree`).
+
+  ADDITIONALLY — the actual final CUDA events on tid=1252 (after this
+  truncated DAG was filtered as its own period) are 20 consecutive
+  `cudaStreamSynchronize` pairs with 30-60ms gaps between them:
+
+      [1029130] +43ms   cudaStreamSynchronize  ← large gap
+      [1029131] +0.1ms  cudaStreamSynchronize  ← ORT's paired ack
+      [1029132] +38ms   cudaStreamSynchronize  ← next frame-wait
+      [1029133] +0.1ms  cudaStreamSynchronize
+      …
+      [1029169] +0.1ms  cudaStreamSynchronize  — last ever CUDA call
+
+  This is ORT's "wait for next frame" idle loop — the process already
+  finished its mid-inference truncated DAG, then was polling on
+  streams waiting for more work. SIGTERM fired during that poll.
+
+  Detector implication.
+  There is no cleanup DAG to detect on shutdown — real ROS 2
+  applications do NOT call `cudaDeviceReset` or `cudaFree` before
+  process exit. Kernel / driver cleanup is left to process teardown
+  semantics. Worth flagging in the paper: CUDA state at SIGTERM is
+  left dirty, GPU ownership released via /proc/<pid> teardown, not
+  via CUDA API.
+
+
+  [1]  DOUBLE-FRAME COALESCE          — count=2
+  [4]  TRIPLE-FRAME COALESCE          — count=1
+  ----------------------------------------------
+
+  [1] signature:    3c90e07189ef8001  nodes=2,112 = 2×1,056 canonical
+  [4] signature:    4357635d5ee25c34  nodes=3,168 = 3×1,056 canonical
+
+  Interpretation: two (or three) consecutive inference invocations
+  with so little idle between them that our 5ms gap-after-sync period
+  boundary never triggered. The content is EXACTLY the canonical DAG
+  repeated back-to-back.
+
+  These are not a "new kind of work" — they are steady-state
+  invocations that the detector failed to split. Root cause: during
+  bursty moments (network glitch + frame catch-up), frames arrive
+  within < 5ms of each other, yolo's main loop proceeds without
+  blocking on `frame_queue.get()`, and there is no host-idle window
+  between the two inference cycles.
+
+  In aggregate: 2×[1] + 3×[4] = 7 "lost" inferences that are
+  attributed to the wrong DAG. On a sample of 1,870 inferences,
+  that's 0.37 % loss — acceptable but worth quoting.
+
+  Detector improvements that would eliminate these:
+    (a) Raise gap threshold — but this merges genuine 3-4ms idle
+        periods with steady state. No clean tuning.
+    (b) Detect the repeating pattern SIGNATURE and split when two
+        (identical, full-shape) DAGs appear concatenated.
+    (c) Use NVTX ranges if the app emits them (yolo/ORT does not).
+    (d) Explicit periodicity anchor — look for the specific
+        cudaMemcpyAsync→H2D→implicit_convolve_sgemm opening signature
+        and split on every recurrence. This is application-specific
+        but catches the case cleanly.
+
+  For yolo (0.37 % error) we leave as-is. For future apps with more
+  frequent bursts, (d) is the cleanest fix.
+
+
+  [3]  WARMUP / TAIL MINOR VARIATION   — count=1
+  -----------------------------------------------
+
+  Signature:        d76ae601387f1415
+  Nodes:            1,962  (CPU=1,455, SM=465, CE=42)
+  Content: top frequency dominated by `cuGetProcAddress_v2 ×838` —
+  clearly NOT a steady inference. This is the first-inference-
+  overlap-with-late-init case: by the time the first frame arrived,
+  ORT was STILL resolving driver symbols on-demand (its "lazy
+  symbol resolution" path) while also starting to run kernels.
+
+  Effectively: init phase hadn't fully terminated by frame 1, so the
+  first productive period collected both init tail symbols AND
+  steady-state kernels. SM count = 465 ≈ canonical (+1 — probably a
+  cuBLAS algorithm reselection). CE count = 42 = canonical exactly.
+
+  Detector implication: the init detector (G5) should include a
+  small COOLDOWN (~100 ms) after the last init-signature call before
+  steady-state periods are accepted. Otherwise the very first
+  inference gets contaminated as here.
+
+
+Summary of shape → phase mapping (what the 6 DAGs mean together):
+
+  Shape  Count  Fraction   Phase label
+  -----  -----  --------   ------------------------------------
+  [0]    1,857   99.73 %   canonical steady-state inference
+  [1]       2    0.11 %    double-frame coalesce (detector miss)
+  [2]       1    0.05 %    INIT phase
+  [3]       1    0.05 %    warmup (init-tail overlaps first frame)
+  [4]       1    0.05 %    triple-frame coalesce (detector miss)
+  [5]       1    0.05 %    END phase (SIGTERM-truncated inference)
+
+The process's ENTIRE CUDA lifetime is captured in 6 categories with
+clean semantic labels. No uncategorized outliers.
+
+
+========================================================================
+What this tells us about real-world GPU apps for the paper
+========================================================================
+
+(Also tracked in notes/paper_to_do.txt.)
+
+1. Real ROS 2 GPU applications have a rich lifecycle — init,
+   steady-state, end — and the TASK model has to distinguish them.
+   Analyses that assume "a GPU task is a periodic DAG with fixed
+   shape" are correct for 99.7 % of invocations but miss the 0.3 %
+   that shape the mission's startup + shutdown latency.
+
+2. The sync-memcpy "2×CPU + 1×CE" bracket from PDF §4.7 IS the real
+   pattern used by production code (observed 208 times in yolo init
+   alone).
+
+3. SIGTERM-driven shutdown leaves GPU state dirty. Real systems do
+   NOT call cleanup API. CUDA context teardown happens via process
+   exit, which is invisible to our profiling. Any analysis that
+   models "process termination = cudaDeviceReset" is wrong.
+
+4. Short idle periods (< 5ms) can coalesce consecutive invocations
+   even under pattern-based detection. An app-specific periodicity
+   anchor (e.g., look for the recurring opening sub-sequence of the
+   canonical DAG) is a robust fallback.
+
+5. The init phase alone is a distinct, identifiable DAG — not a
+   noise period. `cuGetProcAddress_v2` × 1,000+ is a clear
+   fingerprint of dynamic symbol loading; `cudaMemcpy` × 208 with
+   sync pairs is a clear fingerprint of model-weight upload. The
+   init DAG's own structure tells us what ORT spent its startup
+   budget on (answer: mostly symbol resolution + weight upload,
+   actual kernel compile is negligible).
+
+
+========================================================================
 Universal-app detector outline (next iteration of gpu_dag.py)
 ========================================================================
 
