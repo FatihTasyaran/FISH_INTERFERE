@@ -65,6 +65,10 @@ NODE_ATTR_KEYS = [
     "executor_addr", "executor_type", "num_threads", "cb_groups",
     "extra_executors",
     "callback_group",
+    # out-of-ROS thread (oort/oore) metadata — see EXPECTED_OBSERVED.txt §8
+    "thread_tid",
+    # GPU DAG set (attached by postprocess/gpu_dag.py — coming soon)
+    "gpu_dags",
 ]
 EDGE_ATTR_KEYS = [
     "rel", "level", "nature", "topic", "service",

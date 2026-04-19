@@ -83,6 +83,9 @@ def extract_container_model(compose_db: str, role: str) -> nx.DiGraph:
     functions = model_improved.identify_callbacks(mongo, nodes, entities, executors)
     model_improved.attribute_aspects(mongo, executors, nodes, entities)
     model_improved.attach_callback_groups(mongo, executors, nodes, entities, functions)
+    model_improved.detect_oort_threads(
+        mongo, executors, nodes, entities, functions,
+        session=compose_db, container=role)
     model_improved.detect_actions(entities)
     model_improved.split_callbacks(mongo, entities, functions)
 

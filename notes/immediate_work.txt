@@ -1,7 +1,34 @@
 Immediate Work Items
 ====================
 
-0. [URGENT] Batch process detection in GPU daemon
+0a. [URGENT] Enable CUDA + Python backtrace in nsys profiling
+--------------------------------------------------------------
+See notes/EXPECTED_OBSERVED.txt §9.
+
+Problem:
+  nsys currently records backtraces for only ~0.4 % of CUDA runtime
+  events (only sync-class APIs). 99.6 % of kernel launches and
+  memcpys have callchainId=0 — no stack recorded. This blocks
+  attributing GPU work back to user code (onnxruntime, do_yolo, etc.).
+
+Fix (two parts):
+  (A) FISH GPU daemon (python/fish/gpu.py): invoke nsys with
+      `--cudabacktrace=true` and, where supported,
+      `--python-backtrace=cuda`. Verify against the nsys version
+      bundled in the *-image-fish containers; flag names changed
+      across nsys releases.
+  (B) postprocess/ingest.py: pull CUDA_CALLCHAINS + StringIds from
+      the nsys sqlite alongside CUPTI_ACTIVITY_KIND_RUNTIME, resolve
+      symbol/module strings, attach to cuda_runtime rows (extra
+      fields, NOT tags — high cardinality). Keep the raw schema
+      backward-compatible (default empty).
+
+Paper linkage: without (A) + (B), GPU-DAG nodes lose their "which
+user function called this" label, which is essential for per-callback
+roofline attribution. Item #9 (roofline) depends on this.
+
+
+0b. Batch process detection in GPU daemon
 --------------------------------------------------
 Problem:
   GPU daemon scans /proc one process at a time. Each new process triggers

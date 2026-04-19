@@ -557,6 +557,193 @@ See also:
 
 
 ============================================================================
+8. Real GPU work often runs in a NON-executor thread
+============================================================================
+
+EXPECTED
+--------
+Classical "ROS 2 GPU node" intuition (and most task-model papers): the
+GPU-hosting work — kernel launches, memory copies, inference — is
+triggered by a callback. Typical mental model:
+
+    subscription_callback(image_msg):
+        preprocess(image_msg)
+        kernels = launch_inference_kernels()   # GPU work
+        publish_detections(kernels.output)
+
+So the callback is the natural anchor for the GPU task: callback_start
+marks the beginning, callback_end the end, and everything in between
+(including all CUDA API calls and their kernels/memcpys) constitutes
+the GPU DAG associated with that callback.
+
+OBSERVED
+--------
+yolo_py in AAS (aircraft, PID 1252) runs its inference in the MAIN
+Python thread, not a callback. The rclpy executor in the same process
+handles only unrelated housekeeping.
+
+Process structure (reconstructed from ros2_trace + cuda_runtime +
+source inspection of yolo_node.py):
+
+  yolo_py process, pid = 1252
+  ├── main thread (tid = 1252)
+  │     run_inference_loop() — infinite while loop:
+  │        frame = frame_queue.get()
+  │        boxes = self.do_yolo(frame)       # ONNX Runtime → 1M CUDA calls
+  │        self.detection_publisher.publish(…)
+  │     → 1,029,170 cuda_runtime events
+  │     → 0   callback_start events
+  ├── ros_spin_thread (tid = 1434)
+  │     while rclpy.ok(): rclpy.spin_once(self, timeout_sec=0.001)
+  │     → 0   cuda_runtime events
+  │     → 59,407 callback_start events, all TimeSource.clock_callback
+  └── frame_capture_thread (separate tid)
+        cv2.VideoCapture.read() loop, pushes frames into the queue
+
+Key measurements from the aircraft trace (fish_compose_20260419_161633):
+
+  CUDA runtime events on tid 1252:        1,029,170
+  callback_start events on tid 1252:              0   ← no callbacks!
+  rclpy_callback_register on pid 1252:            7
+    (all TimeSource / ParameterService — nothing user-defined)
+  rclpy_subscription_callback_added on pid 1252:  1  (only /clock)
+
+So the entire GPU task — 764K kernel launches, 78K memory copies, etc.
+— is produced by a thread that is NOT managed by a ROS 2 executor.
+There is no F vertex to attach a GPU DAG to, because no callback fires
+for the work.
+
+CAUSE
+-----
+rclpy.spin(node) / rclpy.spin_once(node) run synchronously: whatever
+calls them owns the thread until they return. yolo_py wants an
+asynchronous design — the main thread needs to pull video frames from
+GStreamer at its own pace, not at a callback's pace. So the author
+spun up `ros_spin_thread` as a dedicated thread for rclpy housekeeping
+and kept the main thread free for the inference loop. Publishing
+results via a rclpy Publisher does not require an executor.
+
+This is a perfectly reasonable rclpy pattern — rclpy's Publisher is
+thread-safe and can be called from any thread without executor
+involvement. But it breaks the assumption that every scheduled entity
+in a ROS 2 node is a callback.
+
+FISH MODEL RESPONSE
+-------------------
+To keep FISH's hierarchy property intact (every layer N's expansion
+yields exactly layer N+1 — CN→EX→N→E→F), we introduce two new
+attribute values:
+
+  etype = "oore"  (out-of-ROS entity)   — placeholder E vertex, one per
+                                           oort thread, contains no aspects
+                                           and no real ROS handles
+  ptype = "oort"  (out-of-ROS thread)   — F vertex representing the
+                                           thread itself; gpu_node=True
+                                           when the thread issues CUDA
+                                           API calls; DAG attaches here
+
+For yolo_py the resulting sub-tree under the yolo_inference_node N:
+
+  N "yolo_inference_node"
+    ├── E etype="sub"   "/clock"                (real)
+    │     └── F ptype="cpu" "TimeSource.clock_callback"
+    ├── E etype="serv"  "/list_parameters"      (real)
+    │     └── F ...
+    ├── … (other parameter services)
+    └── E etype="oore"  "tid_1252_io"           (NEW placeholder)
+          └── F ptype="oort" "tid_1252_gpu_loop"  (NEW, gpu_node=True)
+                 gpu_dags = […]                   (attached by gpu_dag.py)
+
+Detection (postprocess/model_improved.detect_oort_threads):
+
+  For each GPU-classified process p (via nsys_profiled_pids):
+    cuda_tids  = set of `tid` in cuda_runtime for (session, container)
+    cb_tids    = set of `vtid` firing callback_start under pid p
+    oort_tids  = cuda_tids − cb_tids          # CUDA activity, no callbacks
+    For each t in oort_tids:
+       create oore (E) + oort (F) under p's N vertex.
+
+IMPLICATION FOR SCHEDULING ANALYSIS
+-----------------------------------
+  - oort threads are tasks just like callback-triggered callbacks,
+    but their scheduling unit is "an iteration of the main loop",
+    not "an executor dispatch of a callback".
+  - Period is determined by the rate at which frames arrive (sensor
+    rate) — the loop naturally blocks on frame_queue.get().
+  - They compete for CPU with the executor's threads (same process,
+    same ready-list under Linux), so classical WCRT still needs them.
+  - Separate from multi-executor-per-process (§1) — there is only ONE
+    rclpy executor in yolo_py's process. The oort thread is outside
+    the executor entirely.
+
+This pattern likely appears in any ROS 2 node whose main work is
+driven by a non-ROS input source: camera frames, hardware sensors
+read via their vendor SDK, network streams decoded by GStreamer, etc.
+Autoware's perception nodes (message-driven) should NOT exhibit this;
+yolo-style apps (camera-driven) WILL.
+
+
+============================================================================
+9. GPU-side profiling gives us CPU-caller info, but only at sync points
+============================================================================
+
+EXPECTED
+--------
+To attribute a CUDA kernel launch back to user code (e.g. "this
+`launchKernel` came from `onnxruntime.InferenceSession.run`"), the
+natural assumption is that nsys captures a call stack for every
+CUDA API call the same way it captures kernel activity.
+
+OBSERVED
+--------
+nsys records backtraces only for a small subset of CUDA API calls.
+In the aircraft trace:
+
+  CUPTI_ACTIVITY_KIND_RUNTIME total rows:       1,029,170
+  rows with non-zero callchainId:                   4,138   (~0.4 %)
+
+Every one of those 4138 backtraces is for a `cudaStreamSynchronize*`
+call. The 1M+ `cudaLaunchKernel` / `cudaMemcpyAsync` calls have
+callchainId=0 — no backtrace recorded.
+
+CAUSE
+-----
+nsys's CUDA backtrace capture is opt-in and sampled. Without
+`--cudabacktrace=true` (or equivalent) at profile time, only certain
+"sync-class" CUDA API calls get a stack. FISH's GPU daemon currently
+starts nsys with default flags, which do not enable dense CUDA
+backtrace.
+
+Even when captured, resolution is partial:
+  - Frames inside libcupti / libcudart: resolved by NVIDIA's bundled
+    symbols (e.g. `cudaStreamSynchronize`).
+  - Frames inside libonnxruntime_providers_cuda.so: unresolved,
+    shown as raw hex addresses.
+  - Python interpreter frames: not captured without `--python-backtrace`.
+
+So the ingested data today cannot tell us "this cudaLaunchKernel
+was called from do_yolo → ONNX Runtime → conv layer N". The best we
+have at the moment is the libcudart api_name column plus a partial
+call stack for sync points.
+
+FISH RESPONSE
+-------------
+Two parallel tracks (tracked in notes/immediate_work.txt #0):
+
+  (a) Extend nsys invocation in the FISH GPU daemon to enable
+      `--cudabacktrace=true --python-backtrace=cuda` (approximate,
+      exact flags depend on nsys version).
+  (b) Extend postprocess/ingest.py to pull CUDA_CALLCHAINS + StringIds
+      from the nsys sqlite and attach the resolved frame symbols to
+      each cuda_runtime row in InfluxDB (as a tag or separate
+      measurement). This is a one-way extension; existing callchainId=0
+      rows stay unenriched until re-traced.
+
+Without (a), (b) still helps for the 0.4 % of calls that do have
+backtraces — sync points are meaningful boundaries in the DAG.
+
+
+============================================================================
 Summary: why this matters for the paper
 ============================================================================
 

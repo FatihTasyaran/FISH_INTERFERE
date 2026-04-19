@@ -2,6 +2,78 @@ FISH Development Notes — chronological journal
 ================================================
 
 
+2026-04-19 (late evening) — oort/oore vertex types for non-executor GPU threads
+--------------------------------------------------------------------------------
+
+Investigating yolo_py in the AAS trace to start the GPU-DAG pipeline,
+discovered it does not use any ROS 2 callback for inference:
+
+  pid 1252 main thread:      1,029,170 cuda_runtime events, 0 callback_start
+  pid 1252 ros_spin_thread:       0 cuda_runtime events, 59,407 callback_start
+                                     (all TimeSource.clock_callback — housekeeping)
+
+Source inspection confirms: yolo_node.py's run_inference_loop() runs on
+the main thread with a plain while-loop over GStreamer frames + ONNX
+Runtime (CUDA). `ros_spin_thread` runs rclpy.spin_once only to keep
+sim-time current. Publishing is done via rclpy.Publisher (thread-safe,
+no executor required).
+
+Implication for the FISH task model: the GPU work has no F vertex to
+attach to, because no callback fires for it. Instead of forcing a
+callback-anchored model, we add two new attribute values:
+
+  E.etype = "oore"  (out-of-ROS entity) placeholder — no real ROS
+                    subscription/service/timer; exists so the oort
+                    has a proper level-2 parent and the FISH
+                    hierarchy invariant holds.
+  F.ptype = "oort"  (out-of-ROS thread) the non-executor thread that
+                    does the real work. gpu_node=True when it issues
+                    CUDA calls.
+
+New phase `detect_oort_threads` in model_improved.py, hooked after
+attach_callback_groups. Algorithm:
+
+  For each GPU-classified pid (nsys_profiled_pids):
+    cuda_tids  = SELECT DISTINCT tid FROM fish.cuda_runtime
+                 WHERE session=... AND container=...
+    cb_tids    = set of vtids firing callback_start for pid in ros2_trace
+    oort_tids  = cuda_tids - cb_tids       # CUDA active, no callbacks
+    for each oort tid: create oore E (level 2) + oort F (level 3)
+                       under the process's N vertex.
+
+Verified on fish_compose_20260419_161633 aircraft scope:
+  1 oort detected (tid=1252, yolo main thread)
+  Composed graph: 131 vertices, 180 edges (was 129/178)
+  JSON export preserves ptype/etype/thread_tid/gpu_node attributes
+
+Additional findings & follow-ups captured for the paper:
+
+  notes/EXPECTED_OBSERVED.txt §8 — full story of the non-executor
+    GPU-thread pattern with measured numbers and source-code
+    attribution.
+  notes/EXPECTED_OBSERVED.txt §9 — nsys only records CUDA API call
+    stacks for ~0.4 % of runtime rows (sync-class only). User-code
+    attribution (onnxruntime → conv_N → ...) requires enabling
+    --cudabacktrace=true on the nsys command line + extending
+    ingest.py to pull CUDA_CALLCHAINS + StringIds. Tracked as
+    immediate_work.txt item 0a (urgent).
+  notes/known_bugs.txt BUG-003 (GPU↔ROS wall-clock offset) confirmed
+    still fixed — measured alignment in current session:
+      cuda_runtime first event:  2026-04-19 14:17:17.922 UTC
+      callback_start first event: 2026-04-19 14:17:19    UTC (+2s boot lag)
+    Period detection and cross-store correlation can use naive time
+    comparison with no offset adjustment.
+
+Next:
+  - Configure FISH GPU daemon to pass --cudabacktrace=true (0a).
+  - Extend ingest.py to pull CUDA_CALLCHAINS (0a part B).
+  - postprocess/gpu_dag.py — period detection on CUDA activity of
+    each oort thread, build Typed DAG (CPU/SM/CE nodes per PDF §4.5
+    + §4.7 algorithm), collect unique DAG shapes, attach to F.A_v
+    via a separate graph_store collection `gpu_dags` scoped the same
+    way as graph_nodes/_edges.
+
+
 2026-04-19 (evening) — session-per-DB refactor
 ----------------------------------------------
 

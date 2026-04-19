@@ -642,6 +642,123 @@ def attach_callback_groups(mongo, executors, nodes, entities, functions):
 
 
 # ---------------------------------------------------------------------------
+# Out-of-ROS threads (oort)
+# ---------------------------------------------------------------------------
+
+def detect_oort_threads(mongo, executors, nodes, entities, functions, *,
+                        session=None, container=None):
+    """Detect non-executor threads that do GPU work and anchor them in
+    the graph as (oore entity → oort function) vertices.
+
+    Pattern (see notes/EXPECTED_OBSERVED.txt §8):
+      Some ROS 2 processes run their heavy compute in a plain Python/C++
+      thread that is NOT dispatched by any rclpy/rclcpp executor (yolo_py
+      is the canonical example — main thread runs an infinite inference
+      loop using ONNX Runtime + CUDA). The rclpy/rclcpp executor in the
+      same process handles only housekeeping callbacks (e.g. /clock).
+
+      Such threads fall outside the F layer because no callback_register
+      / callback_start fires for them. To keep FISH's hierarchy intact
+      (every layer N's children live at N+1), we introduce:
+
+        etype "oore" (E layer) — placeholder entity, one per oort thread
+        ptype "oort" (F layer) — the thread itself, GPU-capable, gpu_node=True
+
+      `gpu_dags` attribute (later) attaches the Typed DAG(s) to the oort F.
+
+    Detection:
+      For each GPU-classified process (nsys_profiled_pids), query
+      InfluxDB cuda_runtime for distinct `tid` doing CUDA API calls in
+      this (session, container). Any such tid that does NOT appear as
+      a `callback_start.vtid` in ros2_trace is an oort thread.
+    """
+    from utils import nsys_profiled_pids
+
+    gpu_pids = nsys_profiled_pids(mongo)
+    if not gpu_pids:
+        log("detect_oort_threads: no GPU processes, skipping")
+        return
+
+    coll = mongo["ros2_trace"]
+
+    # Per-pid set of vtids that fire callback_start (executor threads)
+    cb_tids_by_pid = {}
+    for d in coll.find({"event": "ros2:callback_start"}, {"vpid": 1, "vtid": 1}):
+        cb_tids_by_pid.setdefault(d["vpid"], set()).add(d["vtid"])
+
+    # CUDA-active tids from InfluxDB (pyarrow.Table response → to_pylist)
+    try:
+        if session and container:
+            influx = connect_influx(session, role=container)
+        else:
+            influx = connect_influx()
+        q = (f"SELECT DISTINCT tid FROM cuda_runtime "
+             f"WHERE session='{session or ''}' AND container='{container or ''}'")
+        table = influx.query(q)
+        cuda_tids = {int(row["tid"]) for row in table.to_pylist()
+                     if row.get("tid") is not None}
+        influx.close()
+    except Exception as e:
+        log(f"detect_oort_threads: InfluxDB query failed ({e}), skipping")
+        return
+
+    if not cuda_tids:
+        log("detect_oort_threads: no CUDA tids in InfluxDB for this session")
+        return
+
+    # Map pid → N vertex (first node under the EX for that pid)
+    n_by_pid = {}
+    for ex in executors.values():
+        pid = ex.A_v.get("pid")
+        if pid is None:
+            continue
+        for n_id in ex.Z_v:
+            n = nodes.get(n_id)
+            if n is not None:
+                n_by_pid.setdefault(pid, n)  # first-wins
+
+    created = 0
+    for pid in gpu_pids:
+        n_vertex = n_by_pid.get(pid)
+        if n_vertex is None:
+            continue
+        cb_tids = cb_tids_by_pid.get(pid, set())
+        # Heuristic: for single-GPU-process sessions, all CUDA tids belong
+        # to this pid. For multi-GPU-process scenarios we'd cross-check via
+        # globalPid; deferred until that case actually appears.
+        for tid in sorted(cuda_tids):
+            if tid in cb_tids:
+                continue  # executor thread, not oort
+            label = f"tid_{tid}"
+            oore_A = {
+                "label": f"{label}_io",
+                "etype": "oore",
+                "cb_addr": "NA",
+                "thread_tid": tid,
+                "aspects": [],
+            }
+            oore = FishVertex("E", next(vertex_counter), oore_A, [], 2)
+
+            oort_A = {
+                "label": f"{label}_gpu_loop",
+                "ptype": "oort",
+                "gpu_node": True,
+                "thread_tid": tid,
+                "cb_addr": "NA",
+            }
+            oort = FishVertex("F", next(vertex_counter), oort_A, [], 3)
+
+            oore.Z_v.append(oort.id_v)
+            n_vertex.Z_v.append(oore.id_v)
+            entities[oore.id_v] = oore
+            functions[oort.id_v] = oort
+            created += 1
+
+    log(f"detect_oort_threads: {created} oort thread(s) detected "
+        f"(+ {created} oore placeholder entity(ies), {created*2} new vertices)")
+
+
+# ---------------------------------------------------------------------------
 # Aspect Attribution
 # ---------------------------------------------------------------------------
 
@@ -1312,6 +1429,9 @@ if __name__ == "__main__":
     functions = identify_callbacks(mongo, nodes, entities, executors)
     attribute_aspects(mongo, executors, nodes, entities)
     attach_callback_groups(mongo, executors, nodes, entities, functions)
+    detect_oort_threads(mongo, executors, nodes, entities, functions,
+                        session=args.session,
+                        container=args.role or args.session)
     detect_actions(entities)
 
     if not args.no_split:
