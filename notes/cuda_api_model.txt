@@ -1,0 +1,385 @@
+CUDA API → FISH GPU DAG model mapping
+======================================
+
+Purpose:
+  Document every CUDA API call we encounter in traces and how it maps
+  into the FISH Typed DAG model (PDF §4.5: CPU / SM / CE nodes).
+
+  Some calls become graph nodes, some create edges, some are init-only
+  bookkeeping, some are pure noise that should be filtered. This table
+  is the contract between `postprocess/gpu_dag.py` and the trace data.
+
+Source session for numbers: fish_compose_20260419_161633 (aircraft, tid=1252,
+yolo_py with ONNX Runtime CUDAExecutionProvider).
+
+
+Classification legend
+---------------------
+
+  PHASE     Init    fires once per process (skip from steady-state DAGs)
+            Steady  repeats per-invocation (contributes to DAG)
+            Tail    shutdown / cleanup (exclude from steady-state)
+
+  NODE      CPU     host-side driver call, becomes a CPU DAG vertex
+            CPU+SM  host launch → GPU kernel on an EE (compute engine)
+            CPU+CE  host launch → GPU memory transaction on a copy engine
+            --      no DAG node generated (filtered or metadata)
+
+  BOUNDARY  X       candidate period boundary when followed by host idle
+            --      not a boundary
+
+  NOTES     anything special that affects DAG construction
+
+
+========================================================================
+INIT PHASE — each fires once per process (rarely repeats)
+========================================================================
+
+API                               PHASE  NODE  BOUNDARY  NOTES
+-------------------------------   -----  ----  --------  -------------------
+cuInit                            Init   --    --        Driver initialization.
+                                                         Skip. Should be the
+                                                         very first CUDA call.
+
+cudaGetDeviceProperties*          Init   --    --        Device discovery.
+                                                         Skip.
+
+cuDevicePrimaryCtxRetain /        Init   --    --        Create or attach CUDA
+cuCtxCreate                                              context. Skip.
+
+cuLibraryLoadData /               Init   --    --        Load cubin / PTX to
+cuLibraryLoadFromFile /                                  GPU. One-time per
+cuModuleLoad*                                            library. Skip.
+
+cuLibraryGetKernel /              Init   --    --        Resolve kernel handles
+cuModuleGetFunction                                      in loaded libraries.
+                                                         Skip when isolated,
+                                                         but see cuKernelGetFunction
+                                                         below for steady-state
+                                                         use.
+
+cudaMalloc* /                     Init   CPU   --        Persistent buffers
+cudaMallocAsync /                                        allocated once. If
+cudaMallocHost                                           observed in steady
+                                                         state → dynamic growth
+                                                         warning (usually a
+                                                         performance bug, not
+                                                         intentional).
+
+cudaStreamCreate* /               Init   --    --        Streams / events are
+cudaEventCreate*                                         allocated once and
+                                                         reused for the process
+                                                         lifetime.
+
+cuGetProcAddress_v2               Init   --    --        Driver function
+                                                         resolution (some
+                                                         runtime libraries call
+                                                         this on first use).
+                                                         Skip.
+
+cuModuleGetLoadingMode            Init   --    --        One-time driver query.
+
+Detection heuristic for the init boundary:
+  T_init_end = max(
+    last_ts(cuLibraryLoadData, cuModuleLoad*, cudaMalloc,
+            cudaStreamCreate*, cudaEventCreate*)
+  )
+  + small cooldown (e.g. 10ms for driver settling).
+
+  Steady-state period mining happens ONLY on calls with
+  ts > T_init_end.
+
+
+========================================================================
+STEADY-STATE COMPUTE — the per-invocation workload
+========================================================================
+
+API                               PHASE   NODE     BOUNDARY  NOTES
+-------------------------------   -----   ------   --------  -----------------
+cudaLaunchKernel* (v7000, etc.)   Steady  CPU+SM   --        Runtime-API kernel
+cudaLaunchKernelExC_v11060                                   launch. Primary
+                                                             driver for compute.
+                                                             correlationId links
+                                                             to gpu_kernels row
+                                                             (streamId, grid,
+                                                             block, duration).
+
+cuLaunchKernel                    Steady  CPU+SM   --        Driver-API kernel
+                                                             launch. Used by
+                                                             ONNX Runtime CUDA
+                                                             EP. Same DAG
+                                                             treatment as
+                                                             cudaLaunchKernel.
+
+cuKernelGetFunction               Steady  CPU      --        ORT pattern: resolve
+                                                             kernel function
+                                                             handle BEFORE each
+                                                             cuLaunchKernel.
+                                                             Pure CPU; no GPU
+                                                             side. Keeps DAG
+                                                             CPU node count
+                                                             inflated but
+                                                             structurally
+                                                             correct.
+
+cudaMemcpyAsync* (v3020 etc.)     Steady  CPU+CE   --        Non-blocking memcpy.
+                                                             correlationId links
+                                                             to gpu_memcpy row
+                                                             (copyKind, bytes,
+                                                             streamId).
+                                                             Single CPU node
+                                                             with outgoing edge
+                                                             to CE node.
+
+cudaMemcpy*                       Steady  2×CPU    --        Blocking (sync)
+                                  + CE              between  memcpy. Host waits
+                                                    them     until done. Per
+                                                             PDF §4.7: model as
+                                                             CPU → CE → CPU
+                                                             (two CPU nodes
+                                                             bracketing the CE).
+                                                             We currently emit
+                                                             just CPU+CE; the
+                                                             CPU-after step is
+                                                             implicit in the
+                                                             next CPU node's
+                                                             cpu_order edge.
+                                                             REFINEMENT needed
+                                                             for strict PDF
+                                                             conformance —
+                                                             tracked as
+                                                             immediate_work
+                                                             item (formerly #7
+                                                             of sync refinement).
+
+cudaMemsetAsync* /                Steady  CPU      --        Per CUPTI, memsets
+cudaMemset                                                   live in
+                                                             CUPTI_ACTIVITY_KIND_MEMSET,
+                                                             NOT gpu_kernels or
+                                                             gpu_memcpy. We do
+                                                             NOT ingest that
+                                                             table yet → memsets
+                                                             currently produce
+                                                             CPU-only nodes in
+                                                             the DAG with no
+                                                             GPU-side match.
+                                                             In yolo this
+                                                             inflates CPU node
+                                                             count by ~50 per
+                                                             period (16k/1857).
+                                                             GAP: extend
+                                                             ingest.py to pull
+                                                             CUPTI_ACTIVITY_KIND_MEMSET
+                                                             as a new
+                                                             gpu_memset
+                                                             measurement.
+
+cudaLaunchHostFunc*               Steady  CPU      Maybe     Host callback queued
+                                                             to fire after
+                                                             preceding stream
+                                                             work completes.
+                                                             CPU-side: the call
+                                                             itself is quick
+                                                             (just enqueue).
+                                                             The callback fires
+                                                             later asynchronously.
+                                                             For yolo, 1,865
+                                                             occurrences — ORT
+                                                             uses this to signal
+                                                             completion of
+                                                             specific stages.
+                                                             Does NOT stall the
+                                                             host loop; not a
+                                                             boundary by itself.
+
+
+========================================================================
+SYNCHRONIZATION — period boundary candidates
+========================================================================
+
+API                               PHASE   NODE  BOUNDARY  NOTES
+-------------------------------   -----   ----  --------  --------------------
+cudaStreamSynchronize*            Steady  CPU   X         Host blocks until
+                                                          stream's work
+                                                          completes. If followed
+                                                          by > gap_ms host idle
+                                                          → period boundary
+                                                          (see gpu_dag.py).
+                                                          In yolo: 8,076
+                                                          occurrences, 1,962
+                                                          of them followed by
+                                                          > 5ms idle (real
+                                                          period ends).
+
+cudaDeviceSynchronize*            Steady  CPU   X         Host blocks until ALL
+                                                          work on the device
+                                                          completes. Stronger
+                                                          boundary than
+                                                          stream-sync. Same
+                                                          treatment.
+
+cudaEventSynchronize*             Steady  CPU   Maybe     Host blocks until
+                                                          event triggers.
+                                                          Boundary only if
+                                                          followed by idle;
+                                                          often used mid-period
+                                                          for internal staging,
+                                                          not period end.
+
+cudaStreamWaitEvent*              Steady  CPU   --        Cross-stream
+                                                          dependency: stream B
+                                                          waits on event from
+                                                          stream A. NOT a
+                                                          host-side block.
+                                                          Introduces a CE→SM
+                                                          cross-stream DAG edge
+                                                          that we do not yet
+                                                          model (single-stream
+                                                          yolo doesn't need it).
+                                                          For multi-stream
+                                                          apps (Autoware
+                                                          perception, custom
+                                                          CUDA code): FUTURE
+                                                          work.
+
+cudaEventRecord*                  Steady  CPU   --        Places an event
+                                                          marker in a stream.
+                                                          Pure CPU enqueue;
+                                                          the event fires later
+                                                          when preceding stream
+                                                          work completes.
+                                                          Relevant for
+                                                          cross-stream edges
+                                                          (paired with
+                                                          cudaStreamWaitEvent).
+
+
+========================================================================
+METADATA / NOISE — filter before DAG construction
+========================================================================
+
+API                               PHASE   NODE  BOUNDARY  NOTES
+-------------------------------   -----   ----  --------  --------------------
+cudaGetLastError /                Any     --    --        Error-status query.
+cudaPeekAtLastError                                       Some apps call after
+                                                          every kernel launch
+                                                          → doubles the CPU
+                                                          node count with no
+                                                          informational value.
+                                                          FILTER at gpu_dag
+                                                          construction time
+                                                          (yolo doesn't do
+                                                          this but Autoware
+                                                          might).
+
+cudaGetDevice / cudaSetDevice     Any     --    --        Thread-local device
+                                                          context toggles.
+                                                          Skip.
+
+cuCtxSetCurrent /                 Any     --    --        Context switching
+cuCtxGetCurrent                                           in multi-context
+                                                          apps. Skip for
+                                                          single-context
+                                                          (most ROS 2 nodes).
+
+cuStreamSetAttribute*             Init    --    --        One-time
+                                                          configuration. Skip.
+
+
+========================================================================
+Summary of DAG-producing ops in yolo_py (fish_compose_20260419_161633)
+========================================================================
+
+Dominant DAG (count=1,857 / 1,863):
+    1050 total nodes
+      550 CPU    — host-side driver calls
+      458 SM     — kernel launches via cudaLaunchKernel / cuLaunchKernel
+       42 CE     — cudaMemcpyAsync → H2D + D2H
+
+Per-period API breakdown (approximate, divide total by 1,863 dominant-shape
+invocations):
+
+     kernel launches     ~460    → 458 SM nodes + 2 outliers
+     memcpyAsync         ~ 42    →  42 CE nodes
+     memset              ~  9    →  ~9 CPU nodes (no CE match yet; GAP)
+     kernel-get-function ~ 36    →  CPU nodes, tied to cuLaunchKernel
+     streamSynchronize   ~  4    →  CPU nodes, one is the period boundary
+     launchHostFunc      ~  1    →  CPU node
+
+     ≈ 550 CPU nodes per period — accounts for the full count.
+
+The asymmetry between 550 CPU and 458 SM is NOT pathological — it's
+expected because (a) every kernel launch also has a runtime-API sibling
+that CUPTI logs, (b) memsets and host-func enqueues add CPU-only
+nodes, (c) sync and get-function calls are CPU-only.
+
+
+========================================================================
+Known gaps / TODOs in the current gpu_dag.py
+========================================================================
+
+  G1. cudaMemset — not ingested; produces CPU-only DAG nodes. Fix:
+      extend ingest.py to pull CUPTI_ACTIVITY_KIND_MEMSET into a new
+      `gpu_memset` measurement with session/container/correlationId/
+      streamId/bytes/duration_ns. Then gpu_dag.py builds CE nodes for
+      these too.
+
+  G2. Sync memcpy (non-async) — current code emits CPU+CE but should
+      emit 2×CPU bracketing the CE per PDF §4.7. yolo has 208 sync
+      memcpys out of 78k memcpys (0.3%), negligible for yolo — but
+      sync-memcpy-heavy apps (pre-ORT CUDA) will miss the host-block
+      semantics.
+
+  G3. Cross-stream event edges — cudaEventRecord + cudaStreamWaitEvent
+      pairs define explicit cross-stream dependencies. Today we emit
+      only within-stream FIFO edges. For multi-stream apps this is a
+      real gap. yolo is effectively single-stream so unaffected.
+
+  G4. Error-status noise — cudaGetLastError calls are not filtered.
+      yolo doesn't call them; other apps will produce inflated CPU
+      node counts. Easy filter at gpu_dag.build_typed_dag.
+
+  G5. Init / tail phase detection — currently gpu_dag processes
+      every CUDA call after the first sync boundary. Init-phase
+      calls (module load, first cudaMalloc) are swept up into the
+      first few "periods" and appear as 1-count outlier shapes
+      (shapes [2]-[5] in our run). Implementing the T_init_end
+      heuristic above would cleanly separate init from steady
+      state.
+
+
+========================================================================
+Universal-app detector outline (next iteration of gpu_dag.py)
+========================================================================
+
+```
+1. Load all CUDA API calls for (session, container, tid).
+
+2. Skip init:
+     T_init_end = max_ts_of(cuLibraryLoadData, cuModuleLoad*,
+                            cudaMalloc, cudaStreamCreate*,
+                            cudaEventCreate*) + 10ms
+     filter calls to ts > T_init_end
+
+3. Filter noise:
+     drop rows with api_name ∈ {cudaGetLastError, cudaPeekAtLastError,
+                                cudaGetDevice, cudaSetDevice,
+                                cuCtxSetCurrent, cuCtxGetCurrent,
+                                cuStreamSetAttribute*, cuGetProcAddress_v2,
+                                cuModuleGetLoadingMode}
+
+4. Choose period boundary source (priority):
+     if NVTX ranges present with non-trivial text: use them
+     elif cudaStreamSynchronize* / cudaDeviceSynchronize*
+          with > gap_ms idle after: use them (current)
+     else: n-gram repetition on api_name sequence
+
+5. Separate warm-up:
+     first K periods (K≈5 default, tunable): mark as warm-up, keep
+     in a separate `gpu_dags_warmup` attribute for JIT / cache
+     population baseline.
+
+6. Build DAG per-invocation, canonicalize signature.
+
+7. Aggregate unique shapes by count; report dominant + tail.
+```
