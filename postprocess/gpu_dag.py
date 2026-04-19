@@ -233,6 +233,153 @@ def build_typed_dag(api_rows, kernels_by_corr, memcpys_by_corr,
     return {"nodes": nodes, "edges": edges}
 
 
+# ---------------------------------------------------------------------------
+# Phase classification (G5, see notes/phase_detector.txt)
+# ---------------------------------------------------------------------------
+
+# API name substring → init-signature weight.
+# Each entry: (substring, threshold, weight_if_threshold_met).
+# When threshold is None, the count is multiplied directly by the weight.
+_INIT_SIGNALS = [
+    # "Hard" init-only — presence of any single one flips the verdict.
+    ("cuInit",                         1,    100),
+    ("cuLibraryLoadData",              1,    100),
+    ("cuDevicePrimaryCtxRetain",       1,    100),
+    ("cuCtxCreate",                    1,    100),
+    # Strong but not process-exclusive.
+    ("cudaGetDeviceProperties",        1,     20),
+    ("cuModuleGetLoadingMode",         1,     20),
+    # Massive symbol-resolution burst.
+    ("cuGetProcAddress",             100,     50),
+    # Per-count weak signals (may occur dynamically in pathological apps).
+    ("cudaMalloc",                  None,      5),
+    ("cudaStreamCreate",            None,      3),
+    ("cudaEventCreate",             None,      1),
+]
+
+
+def init_score(api_names_slice) -> int:
+    """Compute the init-phase score for a slice of api_names (one period)."""
+    counts = {}
+    for name in api_names_slice:
+        for token, _thresh, _w in _INIT_SIGNALS:
+            if token in name:
+                counts[token] = counts.get(token, 0) + 1
+    score = 0
+    for token, thresh, weight in _INIT_SIGNALS:
+        c = counts.get(token, 0)
+        if thresh is None:
+            score += weight * c
+        elif c >= thresh:
+            score += weight
+    return score
+
+
+# Thresholds from notes/phase_detector.txt
+_INIT_THRESHOLD   = 100
+_WARMUP_THRESHOLD = 20
+_WARMUP_MAX_POS   = 3    # warmup candidates must be within first N periods
+_TAIL_MAX_POS    = 3     # tail candidates must be within last N periods
+_TAIL_MIN_NODES  = 10    # minimum length to call a shape a TAIL prefix
+_TAIL_MIN_MATCH_RATIO = 0.95  # fraction of tail's ops that must prefix-match
+                               # (the trailing mismatch is typically final
+                               # sync ops inserted by a cleanup/signal handler)
+
+
+def _node_seq(dag):
+    return [(n["pe"], n["name"]) for n in dag["nodes"]]
+
+
+def classify_phases(periods, api_names, all_dags):
+    """Return a list of phase labels, one per period, matching periods[].
+
+    Labels:
+      INIT, WARMUP, STEADY, TAIL, COALESCED(<N>), UNKNOWN.
+
+    See notes/phase_detector.txt for the full algorithm specification
+    including rationale for each threshold.
+    """
+    n = len(periods)
+    if n == 0:
+        return [], None, None
+
+    # 1. Score every period + pre-compute signature sequences
+    period_info = []
+    for i, (s, e) in enumerate(periods):
+        score = init_score(api_names[s:e+1])
+        dag = all_dags[i]
+        period_info.append({
+            "idx": i,
+            "score": score,
+            "dag": dag,
+            "sig": dag_signature(dag),
+        })
+
+    # 2. Dominant shape from "pure productive" subset
+    productive = [p for p in period_info if p["score"] < _WARMUP_THRESHOLD]
+    if productive:
+        sig_counts = {}
+        for p in productive:
+            sig_counts[p["sig"]] = sig_counts.get(p["sig"], 0) + 1
+        dom_sig = max(sig_counts, key=sig_counts.get)
+        dom_dag = next(p["dag"] for p in productive if p["sig"] == dom_sig)
+    else:
+        dom_sig, dom_dag = None, None
+    dom_seq = _node_seq(dom_dag) if dom_dag else []
+
+    # 3. Label each period
+    labels = []
+    for p in period_info:
+        if p["score"] >= _INIT_THRESHOLD:
+            labels.append("INIT")
+            continue
+        if dom_sig and p["sig"] == dom_sig:
+            labels.append("STEADY")
+            continue
+
+        p_seq = _node_seq(p["dag"])
+
+        # COALESCED: exact N× repetition of the dominant sequence
+        if (dom_seq and len(p_seq) > len(dom_seq)
+                and len(p_seq) % len(dom_seq) == 0):
+            N = len(p_seq) // len(dom_seq)
+            if all(p_seq[k] == dom_seq[k % len(dom_seq)]
+                   for k in range(len(p_seq))):
+                labels.append(f"COALESCED({N})")
+                continue
+
+        # TAIL: short, late, fuzzy prefix of dominant (allows trailing
+        # cleanup-sync ops to differ — SIGTERM handlers typically call
+        # cudaStreamSynchronize on the way out, which doesn't match the
+        # next dominant kernel launch at that position).
+        if (dom_seq
+                and p["idx"] >= n - _TAIL_MAX_POS
+                and _TAIL_MIN_NODES <= len(p_seq) < len(dom_seq)):
+            match_len = 0
+            for k in range(len(p_seq)):
+                if p_seq[k] == dom_seq[k]:
+                    match_len += 1
+                else:
+                    break
+            # Everything past the match must be sync-only (cleanup) to call TAIL.
+            trailing_all_sync = all(
+                "Synchronize" in p_seq[k][1] for k in range(match_len, len(p_seq)))
+            if (match_len / len(p_seq) >= _TAIL_MIN_MATCH_RATIO
+                    and trailing_all_sync):
+                labels.append("TAIL")
+                continue
+
+        # WARMUP: weak init signal + early position
+        if (_WARMUP_THRESHOLD <= p["score"] < _INIT_THRESHOLD
+                and p["idx"] < _WARMUP_MAX_POS):
+            labels.append("WARMUP")
+            continue
+
+        labels.append("UNKNOWN")
+
+    return labels, dom_sig, dom_dag
+
+
 def dag_signature(dag):
     """Canonical fingerprint of DAG shape (ignores durations / bytes).
 
@@ -280,11 +427,17 @@ def extract_for_oort(db_name, scope, f_id, tid, container, *,
     api_names = [r["api_name"] for r in api_rows_raw]
     log(f"  cuda_runtime: {len(api_rows_raw):,} rows loaded in {time.time()-t0:.1f}s")
 
-    # 2. Detect periods via sync-boundary pattern
-    periods = detect_periods(times_ns, api_names, gap_ns)
-    productive = filter_productive(periods, api_names, min_gpu_ops=min_gpu_ops)
-    log(f"  periods (sync-boundary, gap>{gap_ms}ms): {len(periods):,} total "
+    # 2. Detect periods via sync-boundary pattern.
+    # Keep BOTH the full period list (for phase classification —
+    # the INIT phase rarely meets the min_gpu_ops filter) and the
+    # productive-only list used for DAG aggregation.
+    all_periods = detect_periods(times_ns, api_names, gap_ns)
+    productive = filter_productive(all_periods, api_names, min_gpu_ops=min_gpu_ops)
+    log(f"  periods (sync-boundary, gap>{gap_ms}ms): {len(all_periods):,} total "
         f"→ {len(productive):,} productive (≥{min_gpu_ops} GPU ops)")
+    # For phase classification we want both — INIT phase may have only
+    # 1 SM event (min_gpu_ops=2 would drop it). Use a looser filter.
+    phase_periods = filter_productive(all_periods, api_names, min_gpu_ops=1)
     periods = productive
 
     # 3. Pull all kernels + memcpys ONCE (by correlation_id); index in memory
@@ -350,10 +503,39 @@ def extract_for_oort(db_name, scope, f_id, tid, container, *,
     log(f"  built DAGs for {len(periods):,} invocations in {time.time()-t2:.1f}s "
         f"→ {len(unique)} unique shape(s)")
 
-    # 5. Summary list: one dict per unique DAG
+    # 5. Phase classification (G5 — see notes/phase_detector.txt)
+    # Build per-phase_period DAG list in the same order as phase_periods
+    # so classify_phases can line things up. The phase_periods include
+    # INIT (which was dropped from `periods` by the stricter filter),
+    # so we rebuild their DAGs here.
+    phase_dags = []
+    for start, end in phase_periods:
+        api_rows = api_rows_raw[start:end+1]
+        dag = build_typed_dag(api_rows, kernels_by_corr, memcpys_by_corr,
+                              memsets_by_corr=memsets_by_corr)
+        phase_dags.append(dag)
+
+    phase_labels, dom_sig, _ = classify_phases(
+        phase_periods, api_names, phase_dags)
+
+    # Per-unique-signature phase tally — helps downstream analysis
+    # pick "the STEADY DAG" versus INIT / TAIL / etc.
+    sig_to_phases = {}
+    for lbl, dag in zip(phase_labels, phase_dags):
+        sg = dag_signature(dag)
+        sig_to_phases.setdefault(sg, {}).setdefault(lbl, 0)
+        sig_to_phases[sg][lbl] += 1
+
+    log(f"  phase classification: " + ", ".join(
+        f"{lbl}={phase_labels.count(lbl)}"
+        for lbl in ("INIT", "WARMUP", "STEADY", "TAIL", "UNKNOWN")
+        if phase_labels.count(lbl) > 0
+    ) + (f", COALESCED={sum(1 for l in phase_labels if l.startswith('COALESCED'))}"
+         if any(l.startswith("COALESCED") for l in phase_labels) else ""))
+
+    # 6. Summary list: one dict per unique DAG, with phase attribution
     out = []
     for sig, info in sorted(unique.items(), key=lambda kv: -kv[1]["count"]):
-        # Attach BCET/WCET into the template nodes
         tmpl_nodes = []
         for i, node in enumerate(info["template"]["nodes"]):
             tmpl_nodes.append({
@@ -361,12 +543,39 @@ def extract_for_oort(db_name, scope, f_id, tid, container, *,
                 "c_min_ns": info["c_min"][i],
                 "c_max_ns": info["c_max"][i],
             })
+        phases = sig_to_phases.get(sig, {})
+        # Phase with max count wins as the dominant label for this shape
+        primary_phase = (max(phases, key=phases.get)
+                         if phases else "UNKNOWN")
         out.append({
             "signature": sig,
             "count": info["count"],
+            "phase": primary_phase,
+            "phase_counts": phases,
             "nodes": tmpl_nodes,
             "edges": info["template"]["edges"],
         })
+
+    # Also append any signature that appears ONLY in phase_periods (e.g.
+    # INIT) but not in `unique` because it was filtered out of productive.
+    for sig, phases in sig_to_phases.items():
+        if any(d["signature"] == sig for d in out):
+            continue
+        # Find first phase_dag matching this sig for a template
+        tmpl_dag = next(d for d, s in zip(phase_dags,
+                                          [dag_signature(x) for x in phase_dags])
+                        if s == sig)
+        total_count = sum(phases.values())
+        primary_phase = max(phases, key=phases.get)
+        out.append({
+            "signature": sig,
+            "count": total_count,
+            "phase": primary_phase,
+            "phase_counts": phases,
+            "nodes": tmpl_dag["nodes"],
+            "edges": tmpl_dag["edges"],
+        })
+
     return out
 
 
@@ -424,13 +633,14 @@ def main():
             continue
 
         log(f"  DAG shapes: {len(dags)}")
-        for i, d in enumerate(dags[:5]):
+        for i, d in enumerate(dags):
             n_cpu = sum(1 for n in d["nodes"] if n["pe"] == "CPU")
             n_sm  = sum(1 for n in d["nodes"] if n["pe"] == "SM")
             n_ce  = sum(1 for n in d["nodes"] if n["pe"] == "CE")
-            log(f"    [{i}] sig={d['signature']}  count={d['count']:,}  "
-                f"nodes={len(d['nodes'])} (CPU={n_cpu}, SM={n_sm}, CE={n_ce})  "
-                f"edges={len(d['edges'])}")
+            phase = d.get("phase", "?")
+            log(f"    [{i}] {phase:12s} sig={d['signature']}  "
+                f"count={d['count']:,}  nodes={len(d['nodes'])} "
+                f"(CPU={n_cpu}, SM={n_sm}, CE={n_ce})  edges={len(d['edges'])}")
 
         if not args.dry_run:
             graph_store.update_node(

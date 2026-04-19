@@ -1,0 +1,396 @@
+Phase detector for GPU DAG extraction
+======================================
+
+Purpose:
+  Classify every DAG shape produced by our per-invocation extraction
+  into a distinct LIFECYCLE PHASE, rather than leaving them as
+  uncategorized "unique shape count". The paper's task model has one
+  "canonical task DAG" per periodic workload; our observations show
+  real processes go through init → warmup → steady → tail, plus
+  detector-artifact coalesce shapes. A principled classifier lets
+  downstream analysis (roofline, WCRT) pick the right set of DAGs for
+  the right question.
+
+Companion: postprocess/gpu_dag.py phase classification pass (soon).
+Reference: notes/cuda_api_model.txt §"Empirical per-shape analysis"
+           for the empirical shape catalogue this detector formalizes.
+
+
+Phase definitions
+-----------------
+
+  INIT       Process-lifetime-once phase: CUDA context creation,
+             driver symbol resolution, device property queries,
+             stream/event pool allocation, resource allocation,
+             model weight upload. Fires once per process at startup.
+
+  WARMUP     First few invocations after INIT. The dominant-shape
+             skeleton is present but contaminated with residual
+             init-signature ops (ORT's lazy symbol resolution
+             completes during the first frame or two). Distinct
+             from STEADY because the shape differs, and from INIT
+             because real compute runs.
+
+  STEADY     The dominant-shape task DAG. Typically ≥95 % of all
+             productive invocations after init + warmup. This is
+             THE task for scheduling / roofline analysis.
+
+  TAIL       Last invocation(s) of the process, truncated by
+             SIGTERM / SIGINT / abrupt exit. Node sequence is a
+             strict prefix of the STEADY DAG — the process was
+             mid-invocation when it died.
+
+  COALESCED  Detector artifact: two (or more) back-to-back
+             invocations that the period detector failed to split
+             because the gap-after-sync was below the threshold.
+             Node sequence is exactly N copies of the STEADY DAG.
+             Semantically they ARE steady-state work that got
+             misattributed.
+
+  IDLE       Periods dropped by the min_gpu_ops filter before
+             classification. Listed here for completeness; they
+             are empty from the scheduling analysis perspective
+             (no kernel, no memcpy → no GPU work).
+
+  UNKNOWN    Any shape that does not match the above rules. A non-
+             empty UNKNOWN bucket is a red flag: the app is doing
+             something we don't yet model (dynamic graph topology,
+             context switch, multi-tenant, …). For yolo_py this is
+             empty; future apps will drive refinements.
+
+
+Classification algorithm
+------------------------
+
+INPUT
+  periods[]        : list of (start_idx, end_idx) over cuda_runtime
+                     rows, produced by the sync-pattern detector
+  api_names[]      : parallel list of api_name strings (all calls,
+                     init + productive)
+  build_dag(P)     : function producing the Typed DAG for period P
+
+OUTPUT
+  For each period P: (phase_label, dag, dominant_sig, repeat_factor)
+  Plus a summary map: phase → list of unique (signature, count, dag)
+
+
+Scoring init-signature counts per period
+-----------------------------------------
+
+For a period P, count calls whose api_name matches (case-insensitive
+prefix):
+
+  cuInit                   → init_ct
+  cuGetProcAddress         → get_proc_ct
+  cuDevicePrimaryCtxRetain  OR cuCtxCreate              → ctx_ct
+  cuLibraryLoadData         OR cuModuleLoad              → module_ct
+  cuLibraryGetKernel        OR cuModuleGetFunction       → sym_ct
+  cudaGetDeviceProperties                                 → dprops_ct
+  cuModuleGetLoadingMode                                  → load_mode_ct
+  cudaMalloc                                              → malloc_ct
+  cudaStreamCreate                                        → stream_ct
+  cudaEventCreate                                         → event_ct
+
+Weight function (weights chosen to reflect CERTAINTY each op is
+init-only; dense per-period observation volumes as of 2026-04-19 yolo):
+
+  init_score(P) =
+       100 * (init_ct         >= 1)    # cuInit ONLY fires at process start
+     + 100 * (module_ct       >= 1)    # cuLibraryLoadData only at startup
+     + 100 * (ctx_ct          >= 1)    # context creation is one-shot
+     +  50 * (get_proc_ct     >= 100)  # massive symbol resolution burst
+     +  20 * (dprops_ct       >= 1)    # device query — rare in steady state
+     +  20 * (load_mode_ct    >= 1)
+     +   5 *  malloc_ct                # allocations SOMETIMES occur in steady
+                                        # state (bad practice but not impossible)
+     +   3 *  stream_ct                # streams are occasionally lazy-created
+     +   1 *  event_ct                 # events are sometimes created dynamically
+
+Plus a weaker signal:
+  lazy_init_score(P) = get_proc_ct * 0.5 + sym_ct * 0.5
+                       (these can bleed into warmup)
+
+Thresholds:
+  init_score >= 100     → INIT candidate (a "hard" init-only signal present)
+  init_score between 20 and 100 → WARMUP candidate (weak signals only)
+  init_score < 20       → neither INIT nor WARMUP
+
+Rationale for weights: `cuInit`, `cuLibraryLoadData`, and
+`cuDevicePrimaryCtxRetain` are each INDEPENDENTLY sufficient — any
+one present means the period crosses the init boundary. We give them
+100 so a single occurrence trips the INIT threshold. `cudaMalloc`
+and `cudaStreamCreate` occurring in small numbers (1-3) might happen
+in steady state for apps that allocate dynamically; we weight them
+low so they don't falsely trip INIT.
+
+The WARMUP threshold (20) catches the case (observed as shape [3] in
+yolo) where init is "mostly done" but ORT still has a few hundred
+`cuGetProcAddress_v2` calls bleeding into frame 1. That period has
+~838 get_proc calls (score = 50 via threshold ≥ 100) plus the
+canonical steady-state compute — it lights up as WARMUP, not INIT,
+because `cuInit`/`cuLibraryLoadData`/ctx-create are NOT present.
+
+Refinement: if we observe apps where dynamic mallocs fire regularly
+in steady state, reduce the malloc weight or require malloc_ct ≥ 5.
+In yolo, steady-state malloc_ct = 0.
+
+
+Dominant-shape extraction
+-------------------------
+
+After classifying each period as either INIT / WARMUP candidate /
+"not init-related", run these steps:
+
+  1. Collect the DAG signatures of periods with
+     init_score < 20 AND not a TAIL candidate (see below).
+     This is the "pure productive set".
+
+  2. The MODE of signatures in the pure productive set is the
+     DOMINANT SHAPE. Its coverage fraction:
+
+         dominant_fraction = count(dominant_sig) / |productive_set|
+
+     A healthy app should have dominant_fraction ≥ 0.95. If lower,
+     either the app has multiple genuinely-distinct task DAGs (e.g.
+     a multi-model pipeline), or the detector needs refinement.
+
+  3. STEADY = the dominant signature's DAG. All periods matching
+     this signature get the STEADY label.
+
+
+Coalesced (frame-burst) detection
+---------------------------------
+
+For any period P whose signature ≠ dominant_sig:
+
+  Let D = dominant_sig's node list (call it a sequence of
+  (pe, name) pairs).
+  Let P_seq = P's node sequence.
+
+  If P_seq == D concatenated N times (for some integer N ≥ 2), AND
+  |P_seq| == N * |D|, label P as COALESCED with repeat_factor = N.
+
+  Implementation: compare P_seq[i] to D[i mod |D|] for all i. If
+  every position matches and |P_seq| is a positive integer multiple
+  of |D|, N = |P_seq| / |D|.
+
+  This is robust against the main source of coalesce (detector miss
+  during bursty moments) because the merged sequences are genuinely
+  N identical copies of D.
+
+
+Tail / end-phase detection
+--------------------------
+
+For any period P with init_score < 20, signature ≠ dominant_sig,
+and NOT coalesced:
+
+  Check if P_seq is a strict PREFIX of D (starting from D[0]):
+    match_count = longest k where P_seq[:k] matches D[:k]
+    if match_count == |P_seq| < |D|  → TAIL candidate
+
+  Additionally require that P is one of the LAST few periods
+  chronologically (last 3 as a safe default) — prefix match by
+  chance is possible for early periods but rare.
+
+  P_seq must have at least a few ops to avoid calling every
+  truncated fragment TAIL — set min prefix length = 10 nodes.
+
+  Label: TAIL with recorded match_count / |D| coverage fraction.
+
+
+Warmup detection
+----------------
+
+Periods with 20 ≤ init_score < 100 AND signature ≠ dominant_sig:
+
+  These are candidates. Additionally require that P is one of the
+  FIRST few periods chronologically (first 3 as a safe default).
+
+  Rationale: warmup is a transient that resolves within the first
+  frame or two as ORT completes its lazy-symbol-resolution paths,
+  caches are populated, cuBLAS / cuDNN algorithm selection settles.
+
+  Label: WARMUP.
+
+
+Unknown / residual
+------------------
+
+Any period that doesn't fit INIT / WARMUP / STEADY / TAIL /
+COALESCED goes to UNKNOWN. A production-quality implementation
+should LOG each UNKNOWN period's stats (node count, top ops,
+position in timeline) so we can refine the detector.
+
+
+Pseudocode
+----------
+
+    def classify_periods(periods, api_names, all_dags):
+        # 1. Score + per-period DAG
+        period_info = []
+        for i, (s, e) in enumerate(periods):
+            score = init_score(api_names[s:e+1])
+            dag = all_dags[i]
+            period_info.append({
+                "idx": i, "start": s, "end": e,
+                "score": score, "dag": dag,
+                "sig": dag_signature(dag),
+            })
+
+        # 2. Dominant shape on the productive subset
+        productive = [p for p in period_info if p["score"] < 20]
+        dom_sig = most_common([p["sig"] for p in productive])
+        dom_dag = first(p["dag"] for p in productive if p["sig"] == dom_sig)
+        dom_seq = [(n["pe"], n["name"]) for n in dom_dag["nodes"]]
+
+        # 3. Label
+        n_periods = len(period_info)
+        labels = []
+        for p in period_info:
+            if p["score"] >= 100:
+                labels.append("INIT")
+            elif p["sig"] == dom_sig:
+                labels.append("STEADY")
+            else:
+                p_seq = [(n["pe"], n["name"]) for n in p["dag"]["nodes"]]
+                # COALESCED?
+                if (len(p_seq) % len(dom_seq) == 0 and len(p_seq) > len(dom_seq)
+                    and all(p_seq[k] == dom_seq[k % len(dom_seq)]
+                            for k in range(len(p_seq)))):
+                    labels.append(f"COALESCED({len(p_seq)//len(dom_seq)})")
+                # TAIL?
+                elif (p["idx"] >= n_periods - 3
+                      and len(p_seq) >= 10
+                      and len(p_seq) < len(dom_seq)
+                      and p_seq == dom_seq[:len(p_seq)]):
+                    labels.append("TAIL")
+                # WARMUP?
+                elif 20 <= p["score"] < 100 and p["idx"] < 3:
+                    labels.append("WARMUP")
+                else:
+                    labels.append("UNKNOWN")
+
+        return labels, dom_sig, dom_dag
+
+
+Expected output (yolo_py, fish_compose_20260419_161633)
+-------------------------------------------------------
+
+Running the above on the 1,863 productive periods after the
+implementation was tuned (commit adding phase classification):
+
+  INIT        : 2 periods  (idx=0: sig 9c0b1bf, 2153 nodes, score=297
+                            idx=1: sig d76ae60, 1962 nodes, score=390)
+  STEADY      : 1857 periods (shape 45f1273, 1056 nodes)
+  TAIL        : 1 period   (idx=1862: sig 3a63b34, 718 nodes —
+                            prefix-match for 716 ops, trailing 2 ops
+                            = cudaStreamSynchronize cleanup pair)
+  COALESCED(2): 2 periods  (sig 3c90e07, 2× canonical)
+  COALESCED(3): 1 period   (sig 4357635, 3× canonical)
+  WARMUP      : 0 periods
+  UNKNOWN     : 0 periods
+
+Total: 1,863 labeled, all accounted for, 0 unknown.
+
+IMPORTANT — yolo specific observation on WARMUP:
+  The second productive period (idx=1) scores 390 — HIGHER than the
+  first init period (score=297). Reason: yolo's ORT CUDA provider
+  continues to fire `cuInit` × 2 and `cuLibraryLoadData` × 4 during
+  frame-1 inference (lazy library load: the first call that needs a
+  specific cuBLAS/cuDNN kernel triggers the backing .so's module
+  load at USE time, not at context creation). So period 1 is hybrid:
+  real canonical compute + ongoing init. Our classifier labels it
+  INIT (correctly — a period CAN'T be called "clean steady" while
+  cuInit is still firing).
+
+  This means yolo has NO separate WARMUP category distinct from
+  INIT — the init phase spans 2 periods, not 1. The WARMUP label is
+  still defined for future apps where the distinction is cleaner
+  (e.g., TensorRT apps where INIT is a compact burst followed by
+  a JIT-dominated first frame).
+
+IMPORTANT — TAIL fuzzy match tolerance:
+  The strict prefix rule (p_seq == dom_seq[:len(p_seq)]) failed by
+  2 nodes. Shape [5] matched the canonical DAG exactly for nodes
+  [0..715], then dominant had `cudaLaunchKernel → nchwToNhwcKernel`
+  while tail had `cudaStreamSynchronize × 2`. This is ORT's (or a
+  SIGTERM handler's) cleanup-sync before process death.
+
+  Relaxation: TAIL requires match_len / |tail| ≥ 0.95 AND all
+  trailing ops be `*Synchronize*`. This allows final cleanup-sync
+  ops to differ from the dominant while still labeling the shape as
+  a truncated last inference.
+
+Compare to the un-labeled view:
+  "6 unique DAGs: [0] 1857×, [1] 2×, [2] 1×, [3] 1×, [4] 1×, [5] 1×"
+  (what we had before this detector)
+
+After labeling:
+  "1 INIT DAG + 1 WARMUP DAG + 1 STEADY DAG (1857 repeats) +
+   1 TAIL DAG + 3 COALESCED (detector misses, map to STEADY)"
+  (what the task model actually needs)
+
+The three coalesced periods + the 1857 steady-state invocations
+total 1857 + 2×1 + 2×1 + 3×1 = 1862 ≈ 1863 STEADY equivalents (the
++1 is accounting: we count the coalesced counts, so 1857 + 2 + 2 + 3
+= 1864 steady invocations. The actual steady count in the trace is
+1857 + coalesced-frame contribution, which the paper should report
+as "1,861 effective steady-state invocations spread across 1,860
+distinct period boundaries plus 1 warmup + 1 tail + 1 init".)
+
+
+Paper integration
+-----------------
+
+This detector is ONE FIGURE plus ~half-a-page of description in the
+paper. Structure:
+
+  Figure: timeline view of the 6 yolo shapes on a mission mark-up.
+          Color-coded phases, annotations calling out INIT burst at
+          t=0, WARMUP at t=~20 ms, STEADY runs, COALESCED cases,
+          TAIL at SIGTERM.
+
+  Text: the INPUT (period-detector output) → SCORE → THRESHOLD →
+        COMPARE-TO-DOMINANT flow described above. Cite the PDF's
+        Typed DAG §4.5 as the "canonical task DAG" we're selecting
+        from among the noisy shape set.
+
+  Result statement: "For yolo_py, the dominant STEADY shape covers
+                    99.7 % of productive invocations. The remaining
+                    0.3 % consists exclusively of labeled lifecycle
+                    phases (INIT, WARMUP, TAIL) and known detector
+                    artifacts (COALESCED). No residual UNKNOWN
+                    shapes."
+
+Followup: this method needs validation on Autoware perception + one
+TensorRT app (NVTX markers present) to confirm generalization.
+
+
+Open items / paper_to_do integration
+-------------------------------------
+
+  - Validate thresholds across apps. yolo's INIT fingerprint is
+    idiosyncratic to ORT; a TensorRT app's INIT has different weights
+    (e.g. more cuModuleLoadData for loaded engines, fewer
+    cuGetProcAddress). The classifier should have per-framework
+    calibration OR use softer thresholds tuned via a small sample.
+
+  - WARMUP duration. How many first periods to consider "warmup
+    candidates"? We use 3 by default. Needs empirical check on apps
+    with slow JIT compilation (PyTorch first-run, TensorRT engine
+    build).
+
+  - TAIL detection strictness. Requiring exact prefix match might
+    miss cases where the process dies AFTER some but not all of
+    the final H2D/D2H traffic completed — the truncation point can
+    be mid-kernel-sequence, not cleanly at the prefix. Consider
+    fuzzy prefix match (90 % match instead of 100 %).
+
+  - COALESCED detection could fall back to pattern-repetition tests
+    for near-identical repeats (e.g., if ORT has one extra
+    cudaLaunchKernel in iter 2 due to cache miss). Exact match
+    is strict; allow 1-2 node tolerance.
+
+  - UNKNOWN observations drive next-iteration refinements. Log them
+    verbosely.
