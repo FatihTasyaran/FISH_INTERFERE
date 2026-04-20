@@ -594,6 +594,9 @@ def main():
     ap.add_argument("--min-gpu-ops", type=int, default=2,
                     help="Filter out periods with fewer than N GPU ops "
                          "(kernel launches + memcpys) — drops idle spans")
+    ap.add_argument("--container", default=None,
+                    help="InfluxDB container tag override (default: scope; "
+                         "for '__main__' scope falls back to session name)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Print DAG summary, do not persist to graph_store")
     args = ap.parse_args()
@@ -605,14 +608,20 @@ def main():
                 and d["v"].A_v.get("gpu_node")]
     log(f"scope {args.scope!r}: {len(oort_ids)} oort F vertices with GPU flag")
 
-    # The oort's "container" = the role; for the __composed__ scope we need
-    # to look at each oort's original container. For now, allow --scope role
-    # directly — caller passes the per-container scope.
-    container = args.scope
-    if container == graph_store.COMPOSED_SCOPE:
+    # The oort's "container" tag in InfluxDB points to the role name
+    # for multi-container sessions. For standalone sessions (scope
+    # __main__), ingest.py tags rows with container=<session-name>.
+    # For __composed__ scope we'd need per-oort container, not yet done.
+    if args.scope == graph_store.COMPOSED_SCOPE:
         log("WARN: running on __composed__ scope is not supported for DAG "
             "extraction (need per-container context). Pass the role scope.")
         return
+    if args.container:
+        container = args.container
+    elif args.scope == graph_store.STANDALONE_SCOPE:
+        container = args.session
+    else:
+        container = args.scope
 
     influx = connect_influx()
     any_updated = False

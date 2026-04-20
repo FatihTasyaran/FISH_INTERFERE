@@ -47,46 +47,95 @@ def shorten_symbol(sym):
     return sym
 
 
-def nsys_profiled_pids(mongo):
+def nsys_profiled_pids(mongo, session_dir=None):
     """Return set of PIDs that are running under nsys profiling.
 
-    FISH kills GPU-intensive nodes and resurrects them wrapped in nsys.
-    fish_events records: action='resurrect', resurrected_pid=<nsys PID>.
-    The actual node PID is a grandchild of the nsys process, found via
-    process_tree: nsys → nsys-launcher → actual_node.
+    Two nsys-wrapping patterns to cover:
 
-    These nodes get their Function layer from nsys data (gpu_kernels,
-    cuda_runtime) instead of rclcpp callback chains.
+    1. kill + resurrect (standalone GPU nodes — yolo_py etc.)
+       fish_events has action='resurrect' with resurrected_pid=nsys PID.
+       Chain: nsys → nsys-launcher → actual_node, found via process_tree.
+
+    2. launch_wrap (composable-node containers — Autoware pattern)
+       fish_events records only `daemon: nsys_report_complete pid=X source=
+       launch_wrap`. The wrapped container died before snapshot, so its
+       PID isn't in process_tree. Recovery: read the nsys sqlite's own
+       PROCESSES table — each sqlite lists every process observed during
+       the session, with `component_container`/`component_container_mt`
+       being the wrapped-root process we want.
+
+    Callbacks of these pids get flagged gpu_node=True so the GPU DAG
+    extractor later attaches a Typed DAG per F vertex.
     """
     profiled = set()
     pt = mongo["process_tree"]
 
+    # --- Path 1: kill + resurrect ------------------------------------
     for doc in mongo["fish_events"].find({"action": "resurrect"}):
         nsys_pid = doc.get("resurrected_pid")
         if nsys_pid is None:
             continue
-
-        # nsys_pid is the nsys profiler process.
-        # Chain: nsys (resurrected_pid) → nsys-launcher → actual node
-        # Find children of nsys_pid
         for child in pt.find({"PPID": nsys_pid}):
             child_pid = child["PID"]
             child_cmd = child.get("CMD", "")
             if "nsys-launcher" in child_cmd or "nsys" in child_cmd:
-                # This is nsys-launcher, look one level deeper
                 for grandchild in pt.find({"PPID": child_pid}):
                     gc_cmd = grandchild.get("CMD", "")
                     if "nsys" not in gc_cmd:
-                        # This is the actual node process
                         profiled.add(grandchild["PID"])
-                        print(f"  nsys-profiled: pid={grandchild['PID']} cmd={gc_cmd[:80]}")
+                        print(f"  nsys-profiled (resurrect): pid={grandchild['PID']} "
+                              f"cmd={gc_cmd[:80]}")
             elif "nsys" not in child_cmd:
-                # Direct child that's not nsys tooling
                 profiled.add(child_pid)
-                print(f"  nsys-profiled: pid={child_pid} cmd={child_cmd[:80]}")
+                print(f"  nsys-profiled (resurrect): pid={child_pid} cmd={child_cmd[:80]}")
+
+    # --- Path 2: launch_wrap (composable containers) -----------------
+    # Read nsys sqlite PROCESSES tables directly. We expect session_dir
+    # passed in; if not, derive from fish_events (first event has no
+    # session_dir in schema, so require the caller pass it).
+    if session_dir is None:
+        # Try to recover from environment/fallback — common FISH layout.
+        guess = os.path.expanduser("~/fish_traces")
+        # See if any fish_events carry a session dir hint — not today, skip.
+        pass
+    else:
+        nsys_dir = os.path.join(session_dir, "nsys")
+        if os.path.isdir(nsys_dir):
+            import sqlite3
+            for fname in sorted(os.listdir(nsys_dir)):
+                if not fname.endswith(".sqlite"):
+                    continue
+                path = os.path.join(nsys_dir, fname)
+                try:
+                    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+                    # A nsys sqlite's PROCESSES table lists *every* process
+                    # running on the host at session start — not just the
+                    # wrapped target. Join against CUPTI_ACTIVITY_KIND_RUNTIME
+                    # so we keep only pids that actually issued CUDA API
+                    # calls. Empty table (e.g. detection_by_tracker during a
+                    # short replay) → no wrapped GPU activity, skip file.
+                    try:
+                        rows = list(conn.execute("""
+                            SELECT p.pid, p.name, COUNT(*) AS n
+                            FROM CUPTI_ACTIVITY_KIND_RUNTIME r
+                            JOIN PROCESSES p
+                              ON (r.globalTid >> 24) = (p.globalPid >> 24)
+                            GROUP BY p.pid, p.name
+                            ORDER BY n DESC
+                        """))
+                    except sqlite3.OperationalError:
+                        rows = []
+                    conn.close()
+                except Exception as e:
+                    print(f"  [nsys] could not read {fname}: {e}")
+                    continue
+                for pid, name, n in rows:
+                    profiled.add(pid)
+                    print(f"  nsys-profiled (launch_wrap): pid={pid} name={name} "
+                          f"runtime_calls={n} src={fname}")
 
     if profiled:
-        print(f"  Total nsys-profiled PIDs: {profiled}")
+        print(f"  Total nsys-profiled PIDs: {sorted(profiled)}")
     return profiled
 
 

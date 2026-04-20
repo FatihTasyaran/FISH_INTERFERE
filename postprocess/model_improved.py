@@ -289,7 +289,7 @@ def identify_entities(mongo, nodes):
 # Layer 3: Callbacks (bulk load)
 # ---------------------------------------------------------------------------
 
-def identify_callbacks(mongo, nodes, entities, executors):
+def identify_callbacks(mongo, nodes, entities, executors, *, session_dir=None):
     """Resolve callback chains for each entity. Bulk load approach.
 
     Loads all init events once (~13K docs), builds in-memory indexes,
@@ -368,7 +368,7 @@ def identify_callbacks(mongo, nodes, entities, executors):
                               for d in rclpy_tmr_cb_added}
 
     # --- Resolve per-node ---
-    gpu_pids = nsys_profiled_pids(mongo)
+    gpu_pids = nsys_profiled_pids(mongo, session_dir=session_dir)
     node_to_pid = {}
     for ex in executors.values():
         for n_id in ex.Z_v:
@@ -646,7 +646,7 @@ def attach_callback_groups(mongo, executors, nodes, entities, functions):
 # ---------------------------------------------------------------------------
 
 def detect_oort_threads(mongo, executors, nodes, entities, functions, *,
-                        session=None, container=None):
+                        session=None, container=None, session_dir=None):
     """Detect non-executor threads that do GPU work and anchor them in
     the graph as (oore entity → oort function) vertices.
 
@@ -674,7 +674,7 @@ def detect_oort_threads(mongo, executors, nodes, entities, functions, *,
     """
     from utils import nsys_profiled_pids
 
-    gpu_pids = nsys_profiled_pids(mongo)
+    gpu_pids = nsys_profiled_pids(mongo, session_dir=session_dir)
     if not gpu_pids:
         log("detect_oort_threads: no GPU processes, skipping")
         return
@@ -1426,12 +1426,14 @@ if __name__ == "__main__":
     # Phase 1: Vertex discovery
     executors, nodes = identify_executors(mongo)
     entities = identify_entities(mongo, nodes)
-    functions = identify_callbacks(mongo, nodes, entities, executors)
+    functions = identify_callbacks(mongo, nodes, entities, executors,
+                                    session_dir=args.source_trace)
     attribute_aspects(mongo, executors, nodes, entities)
     attach_callback_groups(mongo, executors, nodes, entities, functions)
     detect_oort_threads(mongo, executors, nodes, entities, functions,
                         session=args.session,
-                        container=args.role or args.session)
+                        container=args.role or args.session,
+                        session_dir=args.source_trace)
     detect_actions(entities)
 
     if not args.no_split:
