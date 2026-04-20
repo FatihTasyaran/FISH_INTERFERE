@@ -2,6 +2,126 @@ FISH Development Notes — chronological journal
 ================================================
 
 
+2026-04-19/20 — first end-to-end Autoware test
+-----------------------------------------------
+
+Goal: validate the session-per-DB + rclpy + graph_store + oort +
+GPU-DAG + phase-detector stack on a real multi-container Autoware
+workload. `sample-rosbag` replay against `logging_simulator`.
+
+Setup:
+  Base image `autoware-dev-trt-a1000-fish:latest` (31GB, last committed
+  2026-04-12) was stale — did not contain any post-AAS work. Chose
+  the container_install route (user's preference: keep the image
+  immutable, reinstall FISH inside a fresh container) rather than
+  rebuilding the image.
+  fish_settings.ini: replay_rosbag=true, command=
+    `ros2 bag play ~/autoware_map/sample-rosbag -r 0.2 -s sqlite3`.
+  New container: autoware-fish-test. docker cp fish_interfere/ +
+    source setup_fish.sh --yes (clean install, 45 events registered,
+    4+2+2+4+5 tracepoint symbols linked, FISH wrapper at
+    /opt/ros/humble/fish/bin/ros2).
+
+Run: `ros2 launch autoware_launch logging_simulator.launch.xml
+       map_path:=$HOME/autoware_map/sample-map-rosbag
+       vehicle_model:=sample_vehicle sensor_model:=sample_sensor_kit`
+
+FISH pipeline result (~3 min end-to-end):
+  stabilization ~30s → launch_wrap wraps 4 GPU containers with nsys →
+  rosbag replay 150s (0.2x) → auto_stop → 4 nsys reports saved
+    pointcloud_container_mt (44K CUDA calls + 12K kernels)
+    traffic_light_node_container × 2 (17.8K each)
+    detection_by_tracker_node (NO CUDA in replay window — expected,
+      doesn't receive input during short window)
+
+Post-processing on host:
+
+1. Ingest (17.5 min, 34.8K docs/s):
+   36,499,991 ros2 events from 1.3GB LTTng trace.
+   80,004 cuda_runtime rows, 12,356 kernels, 3,103 memcpys,
+   3,004 memsets, 10,143 NVTX events (TRT containers emit them).
+   First run DEADLOCKED at 3.29M ros2 events — subprocess.PIPE
+   stderr filled with 121K bytes of LTTng-discard warnings, bt2
+   blocked in pipe_write(stderr), Python blocked in pipe_read(stdout).
+   Fix in ingest.py: redirect bt2 stderr to a log file instead of
+   PIPE. Added as immediate_work #0c (replace pipe with bt2 Python
+   bindings long-term).
+   Independent discovery from the stderr log: LTTng tracer dropped
+   **121,632 events out of ~16M (0.76 %)**, worst on stream 9 (14K)
+   and stream 0 (12K). Added as immediate_work #0d.
+
+2. Model extraction (3 min):
+   3,061 initial vertices (1 CN, 74 EX, 225 N, 1388 E, 1373 F),
+   5,877 edges. 1066/1069 entities got callback_group (99.7%).
+   Scheduler tracepoints: 359 exec_init, 764 cg_init, 5244 cg_add,
+   517 ex_add — scales smoothly to Autoware (~25x AAS).
+   BUG: `nsys_profiled_pids` only recognized the kill+resurrect
+   pattern → launch_wrap-wrapped containers were invisible → 0 oort,
+   0 gpu_node=true F vertices.
+   Fix in utils.py: extended `nsys_profiled_pids` to read each nsys
+   sqlite's PROCESSES table JOIN CUPTI_ACTIVITY_KIND_RUNTIME. This
+   correctly identified the 3 wrapped pids (3205, 3209, 3211) with
+   real CUDA activity. Second rerun: 146 F gpu_node=True (rclcpp
+   callbacks touching CUDA — the Autoware pattern the user explicitly
+   called out), 50 oort F (CUDA runtime/TRT worker threads).
+   Also plumbed session_dir through identify_callbacks +
+   detect_oort_threads so both can call the nsys-sqlite path.
+
+3. GPU DAG extraction (5 s):
+   BUG: gpu_dag.py used `container = args.scope`, but standalone
+   scope (__main__) doesn't match InfluxDB's actual container tag
+   (which is session-name for standalone). InfluxDB queries returned
+   0 rows on every oort.
+   Fix: added --container CLI override with fallback
+   (scope=__main__ → container=session-name).
+   Re-run results — phase detector output across 36 oort threads:
+       STEADY   89 (17%)    — sig=af5c05c4c8c5 is THE canonical
+                              traffic_light pipeline, 129 nodes
+                              (69 CPU + 57 SM + 3 CE), stable across
+                              4 worker threads at 4-5 invocations each
+       WARMUP   24 (4%)
+       INIT     12 (2%)
+       UNKNOWN  392 (73%)   — high; root cause: rosbag at -r 0.2
+                              × 50s = 250s replay is too short
+                              (15-25 periods/thread), multi-threaded
+                              TRT genuinely produces more shape
+                              variance than yolo_py, dominant-shape
+                              coverage drops below the 95% detector
+                              threshold.
+   Not a phase-detector bug. Paper note: Autoware's GPU workload is
+   structurally more shape-diverse than yolo. Longer replay + cross-
+   thread aggregation (follow_up.txt #1) will materially improve this.
+
+Findings + follow-ups tracked separately in notes/follow_up.txt:
+  1. Cross-thread shape aggregation (TRT worker pools share
+     canonical shape across threads — aggregate before labeling)
+  2. Duplicate oort F vertices across nsys sqlites (dedupe pid,tid)
+  3. Callback-bound GPU DAG extraction (146 gpu_node=True F vertices
+     never get DAGs extracted — gpu_dag only handles oort. THIS is
+     the rclcpp/Autoware case the user explicitly asked about. Must
+     implement before paper.)
+  4. cuda_callchain came out empty despite --cudabacktrace=true
+     (needs investigation — nsys version? sqlite really empty?)
+  5. oort taxonomy: main-loop (yolo) vs worker-pool (TRT) is a
+     distinct pattern worth a sub-type
+  6. Shape signature too strict for TRT dynamic variability
+  7. Replay length too short (use longer bag for paper runs)
+  8. Document the launch_wrap + detect_oort_threads bridge
+  9. Surface LTTng discard count in graph_meta stats
+  10. Uncommitted work listed
+
+Uncommitted at end of day (to commit tomorrow):
+  postprocess/ingest.py, utils.py, model_improved.py, gpu_dag.py,
+  fish_settings.ini, notes/immediate_work.txt + follow_up.txt.
+
+Conclusion: end-to-end pipeline works on Autoware, 4 genuine bugs
+found and fixed during the test (pipe deadlock, launch_wrap PID
+detection, InfluxDB container tag mismatch, session_dir plumbing).
+Phase detector behaves correctly but is calibrated for yolo-class
+(one dominant shape); Autoware's TRT pipelines need cross-thread
+aggregation + longer replay to produce clean STEADY stats.
+
+
 2026-04-19 (late evening) — oort/oore vertex types for non-executor GPU threads
 --------------------------------------------------------------------------------
 

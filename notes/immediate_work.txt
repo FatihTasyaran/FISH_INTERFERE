@@ -1,7 +1,85 @@
 Immediate Work Items
 ====================
 
-0c. Ingest nsys SCHED_EVENTS + SAMPLING_CALLCHAINS
+0c. Replace babeltrace2 stdout pipe with Python bindings / SQLite sink
+----------------------------------------------------------------------
+Observed 2026-04-19 on Autoware trace (fish_20260419_211621):
+  ingest_ros2_trace streamed bt2 stdout into Python, collected 16M
+  events. On noisy traces bt2 writes enough to stderr (176 tracer-
+  discarded warnings, 121K bytes in our case) to fill the 64 KiB
+  stderr pipe buffer. Since we only drained stdout, bt2 then blocked
+  in pipe_write(stderr), Python blocked in pipe_read(stdout), and the
+  pipeline deadlocked at ~3.29M committed events.
+
+  Patched (see ingest.py change 2026-04-19): redirect stderr to a log
+  file so it can't fill. This is a band-aid — the pipe architecture is
+  still fragile (any future stderr growth, any blocking MongoDB call,
+  any slow disk, and throughput drops).
+
+Better approach:
+  babeltrace2 ships Python bindings (`bt2` module) that expose Message
+  Iterators directly — no subprocess, no pipe, no text parsing. Each
+  event is a structured Python object with fields we can persist
+  straight into MongoDB / a SQLite cache / a parquet file.
+
+  Alternatives we considered:
+    (a) bt2 Python bindings → MongoDB directly. Cleanest. Event objects
+        are already typed; we skip _parse_trace_line entirely.
+    (b) Custom bt2 sink plugin (C++ or Python) that writes SQLite. Then
+        ingest reads SQLite. Separates trace-decode from DB-write — a
+        potential checkpoint/resume boundary for very long traces.
+    (c) Use sqlite-only from the start via a custom LTTng relayd sink
+        → likely overkill for now.
+
+  Recommendation: implement (a) first (smallest change), measure
+  throughput vs current pipe approach. If throughput beats 28K docs/s
+  and we want a reusable intermediate format, add (b) as an option.
+
+Open questions:
+  - Does the bt2 Python binding handle all our tracepoint payload types
+    (strings, arrays, enum) correctly? Need to confirm with
+    ros2:fish_publish_link + rclpy:* events specifically.
+  - Memory footprint of the bt2 message iterator on a 16M-event trace.
+
+
+0d. Detect + report LTTng buffer overflow during ingest
+--------------------------------------------------------
+Observed 2026-04-19 on the same Autoware trace:
+  bt2 stderr contained 176 `WARNING: Tracer discarded N events ...`
+  lines. Summed across streams: 121,632 events lost out of ~16M
+  (~0.76 %). Worst stream: 14,068 events lost in the first ~100 ms
+  (stream ID 9, probably the busiest tracepoint — TBD).
+
+  Previously this was silent. The stderr-to-file change in 0c makes
+  the warnings visible but doesn't flag them to the analysis pipeline.
+
+Fix:
+  In ingest.py after bt2 wait, scan bt2_err_path for
+  `Tracer discarded (\d+) events ... stream ID: (\d+)`. Aggregate per
+  stream + total. Emit:
+    - log line with summary (total lost + per-stream top 3)
+    - write a small `fishlog/lttng_discards.json` alongside the session
+      with full breakdown (stream → count, earliest + latest timestamp
+      windows)
+
+  In the graph_store + model extraction, surface this as a data-quality
+  flag on `graph_meta.stats`: `trace_discards={total, streams}`. Any
+  downstream analysis (response-time bounds, period detection) should
+  know the trace is incomplete.
+
+  Mitigation on collection side (separate track): increase LTTng UST
+  per-CPU subbuf size from the current default (see fish_tracepoints
+  session setup). Sample setting:
+    lttng enable-channel --subbuf-size=16M --num-subbuf=8 ...
+  Autoware's 20-stream high-rate case suggests 4× the current size is a
+  safe default. Measure loss rate across session durations before
+  committing.
+
+Validation target: re-run Autoware with bumped subbuf size, confirm
+loss drops to 0 (or below some acceptable threshold, e.g. < 0.1 %).
+
+
+0e. Ingest nsys SCHED_EVENTS + SAMPLING_CALLCHAINS
 --------------------------------------------------
 Two large nsys tables we deferred while ingesting the smaller ones
 (2026-04-19). Both are time-series-adjacent and need their own
@@ -46,67 +124,32 @@ attribution, CPU-bound vs memory-bound classification) but not for
 immediate GPU-side DAG + roofline work. Keep on this list.
 
 
-0a. [URGENT] Enable CUDA + Python backtrace in nsys profiling
---------------------------------------------------------------
+0a. [DONE 2026-04-19] Enable CUDA + Python backtrace in nsys profiling
+----------------------------------------------------------------------
 See notes/EXPECTED_OBSERVED.txt §9.
 
-Problem:
-  nsys currently records backtraces for only ~0.4 % of CUDA runtime
-  events (only sync-class APIs). 99.6 % of kernel launches and
-  memcpys have callchainId=0 — no stack recorded. This blocks
-  attributing GPU work back to user code (onnxruntime, do_yolo, etc.).
-
 Fix (two parts):
-  (A) FISH GPU daemon (python/fish/gpu.py): invoke nsys with
-      `--cudabacktrace=true` and, where supported,
-      `--python-backtrace=cuda`. Verify against the nsys version
-      bundled in the *-image-fish containers; flag names changed
-      across nsys releases.
-  (B) postprocess/ingest.py: pull CUDA_CALLCHAINS + StringIds from
-      the nsys sqlite alongside CUPTI_ACTIVITY_KIND_RUNTIME, resolve
-      symbol/module strings, attach to cuda_runtime rows (extra
-      fields, NOT tags — high cardinality). Keep the raw schema
-      backward-compatible (default empty).
+  (A) DONE — fish_settings.ini:7 `cudabacktrace = kernel,memory,sync`,
+      `python_backtrace = cuda`, `python_sampling = true`, passed to
+      nsys via python/fish/gpu.py:build_nsys_command.
+  (B) DONE — postprocess/ingest.py:_ingest_callchains pulls
+      CUDA_CALLCHAINS + StringIds into InfluxDB measurement
+      `cuda_callchain` (callchainId + stackDepth tags, symbol/module/
+      originalIP fields). cuda_runtime rows carry callchainId for
+      later join.
 
-Paper linkage: without (A) + (B), GPU-DAG nodes lose their "which
-user function called this" label, which is essential for per-callback
-roofline attribution. Item #9 (roofline) depends on this.
+Follow-up measurement (still pending): re-run on real hardware +
+verify actual backtrace coverage rate jumps from ~0.4 % baseline to
+near 100 %. Should be obvious on the first Autoware run.
 
 
-0b. Batch process detection in GPU daemon
+0b. [DONE 2026-04-19] Batch process detection in GPU daemon
 --------------------------------------------------
-Problem:
-  GPU daemon scans /proc one process at a time. Each new process triggers
-  a settle_time wait (default 3s) before the next scan. With Autoware's
-  74 processes, this means ~222 seconds (4 minutes) just for detection.
-
-  Current flow (serial):
-    detect PID 1234 → wait 3s → detect PID 1235 → wait 3s → ...
-
-  Expected flow (batch):
-    detect PID 1234, 1235, 1236, ... → wait 3s once → check all
-
-Root cause:
-  gpu.py daemon poll loop processes one new PID per cycle. Each cycle
-  sleeps settle_time after detection. Should collect ALL new PIDs in
-  one scan, then wait once, then process all.
-
-Fix:
-  In gpu.py daemon loop:
-    1. Scan /proc for ALL new PIDs (not seen before) in one pass
-    2. Wait settle_time ONCE
-    3. Check all new PIDs for CUDA libraries in parallel
-    4. Act on GPU processes (kill/resurrect for nsys)
-    5. Mark all checked PIDs as seen
-
-  This changes O(N * settle_time) → O(settle_time) for N processes.
-
-  Also consider: reduce settle_time to 1.0s or 0.5s for non-GPU nodes
-  (they don't need CUDA library loading time).
-
-Discovered: Autoware has 74 processes, 4 minutes wasted on serial detection.
-
-Priority: URGENT (blocks Autoware trace workflow)
+Fix landed in python/fish/gpu.py:1602-1617 (commit 25ae70f,
+multi-container FISH orchestrator work). Loop collects ALL new PIDs
+in one `scan_ros2_processes_with_cuda_check()` pass, sleeps
+`settle_time` ONCE for the whole batch, then handles each.
+O(N*settle_time) → O(settle_time).
 
 
 1. [FIXED 2026-03-29] Add globalTid to nsys ingest (cuda_runtime table)

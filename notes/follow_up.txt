@@ -1,0 +1,249 @@
+Follow-up items — from 2026-04-19/20 Autoware end-to-end test
+================================================================
+
+Context:
+  First end-to-end FISH test on real Autoware (logging_simulator +
+  sample-rosbag replay). Pipeline completed, graph_store produced 3161
+  vertex / 5977 edge model, 36 oort thread DAG extraction ran. Several
+  points surfaced that aren't full bugs but need follow-up work before
+  the paper run. See also notes/notes.txt 2026-04-20 and
+  notes/immediate_work.txt #0c / #0d.
+
+
+1. Cross-thread shape aggregation in gpu_dag.py
+-----------------------------------------------
+Observed:
+  TRT engines (traffic_light_node_container) have a pool of worker
+  threads (~20 per container). Each thread executes THE SAME canonical
+  inference pipeline (sig=af5c05c4c8c5 STEADY — 129 nodes / 69 CPU /
+  57 SM / 3 CE in the Autoware run). Because the detector runs
+  per-tid, each thread sees 15-25 periods of which only ~5 match the
+  canonical shape — too few for the ≥95% dominance threshold, so the
+  rest get labeled UNKNOWN (73% UNKNOWN rate).
+
+Plan:
+  Aggregate across threads that belong to the SAME container (or same
+  TRT engine). Candidate grouping:
+    - All oort tids sharing a pid
+    - All oort tids whose top-3 shape signatures overlap
+  Then dominant-shape detection runs on the combined period set and
+  STEADY becomes robust.
+
+  Note: yolo didn't need this because its one main-loop thread ran
+  all inference. Multi-threaded TRT + worker pools is the general case.
+
+
+2. Duplicate oort F vertices across nsys sqlites
+-------------------------------------------------
+Observed:
+  Running detect_oort_threads on 3 launch_wrap-nsys sqlites (one per
+  container) produced 50 oort F vertices, but actual distinct (pid, tid)
+  pairs are fewer (~36 unique). Causes:
+    - Each nsys sqlite's PROCESSES snapshot sees the entire host, so
+      ancestral tids (3205, 3347) match multiple nsys files.
+    - detect_oort_threads doesn't dedupe (pid, tid) across sources.
+
+Fix:
+  In detect_oort_threads, dedupe by (pid, tid) before creating oore+oort
+  vertex pairs. Prefer the source whose CUPTI_ACTIVITY_KIND_RUNTIME
+  has the highest call count for that tid (that's the "owning" nsys).
+
+  Also reconsider: oort threads inside a container (e.g. TRT's own
+  worker pool) are all under the same main container pid. Should they
+  be multiple oort F vertices, or one oort F with a list of worker tids?
+  Paper story depends on this — yolo's oort was ONE thread. Autoware's
+  oort is a WORKER POOL. Might warrant a new sub-type
+  (ptype="oort_worker_pool") or list-valued thread_tid. Discuss.
+
+
+3. Callback-bound GPU DAG extraction (rclcpp / Autoware pattern)
+----------------------------------------------------------------
+Observed:
+  146 F vertices in the Autoware graph have gpu_node=True (regular
+  rclcpp callbacks whose pid matches a launch_wrap nsys process).
+  Examples: TrafficLightClassifierNodelet, TrafficLightFineDetector,
+  PointCloudConcatenateDataSynchronizer, VoxelGridBasedEuclideanCluster,
+  PointcloudBasedOccupancyGridMap, CudaBlackboardSubscriber.
+
+  These are THE INTENDED attachment point for GPU DAGs under the
+  rclcpp pattern the user explicitly called out — "entities should be
+  attached to GPU callbacks in the expected way".
+
+  But gpu_dag.py currently only iterates oort F vertices. Callback-
+  bound GPU DAGs are NEVER extracted today.
+
+Plan:
+  Extend gpu_dag.py:
+    - New path "callback-bound extraction":
+        * For each F with gpu_node=True and ptype != "oort":
+            - Find callback_start/callback_end time windows in
+              ros2_trace for the function's callback_addr + vpid+vtid
+            - For each window, slice cuda_runtime events whose
+              time ∈ [cb_start, cb_end] and tid ∈ executor threads
+            - Build Typed DAG per callback invocation
+            - Collect unique shapes, phase-classify as usual
+    - Keep oort path as-is.
+
+  Challenge: callback_start events live in MongoDB (ros2_trace
+  timeseries), cuda_runtime in InfluxDB. Need to correlate by time +
+  pid + tid. We already do cross-store joins elsewhere (e.g.
+  detect_oort_threads), so the pattern is known.
+
+  Order of magnitude: an Autoware callback typically fires 50-500
+  times over a mission. Per-callback DAG aggregation should work with
+  the same 5ms sync-boundary detector tuned for callback-window length.
+
+  Paper: this is the RCLCPP case — THE dominant case in professional
+  Autoware-class robotics. Extracting DAGs per real callback is the
+  primary figure-producing result.
+
+
+4. cuda_callchain empty despite --cudabacktrace=true
+-----------------------------------------------------
+Observed:
+  fish_settings.ini:7 `cudabacktrace = kernel,memory,sync` is active
+  and ingest.py._ingest_callchains ran. But the session's cuda_callchain
+  measurement in InfluxDB contains 0 rows (expected: several hundred
+  thousand across all 3 nsys sqlites).
+
+Hypothesis:
+  (a) nsys in container is too old to honour cudabacktrace=kernel.
+  (b) launch_wrap's build_nsys_command gets the flag passed but nsys
+      silently ignores it for composable-node containers (different
+      code path vs daemon relaunch).
+  (c) CUDA_CALLCHAINS table exists in the sqlite but is empty (nsys
+      version mismatch, CUDA driver too old, etc.).
+
+Check:
+  Open one nsys sqlite directly:
+    python3 -c "
+    import sqlite3
+    c = sqlite3.connect('...pointcloud_container.sqlite')
+    for (n,) in c.execute('SELECT COUNT(*) FROM CUDA_CALLCHAINS'):
+        print(n)
+    "
+  If 0 — it's (a) or (b). Check nsys version in container, check the
+  actual nsys-profile command line captured in trace_session.sh logs.
+
+  If >0 — bug in _ingest_callchains (InfluxDB write path).
+
+Blocker for: paper's per-callback roofline attribution (§9 of
+EXPECTED_OBSERVED.txt). Chased in immediate_work #0a.
+
+
+5. "Oort" includes TRT internal worker threads
+-----------------------------------------------
+Observed:
+  Many of the 50 oort threads (tids 3347, 3362-3380, 3428, 3436) are
+  TRT / CUDA runtime internal worker threads — they do CUDA API calls
+  but are not the "main loop" or any user-level thread. Classifying
+  them as oort inflates the count and pollutes paper statistics.
+
+Plan / discussion:
+  These internal threads are qualitatively different from yolo's
+  main-loop oort:
+    - yolo oort: ONE thread, owns the whole inference pipeline,
+      explicit user code
+    - TRT oort: POOL of worker threads, internal to a runtime,
+      dispatched under the hood
+
+  Taxonomy options:
+    (a) Keep one ptype="oort"; add A_v["oort_kind"] ∈
+        {"main_loop", "worker_pool", "runtime_internal"} and infer from
+        thread-name + CUDA API volume patterns.
+    (b) Only mark main-loop threads as oort. Runtime-internal workers
+        stay invisible (acceptable loss: they're slaves to the
+        callback-bound F that owns the inference).
+    (c) Hybrid: keep them all as oort but add a "synthetic" flag for
+        runtime workers — show in viz, filter from paper stats.
+
+  Paper audience likely cares about (a) — categorize the parallel
+  pool vs the single main-loop case, which ARE different scheduling
+  patterns.
+
+
+6. Shape signature hashing may be too strict for TRT variability
+------------------------------------------------------------------
+Observed:
+  In Autoware TRT paths, consecutive inferences produce 10-16 unique
+  shapes per thread with only 5 matching the canonical. The shapes
+  differ by 1-3 CPU/SM nodes (likely dynamic shape padding, algorithm
+  auto-selection on first N calls, etc.).
+
+  Current signature is an exact hash over (pe, name) sequence + edge
+  set. Any 1-node diff → new signature.
+
+Plan:
+  Add a "shape cluster" pass:
+    - Cluster shapes by edit distance on (pe, name) sequence
+    - Shapes within distance ≤ 2 from the dominant merge under it
+    - Report both unique-count AND cluster-count
+
+  Or: relax the period detector to also skip small "trailing burst"
+  events after the main inference, reducing shape noise.
+
+  Or (user-facing): just warn when dominant-shape coverage < 50% —
+  signals "this workload has genuine shape variance, paper figure
+  should be a CLUSTER of shapes not a single DAG".
+
+
+7. Replay length too short for meaningful STEADY stats
+------------------------------------------------------
+Observed:
+  Our test used `ros2 bag play ... -r 0.2` on a ~50s rosbag → ~250s of
+  actual replay. Per-thread period counts of 15-25 are too low for any
+  dominant-shape detector to converge. 73% UNKNOWN rate is the direct
+  consequence.
+
+Plan:
+  Before the paper measurement run:
+    - Use a longer rosbag (or multiple back-to-back) to get 500+
+      canonical invocations per thread
+    - Run at -r 1.0 so TRT engines actually warm up (not compressed
+      time)
+    - Alternatively: use the real Autoware sensor-replay scenario
+      (AWSIM-linked, not just sample rosbag)
+
+
+8. Document the launch_wrap + detect_oort_threads bridge
+---------------------------------------------------------
+What changed:
+  utils.nsys_profiled_pids now accepts session_dir and reads nsys
+  sqlite PROCESSES JOIN CUPTI_ACTIVITY_KIND_RUNTIME to find wrapped
+  container pids. Also covers kill+resurrect path for backwards compat.
+
+What needs documenting:
+  - Update notes/EXPECTED_OBSERVED.txt §8 (oort pattern) to clarify
+    that detection now covers BOTH patterns.
+  - notes/graph_store.txt: note that session_dir is now a parameter of
+    model_improved.py's vertex-discovery step (read from
+    --source-trace).
+  - docs/graph_store.md (if any user-facing copy touches it): add.
+
+
+9. Data-quality surfacing: 121K discarded LTTng events
+-------------------------------------------------------
+Observed:
+  Summed bt2 stderr: 121,632 events dropped out of ~16M (0.76%).
+  Stream 9 (14K) and stream 0 (12K) worst. Not catastrophic but not
+  clean — any paper statistic like "callback X fires N times" needs
+  this asterisk.
+
+Plan:
+  Tracked as immediate_work #0d. Bump subbuf size; revalidate.
+  Also: before running paper measurements, verify loss ≤ 0.05%.
+
+
+10. Followup commit hygiene
+----------------------------
+As of end of 2026-04-20, uncommitted changes:
+  M postprocess/ingest.py        (stderr deadlock fix)
+  M postprocess/utils.py         (launch_wrap oort detection)
+  M postprocess/model_improved.py (session_dir plumbing)
+  M postprocess/gpu_dag.py       (container tag override)
+  M fish_settings.ini            (replay_rosbag=true)
+  M notes/immediate_work.txt     (0a/0b DONE, new 0c/0d)
+  + notes/follow_up.txt          (this file)
+  + notes/notes.txt              (today's journal)
+
+Commit before next session (tomorrow) so we don't lose the fixes.
