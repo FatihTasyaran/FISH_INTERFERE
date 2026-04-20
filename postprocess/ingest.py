@@ -513,14 +513,25 @@ def ingest_ros2_trace(db, session_dir: str, tz_name: str = "Europe/Amsterdam"):
     coll.create_index({"payload.node_handle": 1})
     coll.create_index({"payload.topic_name": 1, "ts": 1})
 
-    # Stream babeltrace2 output (16M+ lines, cannot hold in memory)
+    # stderr → file (not PIPE). Noisy traces (Autoware) emit enough CTF
+    # warnings to fill the 64 KB stderr pipe, which deadlocks: bt2 blocks
+    # in pipe_write(stderr), we block in pipe_read(stdout), events stop.
     trace_paths = " ".join(f'"{d}"' for d in ctf_dirs)
+    # Session dir may be root-owned (container bind mount); fall back to /tmp
+    err_name = f"bt2_{os.path.basename(session_dir)}_stderr.log"
+    try:
+        bt2_err_path = os.path.join(session_dir, "babeltrace2_stderr.log")
+        open(bt2_err_path, "a").close()
+    except (PermissionError, OSError):
+        bt2_err_path = os.path.join("/tmp", err_name)
     log(f"  Streaming babeltrace2 → MongoDB (batch_size={BATCH_SIZE})...")
+    log(f"  bt2 stderr → {bt2_err_path}")
 
     try:
+        bt2_err = open(bt2_err_path, "w")
         proc = subprocess.Popen(
             f"babeltrace2 {trace_paths}",
-            shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            shell=True, stdout=subprocess.PIPE, stderr=bt2_err,
             text=True, bufsize=1,
         )
     except FileNotFoundError:
@@ -556,10 +567,11 @@ def ingest_ros2_trace(db, session_dir: str, tz_name: str = "Europe/Amsterdam"):
         inserted += len(buf)
 
     proc.wait()
+    bt2_err.close()
     if proc.returncode != 0:
-        stderr = proc.stderr.read()
-        log(f"  babeltrace2 exited with code {proc.returncode}: "
-            f"{stderr[:200]}")
+        with open(bt2_err_path) as fp:
+            tail = fp.read()[-400:]
+        log(f"  babeltrace2 exited with code {proc.returncode}: ...{tail}")
 
     elapsed = time.time() - t_start
     rate = inserted / elapsed if elapsed > 0 else 0
