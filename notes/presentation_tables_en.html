@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>FISH presentation tables</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2em auto; }
+h2 { color: #333; margin-top: 2em; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #666; padding: 6px 12px; text-align: left; }
+th { background: #eee; }
+td.num { text-align: right; }
+p.hint { color: #888; font-size: 0.85em; font-style: italic; }
+</style></head><body>
+<h1>FISH presentation tables — select a table and copy into Google Slides</h1>
+<p class="hint">Open this file in your browser, click-and-drag to select the whole table (including header row), Ctrl+C, then Ctrl+V into a Google Slides text box or shape — Slides preserves the table grid when pasting HTML tables.</p>
+
+<h2>Table 1 — Event category breakdown (Autoware run, fish_20260420_212042r)</h2>
+<table>
+<tr><th>Category</th><th>Event count</th><th>% total</th><th>% non-hot</th></tr>
+<tr><td>Runtime hot (callback_start/end)</td><td class="num">2,285,594</td><td class="num">98.75%</td><td class="num">—</td></tr>
+<tr><td>Stock init (node + entity + rclcpp chain)</td><td class="num">16,097</td><td class="num">0.70%</td><td class="num">55.7%</td></tr>
+<tr><td>FISH scheduler introspection</td><td class="num">7,720</td><td class="num">0.33%</td><td class="num">26.7%</td></tr>
+<tr><td>FISH link (publish_link + client_link)</td><td class="num">2,851</td><td class="num">0.12%</td><td class="num">9.9%</td></tr>
+<tr><td>FISH service client (request + response)</td><td class="num">1,836</td><td class="num">0.08%</td><td class="num">6.4%</td></tr>
+<tr><td>FISH rclpy parity</td><td class="num">373</td><td class="num">0.02%</td><td class="num">1.3%</td></tr>
+<tr><td>FISH action server (not in this workload)</td><td class="num">0</td><td class="num">0.00%</td><td class="num">0.0%</td></tr>
+<tr><th>TOTAL</th><th class="num">2,314,471</th><th class="num">100%</th><th class="num">100%</th></tr>
+</table>
+
+<h2>Table 2 — Stock vs FISH-custom</h2>
+<table>
+<tr><th>Source</th><th>Event count</th><th>Share</th></tr>
+<tr><td>Stock ros2_tracing (upstream)</td><td class="num">2,301,691</td><td class="num">99.45%</td></tr>
+<tr><td>FISH custom (our additions)</td><td class="num">12,780</td><td class="num">0.55%</td></tr>
+</table>
+
+<h2>Table 3 — Whitelist before/after (Autoware replay)</h2>
+<table>
+<tr><th>Metric</th><th>Pre-whitelist</th><th>Post-whitelist</th><th>Reduction</th></tr>
+<tr><td>ros2_trace event count</td><td class="num">36,500,000</td><td class="num">2,314,471</td><td class="num">~16×</td></tr>
+<tr><td>LTTng trace file size</td><td class="num">1.3 GB</td><td class="num">93 MB</td><td class="num">~14×</td></tr>
+<tr><td>Ingest time</td><td class="num">17 min</td><td class="num">1.5 min</td><td class="num">~11× faster</td></tr>
+<tr><td>LTTng discarded events</td><td class="num">121,632</td><td class="num">0</td><td>buffer overflow resolved</td></tr>
+</table>
+
+<h2>Table 4 — 14 stock events (upstream ros2_tracing), by category</h2>
+<table>
+<tr><th>Category</th><th>Event name</th><th>Count</th></tr>
+<tr><td>Node lifecycle (1)</td><td>rcl_node_init</td><td class="num">285</td></tr>
+<tr><td rowspan="5">Entity init, rcl layer (5)</td><td>rcl_timer_init</td><td class="num">4,755</td></tr>
+<tr><td>rcl_publisher_init</td><td class="num">1,331</td></tr>
+<tr><td>rcl_service_init</td><td class="num">1,201</td></tr>
+<tr><td>rcl_client_init</td><td class="num">1,120</td></tr>
+<tr><td>rcl_subscription_init</td><td class="num">1,063</td></tr>
+<tr><td rowspan="6">Callback chain, rclcpp layer (6)</td><td>rclcpp_callback_register</td><td class="num">2,510</td></tr>
+<tr><td>rclcpp_subscription_init</td><td class="num">1,184</td></tr>
+<tr><td>rclcpp_subscription_callback_added</td><td class="num">1,184</td></tr>
+<tr><td>rclcpp_service_callback_added</td><td class="num">1,188</td></tr>
+<tr><td>rclcpp_timer_callback_added</td><td class="num">138</td></tr>
+<tr><td>rclcpp_timer_link_node</td><td class="num">138</td></tr>
+<tr><td rowspan="2">Runtime callback window (2)</td><td>callback_start</td><td class="num">1,142,798</td></tr>
+<tr><td>callback_end</td><td class="num">1,142,796</td></tr>
+</table>
+
+<h2>Table 5 — FISH custom events (17 total), counts from Autoware run</h2>
+<table>
+<tr><th>Category</th><th>Event name</th><th>Count</th><th>Added</th></tr>
+<tr><td rowspan="4">Scheduler introspection</td><td>fish_cbgroup_add</td><td class="num">5,888</td><td>2026-04-18</td></tr>
+<tr><td>fish_callback_group_init</td><td class="num">836</td><td>2026-04-18</td></tr>
+<tr><td>fish_executor_add_cbgroup</td><td class="num">604</td><td>2026-04-18</td></tr>
+<tr><td>fish_executor_init</td><td class="num">392</td><td>2026-04-18</td></tr>
+<tr><td rowspan="2">Callback-link (dedup-guarded)</td><td>fish_publish_link</td><td class="num">2,141</td><td>2026-04-14</td></tr>
+<tr><td>fish_client_link</td><td class="num">710</td><td>2026-04-14</td></tr>
+<tr><td rowspan="2">Service client tracing</td><td>rclcpp_client_request_sent</td><td class="num">1,057</td><td>2026-03-31</td></tr>
+<tr><td>rclcpp_client_response_received</td><td class="num">779</td><td>2026-03-31</td></tr>
+<tr><td rowspan="5">rclpy parity</td><td>rclpy_callback_register</td><td class="num">129</td><td>2026-03-28</td></tr>
+<tr><td>rclpy_timer_callback_added</td><td class="num">115</td><td>2026-03-28</td></tr>
+<tr><td>rclpy_timer_link_node</td><td class="num">115</td><td>2026-03-28</td></tr>
+<tr><td>rclpy_service_callback_added</td><td class="num">13</td><td>2026-03-28</td></tr>
+<tr><td>rclpy_subscription_callback_added</td><td class="num">1</td><td>2026-03-28</td></tr>
+<tr><td rowspan="4">Action server</td><td>rclcpp_action_server_init</td><td class="num">0</td><td>2026-03-28</td></tr>
+<tr><td>rclcpp_action_execute_goal</td><td class="num">0</td><td>2026-03-28</td></tr>
+<tr><td>rclcpp_action_execute_cancel</td><td class="num">0</td><td>2026-03-28</td></tr>
+<tr><td>rclcpp_action_execute_result</td><td class="num">0</td><td>2026-03-28</td></tr>
+</table>
+
+</body></html>

@@ -1,0 +1,264 @@
+FISH development summary — 2026-04-20 → 2026-04-21 (day-into-night session)
+============================================================================
+Authored 2026-04-21 (Tuesday, early hours) — covers work done from
+2026-04-20 afternoon through the overnight reruns into 2026-04-21.
+Meeting date: 2026-04-21.
+
+Goal of the day:
+  End-to-end rerun on both Autoware (logging_simulator + sample-rosbag)
+  and AAS (yolo_py + fish_compose) with the improved FISH pipeline:
+  tracepoint whitelist, nsys flag additions (cuda_event_trace,
+  cuda_graph_trace, cuda_trace_all_apis), stream-bridge + SYNC
+  attribution ported into the main pipeline, and daemon behavior
+  validated on real workloads.
+
+
+What changed in the codebase today
+-----------------------------------
+
+1. Tracepoint whitelist (fish_events.txt)
+   - 45 LTTng events → 31 (drop 14 high-volume/unused: rmw/rcl/rclcpp
+     publish+take, executor_spin events, lifecycle, rcl_init).
+   - Keep 5 "reserved" FISH-custom events (action execute, rclpy
+     timer_link_node, client_response_received).
+   - Effect on first successful rerun: 36.5M events → 2.3M events,
+     ingest time 17 min → 90 s, zero LTTng discards.
+
+2. nsys flag additions (fish_settings.ini + gpu.py build_nsys_command)
+   - cuda_event_trace = true  → deterministic event↔wait correlation
+                                (fixes ISSUE-002 heuristic dependency)
+   - cuda_graph_trace = node  → per-kernel records under CUDA Graphs
+   - cuda_trace_all_apis = true → full CUDA API timeline
+   - Observation on Autoware: combined overhead was too high,
+     pointcloud_container nsys was SIGKILL'd (exit code -9) during
+     TRT engine load. Backed off later in the day.
+
+3. launch_wrap.py flag handling
+   - Default NSYS_FLAGS: minimal (trace=cuda,nvtx, export=sqlite,
+     force-overwrite=true) — same as was working on 2026-04-19.
+   - Extra flags (event-trace, graph-trace=node, trace-all-apis)
+     now all opt-in via env vars: FISH_CUDA_EVENT_TRACE=1,
+     FISH_CUDA_GRAPH_NODE=1, FISH_CUDA_TRACE_ALL_APIS=1.
+
+4. Daemon stabilization fixes (gpu.py _wait_for_stable)
+   Two structural problems fixed, one symptom mitigated:
+
+   a) "Empty = stable" premature fallback
+      Before: daemon polled component_list / launch_output at t+0;
+      both were empty (launch hadn't spawned anything yet);
+      cl_count and ex_count hit threshold; daemon declared
+      "mode=run" within 30 s of session start — EVERY SINGLE TIME.
+      This meant rosbag replay fired before Autoware finished
+      loading. Observed consistently in every previous session:
+      all fish_compose_* runs and the 2026-04-19 Autoware run
+      both logged "containers=0 components=0 mode=run" despite
+      having real workloads running.
+   Fix: added cl_seen_nonempty / ex_seen_nonzero flags. Empty-stable
+        fallback now requires EITHER at least one poll observed
+        non-empty earlier (true "loaded then idle") OR a 120 s
+        timeout (true run-mode like yolo_py under ros2 run).
+   Result: daemon now WAITS until Autoware has started spawning,
+            then stabilises on the actual counts. First run with
+            non-zero counts in the log ever: fish_20260420_224756
+            (containers=20 components=36).
+
+   b) component_list content fluctuation
+      Autoware's `ros2 component list` output fluctuates constantly
+      because the service-discovery stream keeps churning even after
+      all composable nodes are up (68→71→93→56→89→...). Full-snapshot
+      equality stability never triggered.
+   Fix: compare by CONTAINER COUNT only (n_cont). Component count
+        joins the log for reporting but doesn't gate stability.
+        Container count is the structural invariant ("all composable
+        node containers up"). Converges within ~10 s of autoware
+        starting to load.
+
+   c) cl_required reduced from 3 to 2
+      30 s → 20 s of stability required. Still enough to filter
+      transient DDS churn.
+
+   d) Poll-log debug trail
+      Every CL and EX poll now appends a line to /tmp/fish_polls.log
+      (tail-able from the host). Replaces the previously-buffered
+      python prints that were useless for live debugging.
+
+5. Added postprocess/gpu_attribution.py + gpu_task_graph.py
+   - Reusable library for per-process Typed DAG extraction with
+     stream-bridge attribution (flag 1) and SYNC integration
+     (flag 4). Writes attributed gpu_dags and stream DAG edges to
+     graph_store. See notes/three_flags_gpu_model.txt,
+     notes/stream_bridge.txt, notes/gpu_mapping_datapoints.txt.
+
+6. nsys utcEpochNs local-time fix (gpu_attribution._session_start_ns_tz_safe)
+   - ISSUE-002 in notes/known_issues.txt.
+   - On Europe/Amsterdam machines, nsys reports session start as
+     local-epoch-ns despite column name "utcEpochNs". We parse the
+     ISO-string columns instead to get true UTC epoch.
+
+7. Viz: postprocess/gpu_task_graph_viz.py
+   - Two modes: per-callback shape DAG (with stream-coloured
+     clusters and edge annotations), and process-level stream DAG
+     (streams as vertices, inter-stream wait counts as edges).
+
+
+Autoware situation (the part that broke today)
+-----------------------------------------------
+
+Previous successful Autoware run: fish_20260419_211621
+  - pointcloud_container: 12,356 kernels, 3,776 syncs, 1.2 GB sqlite
+  - Full TRT inference pipeline fired.
+
+Today's Autoware runs: fish_20260420_{220050, 224756, 230224, 231303,
+                                         231745, 232806}
+  - pointcloud_container: 8 kernels, ~50 memset, ~60 memcpy, 2 MB sqlite
+  - Only init/teardown API calls; no actual inference.
+
+What we ruled out:
+  - nsys overhead (tested all 3 new flags individually; problem
+    persists even with just "yesterday's minimal" trace=cuda,nvtx).
+  - TRT engine JIT compile (log shows "Loading engine" + "Loaded
+    engine size: N MiB" — loading from cached .plan, not building).
+  - Tracepoint whitelist (runs with or without it behave the same).
+  - Daemon premature mode=run (after fix, daemon correctly waits).
+
+Observed symptoms (every today run):
+  - /autoware/map/topic_rate_check/vector_map STALE
+  - /autoware/map/topic_rate_check/pointcloud_map STALE
+  - /autoware/localization/topic_rate_check/transform STALE → ERROR
+  - /autoware/perception/topic_rate_check/pointcloud ERROR
+  - [sensing.lidar.concatenate_data] "Concatenated cloud is an empty
+    pointcloud" — fires repeatedly.
+  - autoware_ndt_scan_matcher: "Initial Pose Estimation is Unstable.
+    Score is 0" — localization never converges.
+
+Suspected root cause (not fully confirmed):
+  sample-rosbag publishes RAW sensor packets (VelodyneScan on
+    /sensing/lidar/{left,right,top}/velodyne_packets, 288-299 msgs
+    over 30 s), and an IMU, GNSS, vehicle status — but NO map topics,
+    and possibly no pre-decoded pointclouds.
+  Autoware's logging_simulator.launch.xml expects a specific data
+    flow that works with this bag IF localization starts successfully.
+  Without a valid initial pose (NDT scan matcher needs one), the
+    whole pipeline is stuck in "waiting for localization", sensor
+    data never flows to perception, no inference.
+
+Yesterday's run (19/04) somehow got past this — we could NOT
+reproduce that on 20/04 despite:
+  - Fresh container from the same image (autoware-dev-trt-a1000-fish)
+  - Same launch command (logging_simulator, sample-map-rosbag,
+    sample-vehicle, sample-sensor-kit)
+  - Same rosbag (sample-rosbag)
+  - rviz on AND off
+  - Minimal nsys flags (matching 19/04) AND extended flags
+
+The only known-not-identical variable between 19/04 and today is
+container state history — 19/04's container had been running
+earlier FISH work before the successful session; today's containers
+are all freshly docker run'd from the image. Something about the
+previous container state made initial pose propagate correctly.
+
+Open question: why did pointcloud pipeline work 19/04 and not 20/04.
+    Parking this; it is not a FISH bug, it is an Autoware / demo
+    workflow issue. For the paper, the 19/04 session IS usable — it
+    has 12K real kernels with meaningful SM/CE distribution and we
+    already ran gpu_task_graph on it (see graph_store for
+    fish_20260419_211621).
+
+
+What we validated today on the data we have (pre-whitelist)
+-----------------------------------------------------------
+
+  - Tracepoint whitelist ingest: 36.5M → 2.3M events, 17 min → 90 s.
+  - fish_events.txt whitelist leaks: ZERO unexpected events observed;
+    missing only the 4 rclcpp_action_* events (because this workload
+    doesn't use action servers — they're reserved, not "unused").
+    See notes/tracepoint_inventory.txt for per-event citations.
+  - --cuda-event-trace fills SYNC.eventId: verified via direct
+    sqlite probe on pointcloud (97 type-2 waits, all eventId valid)
+    — previously eventId was always -1.
+  - Daemon stability fix on Autoware: first-ever run where daemon
+    correctly waited and logged REAL counts (20 containers, 36-72
+    components depending on run). Before, every session went
+    straight to mode=run within 30 s of daemon start.
+  - nsys SIGKILL issue reproducible + isolatable: when
+    --cuda-trace-all-apis and --cuda-graph-trace=node are both
+    enabled on Autoware, pointcloud_container's nsys gets SIGKILL'd
+    during TRT engine load. With minimal config the nsys processes
+    stay up and save cleanly on auto-stop.
+  - gpu_task_graph.py end-to-end on 19/04 data: callback-bound + oort
+    paths both produce gpu_dags; process-level gpu_task_graph meta
+    written to EX vertices (stream_wait_counts, stream_dag_edges
+    from the time-proximity heuristic, oort residual fraction,
+    sync_types breakdown).
+
+
+Where we left off (for tomorrow / next session)
+-----------------------------------------------
+
+STACK (notes/stack.txt top of stack wins):
+  #4 tracepoint whitelist                    — DONE (applied, validated)
+  #2 rerun with updated config for gpu trace — PARTIAL
+        (daemon fix validated on Autoware; Autoware data-flow issue
+         blocks meaningful pointcloud nsys content; AAS pending)
+  #1 stream-dependency resolve — integrate into model + viz
+        — DONE on 19/04 data; will re-run on the upcoming clean
+        session once Autoware data flow is sorted OR we just use
+        AAS.
+
+Not blocking paper prep:
+  - 19/04 Autoware session (fish_20260419_211621) has valid 12K-kernel
+    pointcloud data; graph_store has gpu_task_graph meta.
+  - yolo_py AAS session (fish_compose_20260419_161633) has the
+    canonical oort / stream-bridge demonstration.
+  - Both process-level stream DAG viz and per-callback shape viz
+    produce meaningful figures.
+
+Immediate to-dos for the presentation:
+  - Pull together the three-flag / four-flag narrative from
+    notes/three_flags_gpu_model.txt.
+  - Use the existing dag_out/*.svg figures (shape_F1835_... and
+    process_pid3211) as evidence of the approach.
+  - Frame: "callback ≠ task; task = stream sync-to-sync span
+    (or wait-event-bounded span); we derive this from standard
+    CUPTI tables (RUNTIME, KERNEL, MEMCPY, MEMSET, SYNCHRONIZATION)
+    via stream-bridge attribution (notes/stream_bridge.txt)".
+
+For next working session:
+  - Autoware: either (a) set /initialpose explicitly at replay start
+    (ros2 topic pub before starting rosbag), or (b) use
+    planning_simulator with AWSIM / or a pre-preprocessed rosbag
+    that has PointCloud2 (not raw velodyne_packets).
+  - AAS: run fish_compose to get a fresh yolo_py + rest. This
+    doesn't depend on Autoware's localization chain, so it'll
+    produce meaningful data the first try.
+  - Then: shape_embed.py on both datasets for the variation
+    clusters figure (stack item #40).
+
+
+Files changed today (for commit)
+---------------------------------
+
+  fish_events.txt                           (whitelist)
+  fish_settings.ini                         (nsys flags + doc block)
+  python/fish/gpu.py                        (daemon fixes, poll log)
+  python/fish/launch_wrap.py                (opt-in extra nsys flags)
+  postprocess/gpu_attribution.py            NEW
+  postprocess/gpu_task_graph.py             NEW
+  postprocess/gpu_task_graph_viz.py         NEW
+  postprocess/graph_store.py                (NODE_ATTR_KEYS extended)
+  postprocess/analyze_process_gpu.py        (sync-aware analyse)
+  postprocess/ingest.py                     (stderr pipe fix)
+  notes/tracepoint_inventory.txt            NEW
+  notes/three_flags_gpu_model.txt           NEW
+  notes/stream_bridge.txt                   NEW
+  notes/gpu_mapping_datapoints.txt          NEW
+  notes/embed_start.txt                     NEW
+  notes/paper_important_points.txt          NEW
+  notes/known_issues.txt                    (+ISSUE-002 TZ, +ISSUE-003
+                                              cuda-event-trace)
+  notes/follow_up.txt                       (new paper follow-ups)
+  notes/notes.txt                           (journal update)
+  notes/stack.txt                           NEW
+  notes/stack_log.txt                       NEW
+  notes/autonomous_log.txt                  NEW
+  notes/summary_20260420.txt                THIS FILE

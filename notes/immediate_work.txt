@@ -1,6 +1,61 @@
 Immediate Work Items
 ====================
 
+0. Process-level period extraction + G5 phase classifier wiring
+---------------------------------------------------------------
+Status: spec exists (notes/phase_detector.txt §G5, also written up in
+notes/presentation_stack_v2_en.html), implementation does NOT.
+
+What is missing:
+  FISH currently classifies SHAPES (per callback-invocation Typed DAG)
+  via shape_phase_classifier.py (added 2026-04-27). That is
+  callback-level. Orthogonal to it, the original G5 spec is
+  PROCESS-level: detect period boundaries (cudaStreamSynchronize +
+  >5ms idle gap, OR per-stream gap-based partition v2), then label
+  each period INIT / WARMUP / STEADY / TAIL / COALESCED(N) / UNKNOWN
+  using init_score over the period's API-name list and structural
+  signature matching.
+
+Why we need it now:
+  Callback-shape classification cannot detect the real INIT phase
+  because cuInit / cuLibraryLoadData / cudaMalloc bursts happen in
+  the process startup period BEFORE any callback fires. Without the
+  process-level period extractor we cannot:
+    - identify the INIT period (or WARMUP) at all,
+    - segment the trace into frames so per-frame statistics
+      (response time, end-to-end latency, jitter) become measurable,
+    - tie process-level phase to callback-level shape (e.g. "is the
+      anomaly shape only seen during WARMUP periods?").
+
+Concrete plan:
+  - Implement period_detector.py in postprocess/:
+      input  = nsys sqlite per pid + (optional) ros2_trace
+      output = list[(start_ns, end_ns, api_names_within, dag_within)]
+  - Wire init_score and the 6-rule classifier (G5 step 3) onto each
+    period.
+  - Persist per-period labels onto an EX-level attribute
+    (EX.A_v["periods"]) similar to what we did for gpu_task_graph.
+  - Cross-reference: for each callback shape, record the SET of
+    process-level period labels it was observed in. If a shape only
+    appears in INIT periods it gets the callback-level "init"
+    treatment; otherwise the existing shape-level rules apply.
+  - Update shape_phase_classifier.py to consume EX.A_v["periods"]
+    instead of trying to score init at shape level.
+
+Open questions (parked):
+  - Period boundary heuristic: sync+gap is brittle for streams with
+    no host syncs (regime B). v2 spec mentions "GPU-side gap-based
+    partition per stream" — needs more precise definition.
+  - For multi-stream workloads where streams progress independently,
+    do we define one period (taking the union of stream activity) or
+    per-stream periods?
+
+Discussed: 2026-04-27, after callback-level classifier showed init=0
+on every callback (mechanical reason: no init tokens in any callback
+DAG). This task is PRE-condition for completing #37
+(formalize phase detection, paper-ready).
+
+
 0c. Replace babeltrace2 stdout pipe with Python bindings / SQLite sink
 ----------------------------------------------------------------------
 Observed 2026-04-19 on Autoware trace (fish_20260419_211621):

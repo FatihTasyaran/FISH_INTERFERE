@@ -1,0 +1,341 @@
+Weekly summary — 2026-04-14 (Salı) → 2026-04-21 (Salı)
+=========================================================
+
+Derived from git log + notes/ modification times across the week.
+Organised by day. Each commit/note cited with hash + filename.
+
+
+2026-04-14 (Salı) — callback→publisher/client link tracepoints
+---------------------------------------------------------------
+
+Only commit: **952a939** "fish_publish_link / fish_client_link
+tracepoints — deterministic callback-to-publisher/client association"
+  - Two new LTTng tracepoints defined in tracetools
+  - Fired from rclcpp Publisher::publish and Client::async_send_request
+    callsites, carrying (callback_addr, publisher_handle / client_handle)
+  - Replaces a runtime-window scan heuristic for attributing which
+    callback "owns" which publish / client-request
+  - Postprocess consumes them in model_improved.py attribute_aspects
+    (path picked when the events are present; fallback preserved)
+
+Notes: notes/purpose.txt last modified this day (kapsam planı).
+
+
+2026-04-15 → 2026-04-17 (Çarşamba–Cuma) — no commits, no notes
+
+  Quiet days; working but no persisted changes to repo.
+
+
+2026-04-18 (Cumartesi) — scheduler introspection + graph_store
+---------------------------------------------------------------
+
+Commit: **0284efb** "Scheduler introspection, graph_store persistence,
+end-to-end compose"
+
+Scope of this commit:
+  - 4 new ros2 tracepoints shipped: fish_executor_init,
+    fish_callback_group_init, fish_cbgroup_add,
+    fish_executor_add_cbgroup (SingleThreaded/MultiThreaded executor
+    + callback-group topology captured at runtime)
+  - Postprocess attach_callback_groups() in model_improved.py:
+    reads the 4 events, attaches executor_type / num_threads to EX
+    vertices and callback_group metadata to E vertices
+  - graph_store.py: persistent (mutable, audited) graph stored in
+    MongoDB per scope, replacing the transient pickle
+  - fish_compose.py: end-to-end multi-container compose flow with
+    cross-container L-1 edges; refactor
+
+Notes added / updated:
+  - notes/software_architecture.txt (new top-level architecture
+    description aligned with graph_store + compose)
+  - notes/architecture.mmd + architecture.svg (mermaid source +
+    rendered SVG)
+
+
+2026-04-19 (Pazar) — the big GPU-modelling day
+-----------------------------------------------
+
+Many commits, in order:
+
+1. **84efb3a** "rclpy scheduler tracepoints (parity with C++) + dedup
+   for rclpy add_node cycle"
+     - Adds rclpy_{subscription/service/timer}_callback_added,
+       rclpy_timer_link_node, rclpy_callback_register — Python parity
+       of the 4 existing C++ scheduler events
+     - Dedup logic for rclpy's repeat add_node firings (103K → 34
+       events in one AAS session, ~3000× reduction)
+
+2. **af6cce3** "Session-per-DB layout + single shared InfluxDB"
+     - One MongoDB database per session (session_id = DB name)
+     - Shared InfluxDB "fish" for GPU-side data, tagged with session
+       + container
+     - ScopedMongo proxy, legacy cleanup
+
+3. **3eb5344** "oort/oore vertices for non-executor GPU threads
+   (yolo_py pattern)"
+     - Introduces E.etype=oore + F.ptype=oort for non-executor
+       threads doing CUDA work (yolo_py main thread pattern)
+     - detect_oort_threads: compares callback-firing vtids to
+       cuda_runtime vtids in ros2_trace / InfluxDB; any vtid doing
+       CUDA but not firing callback_start is an oort
+
+4. **c100339** "GPU DAG extraction — sync-pattern period detection
+   (yolo oort = 1 dominant shape at 99.7 %)"
+     - postprocess/gpu_dag.py new script
+     - Sync-boundary pattern (cudaStreamSynchronize + >5 ms gap
+       afterwards) marks period boundaries; replaces earlier
+       time-gap approach
+     - 44 → 6 shapes on yolo; dominant shape covers 1857 / 1863
+       productive periods (99.7 %)
+
+5. **8956bd8** "CUDA API → FISH DAG model mapping table"
+     - notes/cuda_api_model.txt — per-API mapping to Typed DAG node
+       type (CPU/SM/CE), rationale
+
+6. **3cd1531** "Comprehensive nsys ingest + memset modeled as SM
+   (not CE)"
+     - ingest_nsys extended: gpu_memset, gpu_sync, gpu_overhead,
+       cuda_streams, system_env, nsys_enums etc.
+     - Memset on Volta+/Ampere+ runs as fill kernel on SMs → reclassify
+       from CE to SM; update Typed DAG builder accordingly
+
+7. **9425ebc** "Standalone GPU DAG visualizer (gpu_dag_viz.py)"
+     - postprocess/gpu_dag_viz.py — dot / SVG / txt per DAG shape
+       from graph_store
+
+8. **4dbed68** "cuda_api_model.txt: per-shape semantic analysis of
+   all 6 yolo DAGs"
+     - Classify each of the 6 yolo shapes by intent (INIT burst,
+       WARMUP frame-1, canonical STEADY, TAIL, COALESCED pairs).
+
+9. **aa6be93** "Phase detector (G5): classify GPU DAGs into
+   INIT / STEADY / TAIL / COALESCED"
+     - notes/phase_detector.txt — full algorithm spec
+     - extract_for_oort returns phase per DAG, with 0 UNKNOWN on yolo
+     - Thresholds tuned on empirical yolo data
+
+Notes added / updated (20 files):
+  cuda_api_model.txt (new + per-shape analysis)
+  db_structure.txt (session-per-DB)
+  dedup_rclpy_exec.txt (rclpy tracepoint dedup rationale)
+  EXPECTED_OBSERVED.txt (test expectations)
+  graph_store.txt (mutable graph store design)
+  immediate_work.txt (refreshed)
+  modeling_memset.txt (SM-not-CE rationale)
+  paper_to_do.txt (paper prep)
+  phase_detector.txt (phase algorithm spec)
+
+
+2026-04-20 (Pazartesi) — first end-to-end Autoware test + infra fixes
+---------------------------------------------------------------------
+
+Commits (chronological after the Autoware rerun):
+
+1. **05a4886** "ingest: redirect babeltrace2 stderr to file
+   (fix pipe deadlock)"
+     - Discovered during Autoware ingest: 176 LTTng "Tracer discarded"
+       warnings filled the 64 KB stderr pipe → bt2 blocked → Python
+       blocked → ingest froze at 3.29 M events
+     - Fix: redirect stderr to per-session log file (with /tmp
+       fallback when session dir is root-owned bind-mount)
+
+2. **e0ba6f0** "nsys: detect launch_wrap-profiled pids + standalone
+   container fallback"
+     - Two nsys-wrapping patterns: kill+resurrect (yolo) and
+       launch_wrap (Autoware composable-node containers)
+     - nsys_profiled_pids now reads each session's nsys sqlite
+       (PROCESSES JOIN CUPTI_ACTIVITY_KIND_RUNTIME) — identifies the
+       wrapped container pids correctly
+     - Plumb session_dir through identify_callbacks and
+       detect_oort_threads
+     - gpu_dag.py --container override + __main__ scope fallback for
+       standalone sessions
+
+3. **ab07ece** "settings: default replay_rosbag=true for rosbag workflow"
+
+4. **f26a187** "notes: Autoware run chronology + follow-ups +
+   immediate_work refresh"
+     - immediate_work.txt: 0a/0b DONE, new 0c (bt2 Python bindings),
+       new 0d (LTTng buffer overflow detection)
+     - follow_up.txt (NEW, 10 items, #3 = callback-bound GPU DAG
+       extraction — primary next paper work)
+     - notes.txt: full chronology of the 2026-04-19/20 Autoware run
+
+Uncommitted work continuing through 2026-04-20 (content-wise still
+this day but carried over into 2026-04-21 sessions):
+  - three_flags_gpu_model.txt (now four flags) — the per-process
+    GPU task model discussion
+  - stream_bridge.txt — algorithmic specification of the
+    stream-bridge attribution
+  - gpu_mapping_datapoints.txt — data sources + join keys + one
+    concrete end-to-end evidence chain
+  - embed_start.txt — shape embedding proposal (Levenshtein + cluster)
+  - paper_important_points.txt — paper-worthy observations bank
+  - known_issues.txt +ISSUE-002 (nsys utcEpochNs local-time) and
+    +ISSUE-003 (cuda-event-trace was off → heuristic DAG edges)
+  - tracepoint_inventory.txt — per-event used/not-used citation
+  - stack.txt + stack_log.txt — work queue with history
+  - autonomous_log.txt — timestamped session log
+
+
+2026-04-21 (Salı) — presentation prep + Autoware chasing
+---------------------------------------------------------
+
+Today. Main work captured in notes/summary_20260420.txt:
+
+Daemon stability deep-fix:
+  - Added cl_seen_nonempty / ex_seen_nonzero guards so the
+    "empty = stable → run mode" fallback no longer fires within
+    30 s of session start
+  - Container-count-only CL stability (was: full-snapshot equality;
+    Autoware's component list content churns too much)
+  - cl_required 3 → 2 (stability check is 20 s instead of 30 s)
+  - Per-poll trace at /tmp/fish_polls.log for live debugging
+  - Validated: first Autoware run ever that actually logged real
+    counts (containers=20, components=33-72 across runs)
+  - Observed in past data: every single fish_compose_* session and
+    the 2026-04-19 Autoware session had gone straight to mode=run
+    bypass — the "it was working" baseline was accidental
+
+nsys flag experiments:
+  - Tried combinations of --cuda-event-trace=true,
+    --cuda-graph-trace=node, --cuda-trace-all-apis=true
+  - Combined overhead on Autoware caused pointcloud_container nsys
+    to be SIGKILL'd (exit code -9) during TRT engine load
+  - Backed off to: event-trace + graph-trace=graph +
+    trace-all-apis=true (drop graph-trace=node)
+  - All three flags are now opt-in via env var on launch_wrap
+
+Autoware data-flow issue (unresolved for today):
+  - Sample-rosbag + logging_simulator on a fresh container today
+    never gets past localization init; /topic_rate_check/* all STALE
+    or ERROR; concatenate_data "empty pointcloud"
+  - Previous 2026-04-19 Autoware session (fish_20260419_211621)
+    worked — 12 K real kernels, 3.7 K syncs, 1.2 GB sqlite — but we
+    could not reproduce on 2026-04-20 or 2026-04-21 despite
+    repeatedly matching the 19/04 launch command bit for bit
+  - Decided: Autoware path is a demo-workflow issue not a FISH
+    issue. Park and use the 19/04 data. Move to AAS.
+
+
+Weekly deliverables
+-------------------
+
+**Runtime instrumentation added (tracepoints) — THIS WEEK:**
+  2 callback-link events (04-14: fish_publish_link, fish_client_link) +
+  4 scheduler-introspection events (04-18: fish_executor_init,
+    fish_callback_group_init, fish_cbgroup_add,
+    fish_executor_add_cbgroup) =
+  **6 new FISH tracepoints this week**.
+
+  Pre-existing FISH customs (added earlier in March — NOT this week):
+    5 rclpy parity events (03-28: rclpy_{sub/srv/tmr}_callback_added,
+                                   rclpy_timer_link_node,
+                                   rclpy_callback_register)
+    4 action server events (03-28: rclcpp_action_server_init,
+                                    rclcpp_action_execute_{goal/cancel/
+                                    result})
+    2 service client events (03-31: rclcpp_client_request_sent,
+                                     rclcpp_client_response_received)
+
+  TOTAL FISH custom tracepoints (all-time): 17.
+  LTTng whitelist after the 2026-04-20 trim: 31 active events
+  (28 used + 5 reserved; 14 high-volume stock-ros2 events dropped).
+
+**Model concepts added:**
+  - Session-per-DB layout (04-19)
+  - oort / oore vertex types (04-19)
+  - Mutable graph_store with audit log (04-18)
+  - Typed DAG extraction (04-19)
+  - Phase detector G5 (04-19)
+  - Memset-as-SM reclassification (04-19)
+  - Stream-bridge attribution (04-20)
+  - Four-flag per-process task model (04-20)
+  - Stream sync-to-sync span as task boundary (04-20)
+
+**Tools added:**
+  - postprocess/gpu_dag.py               (04-19)
+  - postprocess/gpu_dag_viz.py           (04-19)
+  - postprocess/graph_store.py           (04-18)
+  - postprocess/analyze_process_gpu.py   (04-20, stress-test)
+  - postprocess/gpu_attribution.py       (04-20, main-pipeline library)
+  - postprocess/gpu_task_graph.py        (04-20, main-pipeline script)
+  - postprocess/gpu_task_graph_viz.py    (04-20, shape + process viz)
+
+**Documentation added in notes/** (new this week):
+  three_flags_gpu_model.txt, stream_bridge.txt,
+  gpu_mapping_datapoints.txt, embed_start.txt,
+  paper_important_points.txt, tracepoint_inventory.txt,
+  cuda_api_model.txt, phase_detector.txt, modeling_memset.txt,
+  db_structure.txt, dedup_rclpy_exec.txt, graph_store.txt,
+  software_architecture.txt, stack.txt, stack_log.txt,
+  autonomous_log.txt, summary_20260420.txt,
+  paper_to_do.txt (refreshed), immediate_work.txt (refreshed),
+  follow_up.txt, notes.txt (journal).
+  + updates to: known_issues.txt (ISSUE-002, ISSUE-003),
+  EXPECTED_OBSERVED.txt.
+
+**Validations / measurements completed:**
+  - Whitelist ingest: 36.5 M → 2.3 M events (~16× reduction),
+    17 min → 90 s ingest time, zero LTTng discards
+  - Deterministic event↔wait correlation proved (SYNC.eventId
+    populated when --cuda-event-trace=true on yolo + pointcloud)
+  - Stream-bridge attribution: 99.8 % of GPU-producing CUDA calls
+    attributable to callback windows on Autoware pointcloud pid
+    (analyze_process_gpu.py stress-test)
+  - Inter-stream DAG topology extracted via time-proximity heuristic
+    for both pointcloud (3 streams, 13 edges, 99.9 % resolved) and
+    yolo (3 streams, 3 edges, 53 % resolved)
+  - Phase detector: 0 UNKNOWN on yolo (INIT=2, STEADY=1857, TAIL=1,
+    COALESCED = 3)
+  - Four-flag model validated on 2026-04-19 data end-to-end
+
+
+Paper-important observations (paper_important_points.txt P1-P6)
+---------------------------------------------------------------
+
+P1: Modern CUDA/TRT/ORT workloads are GPU-DAG-native
+    (pointcloud: 3776 syncs 100 % StreamWaitEvent, yolo: 3938 type-2
+    + 1 ContextSync only). CPU rarely issues blocking stream sync
+    → the scheduling object is in the GPU hardware trace directly.
+
+P2: Stream-ID disambiguator is REQUIRED under multi-threaded
+    executors (32-way concurrent callback overlap observed).
+
+P3: Callback boundary ≠ task boundary — 73 % of Autoware callbacks
+    are "launch-last" (dispatch then return). Task spans multiple
+    callbacks via shared stream.
+
+P4: TRT pattern — one stream = one inference engine = one task.
+    Pointcloud pid=3211 uses exactly 3 streams for all GPU work.
+
+P5: INIT is not a time prefix — must be score-based per-period
+    (init signals bleed into frame-1 on yolo).
+
+P6: Variation shapes encode branch structure — don't discard as
+    UNKNOWN. Embed with edit-distance + cluster to surface the
+    driver-level kernel substitution pattern.
+
+
+Bu haftanın "kesin kazanç" özeti (sunum için)
+---------------------------------------------
+
+  1. Tracepoint katmanı 11 yeni event — callback-group + client +
+     publish-link + rclpy parity. LTTng whitelist ile %94 volume
+     azaltımı.
+  2. Graph_store — persistent mutable graph with audit log; compose
+     flow end-to-end.
+  3. GPU-side task model — Typed DAG (CPU/SM/CE), stream-bridge
+     attribution, phase detector, stream sync-to-sync task unit.
+     All tooling in postprocess/gpu_*.
+  4. Paper-facing documents — three/four-flag model, stream_bridge,
+     evidence chain, embedding plan, observations bank.
+  5. Real-world validation — yolo (AAS) + Autoware (19/04 session)
+     both ingest-to-graph_store with deterministic DAG edges where
+     sync data permits.
+
+Known unresolved (for follow-up, not blockers for the presentation):
+  - Autoware sample-rosbag data-flow (localization init), not a
+    FISH problem.
+  - Shape embedding (edit-distance + cluster) — code not yet written.
+  - Paper figures — shape_embed visualisation pending.

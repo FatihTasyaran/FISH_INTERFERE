@@ -1,0 +1,245 @@
+Stream-bridge attribution algorithm
+====================================
+
+Purpose:
+  Given a process's CUDA host API call timeline and its ros2 callback
+  windows, decide which callback "owns" each CUDA call — including
+  calls made on a thread that is not the callback's own executor
+  thread. This is the disambiguator introduced by FLAG 1 in
+  notes/three_flags_gpu_model.txt.
+
+Needed because:
+  rclcpp MultiThreadedExecutor + TensorRT enqueueV3 pattern: a
+  callback on executor tid_main invokes TRT, which dispatches the
+  actual cudaLaunchKernel calls onto TRT-internal worker threads
+  (tid_worker). Per-tid time membership alone says "tid_worker's
+  call is outside any callback window on tid_worker's tid", labelling
+  it oort. That misses the fact that the work was ENQUEUED by the
+  callback on tid_main.
+
+  Under heavy concurrency (observed: 6 executor tids + 19 TRT
+  workers on pid=3211, up to 32 concurrent callback windows at any
+  instant) naive temporal membership is also ambiguous — many
+  callbacks may overlap the call's timestamp. Stream ID
+  disambiguates because a CUDA stream is an EXCLUSIVE scheduling
+  primitive: only one issuer drives a stream at a time, and stream
+  FIFO semantics serialise any concurrent enqueuers.
+
+
+Inputs
+------
+
+  - runtime[]: list of host-side CUDA API calls, each
+       {start_ns, end_ns, tid, correlationId, api_name}
+    derived from CUPTI_ACTIVITY_KIND_RUNTIME, sorted by start_ns.
+
+  - kernel/memcpy/memset[]: GPU-side activity records from
+       CUPTI_ACTIVITY_KIND_{KERNEL,MEMCPY,MEMSET}
+    each has (correlationId, streamId, start_ns, end_ns, ...).
+
+  - windows[]: ros2 callback invocations for this process, each
+       {cb_start_ns, cb_end_ns, vtid, cb_addr}
+    derived from ros2:callback_start / ros2:callback_end events in
+    MongoDB ros2_trace, sorted by cb_start_ns.
+
+Precondition:
+  All timestamps are in the SAME wall-clock ns frame. In practice
+  this requires the nsys utcEpochNs ↔ local-time fix from
+  notes/known_issues.txt ISSUE-002.
+
+
+Data structures built once (O(|runtime| + |kernels| + |memcpys| + |memsets|))
+----------------------------------------------------------------------------
+
+  corr_to_stream : dict correlationId → streamId
+    Populated from kernel, memcpy, memset tables in that order. A
+    correlationId that never appears there means the host call
+    produced no GPU-side activity (e.g. cuModuleLoadFatBinary,
+    cudaMalloc, cuGetProcAddress). Such calls are NEVER attributed
+    via this bridge — they fall through to the oort residual.
+
+  rt_by_tid : dict tid → sorted list of runtime rows
+    For O(log n) callback-window ∩ runtime lookups.
+
+  win_by_tid : dict tid → sorted list of (cb_start_ns, cb_end_ns, cb_idx)
+    Windows bucketed by the tid the callback ran on.
+
+
+Phase 1 — stream ownership claim
+--------------------------------
+
+For each callback invocation W = windows[i] running on tid_v with
+time range [s_W, e_W]:
+
+    streams_W = ∅
+    for each runtime row r ∈ rt_by_tid[tid_v] with s_W ≤ r.start ≤ e_W:
+        if r.correlationId ∈ corr_to_stream:
+            streams_W ∪= { corr_to_stream[r.correlationId] }
+    claims[i] = streams_W
+
+Semantics:
+  W claims every stream on which it issued GPU-producing host API
+  calls while it was running. A callback that only did CPU work, or
+  whose CUDA calls were all host-only (cudaMalloc, cuModuleLoad,
+  cudaStreamSynchronize), claims nothing.
+
+Multi-stream claims are permitted (flag 4 open question): a callback
+that launches on streams S1 and S2 claims both.
+
+Implementation note (subtle):
+  cudaStreamSynchronize and cudaEventSynchronize DO name a stream
+  but usually do not appear in corr_to_stream (no GPU activity row
+  is produced for a sync). To track "on which stream a callback
+  synced", a future revision should parse the sync call's own
+  arguments. v1 records only launch-side claims.
+
+
+Phase 2 — sort claims by stream for fast lookup
+-----------------------------------------------
+
+    stream_claim_times : dict streamId → sorted list of (cb_start_ns, cb_idx)
+
+    for i, streams_i in enumerate(claims):
+        for s in streams_i:
+            stream_claim_times[s].append( (windows[i].cb_start_ns, i) )
+    for s: sort stream_claim_times[s] by cb_start_ns
+
+This lets "which callback last claimed stream S before time t?"
+become a binary search.
+
+
+Phase 3 — attribute each runtime row
+------------------------------------
+
+For each r ∈ runtime:
+
+    # Rule A: same-tid time membership (strongest signal)
+    if ∃ W' in win_by_tid[r.tid] with W'.cb_start ≤ r.start ≤ W'.cb_end:
+        attribute r to W'      # "callback_bound_time"
+        continue
+
+    # Rule B: stream bridge
+    if r.correlationId ∈ corr_to_stream:
+        s = corr_to_stream[r.correlationId]
+        # binary search stream_claim_times[s] for latest cb_start ≤ r.start
+        cand_list = stream_claim_times.get(s, [])
+        k = bisect_right(cand_list, (r.start, ∞)) - 1
+        if k ≥ 0:
+            attribute r to windows[cand_list[k].cb_idx]
+            # "callback_bound_stream"
+            continue
+
+    # Rule C: residual
+    attribute r to OORT        # "oort residual"
+
+Remarks:
+  - Rule A takes precedence: a call on tid_v during tid_v's own
+    window belongs to that window even if the window claimed
+    streams that other callbacks also claimed earlier.
+
+  - Rule B uses "latest prior claimer" as the tentative owner. This
+    is a v1 simplification; the TRUE rule should extend only until
+    the stream's next cudaStreamSynchronize (see open question
+    below). In practice, for single-producer streams (TRT's typical
+    layout: one execution context = one stream) the simplification
+    gives the right answer.
+
+  - Rule C (oort) is where residuals land. On Autoware pid=3211 only
+    0.2 % of GPU-producing calls fell here (42 of 18,417), matching
+    flag 3's prediction that rclcpp workloads should have near-zero
+    oort.
+
+
+Complexity
+----------
+
+  Phase 1: O(|runtime|)   — each runtime row visited once.
+  Phase 2: O(|claims| log |claims|) — per stream sort.
+  Phase 3: O(|runtime| · log |claims|) — one bisect per row.
+
+  With 44 K runtime rows and 50 K callback windows, end-to-end runs
+  in ~2 s on a laptop.
+
+
+Validation (2026-04-20 stress-test, fish_20260419_211621, pid=3211)
+--------------------------------------------------------------------
+
+  All runtime rows:                               44,392  (100.0 %)
+    Rule A (same-tid time):                        8,023  ( 18.1 %)
+    Rule B (stream bridge):                       12,676  ( 28.6 %)
+    Rule C (oort residual):                       23,693  ( 53.3 %)
+
+  Of those, runtime rows producing GPU activity:  18,417  (100.0 %)
+    Rule A:                                        5,699  ( 30.9 %)
+    Rule B:                                       12,676  ( 68.8 %)
+    Rule C:                                           42  (  0.2 %)
+
+  Oort residual is dominated by host-only calls that never produce
+  GPU activity (cuModuleUnload 32%, cuModuleLoadFatBinary 32%,
+  cuGetProcAddress 12%). The 0.2 % GPU-producing oort (42 calls) is
+  likely TRT engine-build kernels fired before any callback, i.e.
+  INIT-phase.
+
+  Pure stream-FIFO properties confirmed: only 3 distinct streams
+  (ids 7, 13, 14) carry all GPU work on this process; stream 13 is
+  claimed by 122 callback invocations, streams 14 and 7 by 67 each.
+
+
+Known limitations / open questions
+-----------------------------------
+
+  1. "Until next cudaStreamSynchronize" extension.  [CLOSED 2026-04-20]
+     Implemented via CUPTI_ACTIVITY_KIND_SYNCHRONIZATION in
+     postprocess/analyze_process_gpu.py
+       - sync_release_times()         — per-stream release timestamps
+       - classify_runtime_with_streams_gpu_only_sync_aware()
+     Release semantics:
+       syncType 3 (StreamSynchronize)    → release that streamId
+       syncType 4 (ContextSynchronize)   → release all streams
+       syncType 1 (EventSynchronize)     → release the event's stream
+       syncType 2 (StreamWaitEvent)      → NOT a release (GPU-side
+                                            wait, forms precedence
+                                            edge instead — see task #39)
+     A runtime row r on stream s is attributed as:
+       - callback_bound_stream if the claim preceding r on s has
+         NOT been invalidated by a release event in [claim_ns, r.start]
+       - oort_post_release if it has (stream drained, no fresh claim)
+       - oort if no claim ever existed on s before r.start
+     Validated:
+       On pid=3211 (Autoware pointcloud, 3776 syncs, ALL type 2):
+         oort_post_release = 0 (expected — no type 3/4 syncs)
+         callback_bound_stream unchanged from v1 — confirms P1.
+
+  2. Concurrent claims on the same stream.
+     If callbacks Ci and Cj both issue on stream S with overlapping
+     windows, CUDA's stream FIFO serialises them. Our claim map
+     records both but Rule B returns only the latest. Need to decide
+     paper-side whether to split a stream span by issuer or to keep
+     "owning callback = first issuer within the span".
+
+  3. Host-only sync attribution.
+     cudaStreamSynchronize doesn't feed corr_to_stream today so a
+     sync call on tid_v falling outside tid_v's callback windows is
+     attributed as oort (Rule C) even if the stream it syncs is
+     known. Future revision: parse the sync call's stream arg from
+     nsys activity details and fold syncs into Rule B.
+
+  4. Non-CUDA-aware frameworks.
+     If a framework uses cudaLaunchCooperativeKernel or CUDA Graph
+     launches (cuGraphLaunch), streamId still applies and the rule
+     transfers. Verified against the common path
+     (cudaLaunchKernel_v7000, cuLaunchKernelEx).
+
+  5. CUDA IPC + multi-process streams.
+     Out of scope: stream ids are per-process. Cross-process GPU
+     work needs a separate correlation mechanism (shared memory or
+     event handles). Not observed on our workloads.
+
+
+Reference implementation
+------------------------
+
+  postprocess/analyze_process_gpu.py
+    compute_stream_ownership()              — Phase 1
+    classify_runtime_with_streams()         — Phases 2 + 3 (all rows)
+    classify_runtime_with_streams_gpu_only()— filtered to GPU-producing

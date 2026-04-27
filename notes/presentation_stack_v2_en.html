@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>FISH GPU task-graph extraction — 4-layer stack (v2)</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 1000px; margin: 2em auto; color: #222; line-height: 1.45; }
+h1 { font-size: 1.5em; margin-bottom: 1em; }
+h2 { color: #333; margin-top: 2em; }
+h3 { color: #1a5490; margin-top: 1.4em; }
+.layer-stack { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 1em 0; }
+.layer {
+  border: 2px solid #444; border-radius: 6px; padding: 10px 18px;
+  background: #f7f7f9; width: 78%; box-shadow: 1px 1px 4px rgba(0,0,0,0.05);
+}
+.layer .title { font-weight: 700; color: #1a5490; }
+.layer .q { font-style: italic; color: #666; font-size: 0.9em; margin-left: 0.5em; }
+.layer .method { font-family: ui-monospace, Menlo, Consolas, monospace;
+                 font-size: 0.85em; color: #333; margin-top: 4px; }
+.arrow { color: #888; font-size: 1.2em; line-height: 1; }
+.arrow-data { font-family: ui-monospace, Menlo, monospace; color: #666; font-size: 0.8em; }
+.final {
+  border: 2px dashed #2a7a2a; border-radius: 6px; padding: 8px 14px;
+  background: #edf7ed; width: 78%; font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.9em;
+}
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #666; padding: 6px 12px; text-align: left;
+         vertical-align: top; }
+th { background: #eee; }
+td.num { text-align: right; }
+p.hint { color: #888; font-size: 0.85em; font-style: italic; }
+.math { font-family: "Latin Modern Math", "Cambria Math", "Times New Roman", serif;
+        font-size: 1.05em; line-height: 1.7; padding: 12px 16px;
+        background: #fafafa; border-left: 4px solid #1a5490; margin: 0.8em 0;
+        overflow-x: auto; }
+.math .var { font-style: italic; }
+.math .eq { display: block; margin: 0.5em 0; text-align: left; }
+.caveat { background: #fff8e1; border-left: 4px solid #e0a030; padding: 10px 14px;
+          font-size: 0.9em; margin: 0.8em 0; }
+</style></head><body>
+
+<p class="hint">Open in browser, select each section, copy into Google Slides. HTML tables, math blocks, and box graphics preserve formatting on paste.</p>
+
+<h1>FISH GPU task-graph extraction — 4-layer stack</h1>
+
+<div class="layer-stack">
+  <div class="final"><b>Input:</b> CUPTI tables (RUNTIME, KERNEL, MEMCPY, MEMSET, SYNCHRONIZATION) + ros2_trace callback_start/end</div>
+  <div class="arrow">▼</div>
+
+  <div class="layer">
+    <div><span class="title">1. Period detection</span>
+         <span class="q">— "Where do DAG invocations begin and end?"</span></div>
+    <div class="method">sync-boundary pattern: cudaStreamSynchronize followed by &gt; 5 ms idle gap marks boundary.
+    Alternative (v2): GPU-side gap-based partition per stream (data available, integration pending).</div>
+  </div>
+  <div class="arrow">▼</div>
+  <div class="arrow-data">list of <code>(start_idx, end_idx)</code> pairs per tid / stream</div>
+  <div class="arrow">▼</div>
+
+  <div class="final">Typed-DAG builder: for each period, emit CPU/SM/CE nodes + launch, stream_fifo, cpu_order edges.</div>
+  <div class="arrow">▼</div>
+  <div class="arrow-data">list of Typed DAGs (one per period)</div>
+  <div class="arrow">▼</div>
+
+  <div class="layer">
+    <div><span class="title">2. Shape detection</span>
+         <span class="q">— "Which periods are structurally equivalent?"</span></div>
+    <div class="method">signature hash over <code>(pe, name)</code> sequence + sorted edges. Exact match only.
+    Future: edit-distance clustering (embed_start.txt).</div>
+  </div>
+  <div class="arrow">▼</div>
+  <div class="arrow-data">{signature → count + template DAG}</div>
+  <div class="arrow">▼</div>
+
+  <div class="layer">
+    <div><span class="title">3. Phase detection</span>
+         <span class="q">— "What lifecycle role does each period play?"</span></div>
+    <div class="method">init_score weighted by CUDA-init API tokens + rule classifier.
+    Labels: INIT / WARMUP / STEADY / TAIL / COALESCED(N) / UNKNOWN.</div>
+  </div>
+  <div class="arrow">▼</div>
+  <div class="arrow-data">labelled periods + primary phase per shape</div>
+  <div class="arrow">▼</div>
+
+  <div class="layer">
+    <div><span class="title">4. Stream-bridge attribution</span>
+         <span class="q">— "Which callback invocation owns each CUDA call?"</span></div>
+    <div class="method">correlationId → streamId join. Ownership rules:<br>
+      (A) same-tid time-window membership<br>
+      (B) stream-claim bridge (cross-tid dispatch)<br>
+      (C) oort residual</div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="final"><b>Output:</b> per-callback gpu_dags + inter-stream wait-event graph
+    (node counts deterministic from CUPTI; edges deterministic when
+    --cuda-event-trace is enabled, otherwise time-proximity heuristic)</div>
+</div>
+
+<hr>
+
+<h1>Phase detection — mathematical definition</h1>
+
+<h3>Setup</h3>
+<div class="math">
+  Let <span class="var">P</span> = (<span class="var">p</span><sub>1</sub>, …, <span class="var">p</span><sub>n</sub>) denote the chronologically ordered set of periods on one tid/stream.<br>
+  For each <span class="var">p</span><sub>i</sub>, let:<br>
+  &nbsp;&nbsp; <span class="var">A</span>(<span class="var">p</span><sub>i</sub>) = sequence of CUDA API names in the period<br>
+  &nbsp;&nbsp; <span class="var">D</span>(<span class="var">p</span><sub>i</sub>) = (<span class="var">V</span><sub>i</sub>, <span class="var">E</span><sub>i</sub>) the Typed DAG of the period, with <span class="var">V</span><sub>i</sub> = ⟨(<span class="var">pe</span><sub>j</sub>, <span class="var">name</span><sub>j</sub>)⟩<br>
+  &nbsp;&nbsp; pos(<span class="var">p</span><sub>i</sub>) = <span class="var">i</span> ∈ [1, <span class="var">n</span>]
+</div>
+
+<h3>Init-score σ</h3>
+<p>Let <span class="math">𝒯 = {t<sub>1</sub>, …, t<sub>k</sub>}</span> be the set of init-signal tokens, each associated with a threshold θ<sub>t</sub> ∈ ℕ ∪ {∞} and a weight w<sub>t</sub> ∈ ℕ.</p>
+
+<div class="math">
+  <span class="eq">c<sub>t</sub>(<span class="var">p</span>) := |{ <span class="var">a</span> ∈ <span class="var">A</span>(<span class="var">p</span>) : <span class="var">t</span> ⊆ <span class="var">a</span> }|&nbsp;&nbsp; (count of token occurrences)</span>
+
+  <span class="eq">σ(<span class="var">p</span>) := Σ<sub><span class="var">t</span> ∈ 𝒯</sub> 𝟙[θ<sub><span class="var">t</span></sub> ≠ ∞] · w<sub><span class="var">t</span></sub> · 𝟙[c<sub><span class="var">t</span></sub>(<span class="var">p</span>) ≥ θ<sub><span class="var">t</span></sub>]
+                                            + 𝟙[θ<sub><span class="var">t</span></sub> = ∞] · w<sub><span class="var">t</span></sub> · c<sub><span class="var">t</span></sub>(<span class="var">p</span>)</span>
+</div>
+
+<h4>Parameter table (𝒯, θ, w)</h4>
+<table>
+<tr><th>Token t</th><th>Threshold θ<sub>t</sub></th><th>Weight w<sub>t</sub></th><th>Contribution kind</th></tr>
+<tr><td>cuInit</td><td>1</td><td>100</td><td>Threshold-gated (hard)</td></tr>
+<tr><td>cuLibraryLoadData</td><td>1</td><td>100</td><td>Threshold-gated (hard)</td></tr>
+<tr><td>cuCtxCreate</td><td>1</td><td>100</td><td>Threshold-gated (hard)</td></tr>
+<tr><td>cuDevicePrimaryCtxRetain</td><td>1</td><td>100</td><td>Threshold-gated (hard)</td></tr>
+<tr><td>cudaGetDeviceProperties</td><td>1</td><td>20</td><td>Threshold-gated (medium)</td></tr>
+<tr><td>cuModuleGetLoadingMode</td><td>1</td><td>20</td><td>Threshold-gated (medium)</td></tr>
+<tr><td>cuGetProcAddress</td><td>100</td><td>50</td><td>Burst-gated</td></tr>
+<tr><td>cudaMalloc</td><td>∞</td><td>5</td><td>Per-count (weak)</td></tr>
+<tr><td>cudaStreamCreate</td><td>∞</td><td>3</td><td>Per-count (weak)</td></tr>
+<tr><td>cudaEventCreate</td><td>∞</td><td>1</td><td>Per-count (weak)</td></tr>
+</table>
+
+<h3>Shape signature & dominant shape</h3>
+<div class="math">
+  <span class="eq">sig(<span class="var">p</span>) := SHA1( ⟨(pe<sub>j</sub>, name<sub>j</sub>)⟩<sub>j</sub> ∥ sorted(<span class="var">E</span><sub><span class="var">p</span></sub>) )[0..12]</span>
+
+  <span class="eq">𝒫<sub>prod</sub> := { <span class="var">p</span> ∈ <span class="var">P</span> : σ(<span class="var">p</span>) &lt; 20 }</span>
+
+  <span class="eq">sig* := argmax<sub><span class="var">s</span></sub> |{ <span class="var">p</span> ∈ 𝒫<sub>prod</sub> : sig(<span class="var">p</span>) = <span class="var">s</span> }|</span>
+
+  <span class="eq">seq* := node sequence of the canonical DAG <span class="var">D</span>(<span class="var">p</span>) for any <span class="var">p</span> with sig(<span class="var">p</span>) = sig*</span>
+</div>
+
+<h3>Label assignment</h3>
+<div class="math">
+  <span class="eq">L(<span class="var">p</span><sub>i</sub>) = <b>INIT</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>if</b>&nbsp; σ(<span class="var">p</span><sub>i</sub>) ≥ 100</span>
+
+  <span class="eq">L(<span class="var">p</span><sub>i</sub>) = <b>STEADY</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>else if</b>&nbsp; sig(<span class="var">p</span><sub>i</sub>) = sig*</span>
+
+  <span class="eq">L(<span class="var">p</span><sub>i</sub>) = <b>COALESCED(N)</b>&nbsp;&nbsp; <b>else if</b>&nbsp; ∃ <span class="var">N</span> ∈ ℤ<sub>≥2</sub> :
+       |seq(<span class="var">p</span><sub>i</sub>)| = <span class="var">N</span> · |seq*| and ∀<span class="var">k</span>, seq(<span class="var">p</span><sub>i</sub>)[<span class="var">k</span>] = seq*[<span class="var">k</span> mod |seq*|]</span>
+
+  <span class="eq">L(<span class="var">p</span><sub>i</sub>) = <b>TAIL</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>else if</b>&nbsp;
+                   pos(<span class="var">p</span><sub>i</sub>) ≥ <span class="var">n</span> − 3 ∧ 10 ≤ |seq(<span class="var">p</span><sub>i</sub>)| &lt; |seq*|</span>
+  <span class="eq">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ∧ ∃<span class="var">m</span> : seq(<span class="var">p</span><sub>i</sub>)[0..<span class="var">m</span>] = seq*[0..<span class="var">m</span>],
+                   <span class="var">m</span>/|seq(<span class="var">p</span><sub>i</sub>)| ≥ 0.95</span>
+  <span class="eq">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ∧ ∀<span class="var">k</span> ∈ [<span class="var">m</span>, |seq(<span class="var">p</span><sub>i</sub>)|) :
+                   "Synchronize" ∈ seq(<span class="var">p</span><sub>i</sub>)[<span class="var">k</span>].name</span>
+
+  <span class="eq">L(<span class="var">p</span><sub>i</sub>) = <b>WARMUP</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>else if</b>&nbsp; 20 ≤ σ(<span class="var">p</span><sub>i</sub>) &lt; 100 ∧ pos(<span class="var">p</span><sub>i</sub>) &lt; 3</span>
+
+  <span class="eq">L(<span class="var">p</span><sub>i</sub>) = <b>UNKNOWN</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; otherwise</span>
+</div>
+
+<h3>Validation — yolo_py (fish_compose_20260419_161633)</h3>
+<table>
+<tr><th>Label</th><th>Period count</th><th>Share</th></tr>
+<tr><td>INIT</td><td class="num">2</td><td class="num">0.11%</td></tr>
+<tr><td>WARMUP</td><td class="num">0</td><td class="num">0.00%</td></tr>
+<tr><td>STEADY</td><td class="num">1,857</td><td class="num">99.68%</td></tr>
+<tr><td>TAIL</td><td class="num">1</td><td class="num">0.05%</td></tr>
+<tr><td>COALESCED(2)</td><td class="num">2</td><td class="num">0.11%</td></tr>
+<tr><td>COALESCED(3)</td><td class="num">1</td><td class="num">0.05%</td></tr>
+<tr><td>UNKNOWN</td><td class="num">0</td><td class="num">0.00%</td></tr>
+<tr><th>TOTAL</th><th class="num">1,863</th><th class="num">100%</th></tr>
+</table>
+
+<hr>
+
+<h1>Stream-dependency edges — formal definition</h1>
+
+<h3>Setup</h3>
+<div class="math">
+  Let <span class="var">𝒢</span> = 𝒦 ∪ ℳ<sub>memcpy</sub> ∪ ℳ<sub>memset</sub> denote the union of GPU-side activities from
+  CUPTI_ACTIVITY_KIND_KERNEL, MEMCPY, and MEMSET, with each <span class="var">g</span> ∈ <span class="var">𝒢</span> carrying
+  <span class="var">g</span>.start, <span class="var">g</span>.end, <span class="var">g</span>.streamId.<br><br>
+
+  Let <span class="var">𝒮</span><sub>wait</sub> = { <span class="var">r</span> ∈ CUPTI_SYNCHRONIZATION : <span class="var">r</span>.syncType = 2 } (StreamWaitEvent rows).
+</div>
+
+<h3>Deterministic part — wait node counts</h3>
+<p>Count of times each stream serves as the waiting (destination) stream. These are obtained directly from <span class="var">𝒮</span><sub>wait</sub> without inference:</p>
+<div class="math">
+  <span class="eq">W<sub>dst</sub>(<span class="var">s</span>) := |{ <span class="var">r</span> ∈ <span class="var">𝒮</span><sub>wait</sub> : <span class="var">r</span>.streamId = <span class="var">s</span> }|</span>
+</div>
+
+<h3>Edge extraction — two regimes</h3>
+<p><b>Regime I — deterministic</b> (requires <code>--cuda-event-trace=true</code>, ISSUE-003):</p>
+<div class="math">
+  Each <span class="var">r</span> ∈ <span class="var">𝒮</span><sub>wait</sub> carries a valid <span class="var">r</span>.eventId.
+  The event was recorded on some stream via <code>cudaEventRecord</code>:
+  <span class="eq">src(<span class="var">r</span>) := streamId of the most recent <code>cudaEventRecord(e = r.eventId, stream)</code> call before <span class="var">r</span>.start</span>
+  <span class="eq">dst(<span class="var">r</span>) := <span class="var">r</span>.streamId</span>
+  <span class="eq">edge(<span class="var">r</span>) := (src(<span class="var">r</span>), dst(<span class="var">r</span>)) — certain</span>
+</div>
+
+<p><b>Regime II — time-proximity heuristic</b> (when eventId = −1 in the SYNC row, as in all pre-2026-04-20 traces):</p>
+<div class="math">
+  <span class="eq">𝒢<sub>&lt;r</sub> := { <span class="var">g</span> ∈ 𝒢 : <span class="var">g</span>.end &lt; <span class="var">r</span>.start ∧ <span class="var">g</span>.streamId ≠ <span class="var">r</span>.streamId }</span>
+
+  <span class="eq">src̃(<span class="var">r</span>) := argmax<sub><span class="var">g</span> ∈ 𝒢<sub>&lt;r</sub></sub> <span class="var">g</span>.end&nbsp;&nbsp;&nbsp;&nbsp;(the most-recently-ended activity on any other stream)</span>
+
+  <span class="eq">edge(<span class="var">r</span>) := (src̃(<span class="var">r</span>).streamId, <span class="var">r</span>.streamId) — inferred</span>
+</div>
+
+<div class="caveat">
+<b>Caveat on regime II.</b> The event-record call is frequently issued inside closed-source libraries (TensorRT, ORT) that do not surface the record through CUPTI's RUNTIME table. The heuristic above is correct when (i) library workers issue their record immediately after a preceding kernel, and (ii) only one other stream was recently active. On dense pipelines (Autoware pointcloud), the heuristic resolves 99.9% of waits. On sparse pipelines (yolo main-loop), 53% — the remainder is left unresolved rather than guessed.
+</div>
+
+<h3>Weighted edge set</h3>
+<div class="math">
+  For each distinct ordered pair (<span class="var">s</span><sub>a</sub>, <span class="var">s</span><sub>b</sub>), the edge weight is:
+  <span class="eq">W<sub>edge</sub>(<span class="var">s</span><sub>a</sub> → <span class="var">s</span><sub>b</sub>) := |{ <span class="var">r</span> ∈ 𝒮<sub>wait</sub> : edge(<span class="var">r</span>) = (<span class="var">s</span><sub>a</sub>, <span class="var">s</span><sub>b</sub>) }|</span>
+</div>
+
+<h3>Sanity check (deterministic)</h3>
+<div class="math">
+  <span class="eq">∀ <span class="var">s</span> : Σ<sub><span class="var">a</span></sub> W<sub>edge</sub>(<span class="var">s</span><sub>a</sub> → <span class="var">s</span>) + (unresolved waits on <span class="var">s</span>) = W<sub>dst</sub>(<span class="var">s</span>)</span>
+</div>
+
+<h3>Observed inter-stream DAG — pointcloud pid=3211</h3>
+<table>
+<tr><th>From</th><th>To</th><th>Weight</th><th>Role</th></tr>
+<tr><td>stream 14</td><td>stream 7</td><td class="num">2,260</td><td>producer → consumer (main)</td></tr>
+<tr><td>stream 7</td><td>stream 14</td><td class="num">518</td><td>feedback</td></tr>
+<tr><td>stream 13</td><td>stream 14</td><td class="num">349</td><td>secondary</td></tr>
+<tr><td>stream 14</td><td>stream 13</td><td class="num">308</td><td>feedback</td></tr>
+<tr><td>stream 7</td><td>stream 13</td><td class="num">282</td><td></td></tr>
+<tr><td>stream 13</td><td>stream 7</td><td class="num">48</td><td></td></tr>
+<tr><td colspan="2">(rest: small init streams 15/16/17/19/20)</td><td class="num">≤2 each</td><td></td></tr>
+<tr><th>Total (resolved)</th><th></th><th class="num">3,774 / 3,776</th><th>99.9%</th></tr>
+</table>
+
+<h3>Observed inter-stream DAG — yolo pid=1252</h3>
+<table>
+<tr><th>From</th><th>To</th><th>Weight</th></tr>
+<tr><td>stream 29</td><td>stream 7</td><td class="num">1,865</td></tr>
+<tr><td>stream 13</td><td>stream 7</td><td class="num">208</td></tr>
+<tr><td>stream 30</td><td>stream 29</td><td class="num">1</td></tr>
+<tr><th>Total resolved</th><th></th><th class="num">2,074 / 3,938 (52.7%)</th></tr>
+<tr><th>Unresolved</th><th></th><th class="num">1,864 / 3,938</th></tr>
+</table>
+
+<p class="hint">Unresolved cases: waits where no other stream was active within the look-back window. The heuristic silently skips rather than attributing incorrectly.</p>
+
+</body></html>

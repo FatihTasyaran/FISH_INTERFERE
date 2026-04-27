@@ -59,6 +59,17 @@ NSYS_FLAGS = [
     "--export=sqlite",
     "--force-overwrite=true",
 ]
+# All extra CUPTI flags are opt-in via env var — they slow down TRT
+# engine loading enough to break Autoware's launch-system service-call
+# timeouts on pointcloud_container. Yesterday's working run used only
+# the 4 flags above. Enable individually for paper-grade runs once
+# Autoware is stable.
+if os.environ.get("FISH_CUDA_EVENT_TRACE", "").lower() in ("1", "true", "yes"):
+    NSYS_FLAGS.append("--cuda-event-trace=true")
+if os.environ.get("FISH_CUDA_GRAPH_NODE", "").lower() in ("1", "true", "yes"):
+    NSYS_FLAGS.append("--cuda-graph-trace=node")
+if os.environ.get("FISH_CUDA_TRACE_ALL_APIS", "").lower() in ("1", "true", "yes"):
+    NSYS_FLAGS.append("--cuda-trace-all-apis=true")
 
 
 def _get_session_dir() -> str:

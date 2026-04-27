@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>FISH skeleton index — fish_20260427_165116</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 1500px; margin: 1em auto; color: #222; }
+h1 { font-size: 1.5em; margin-bottom: 0.3em; }
+h2 { font-size: 1.05em; margin: 0.2em 0; color: #1a5490; }
+.meta { color: #666; font-size: 0.85em; margin-bottom: 0.8em; }
+.cb { border: 1px solid #ddd; border-radius: 6px; padding: 0.8em 1em; margin-bottom: 1em; background: #fafafa; }
+.stats { display: inline-block; margin-right: 1em; padding: 2px 8px; background: #e3f2fd; border-radius: 3px; font-family: ui-monospace, Menlo, monospace; font-size: 0.85em; }
+.stats.alt { background: #fff3e0; }
+.stats.warn { background: #fce4ec; }
+.label { font-family: ui-monospace, Menlo, monospace; font-size: 0.78em; color: #555; word-break: break-all; margin: 0.4em 0 0.6em 0; }
+.figs { display: flex; gap: 8px; flex-wrap: wrap; }
+.fig { flex: 1; min-width: 350px; max-width: 500px; }
+.fig img { width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; }
+.fig img:hover { border-color: #1a5490; }
+.fig-cap { font-size: 0.78em; color: #666; text-align: center; margin: 2px 0; }
+table { border-collapse: collapse; margin: 0.5em 0 1.5em 0; }
+th, td { border: 1px solid #ccc; padding: 4px 8px; font-size: 0.9em; }
+th { background: #eee; }
+a { color: #1a5490; }
+</style></head><body>
+<h1>FISH callback skeletons — fish_20260427_165116</h1>
+<div class="meta">13 GPU callbacks · pointcloud_container (pid=1173) ·  Autoware logging_simulator + sample-rosbag</div>
+<h2>Index</h2>
+<table>
+<tr><th>F#</th><th>inv</th><th>sigs</th><th>|skel|</th><th>callback</th></tr>
+<tr><td><a href="#F1696">F#1696</a></td><td style="text-align:right">45</td><td style="text-align:right">25</td><td style="text-align:right">23</td><td><code style="font-size:0.85em">std::_Bind<void (autoware::compare_map_segmentation::VoxelGridDynamicMapLoader::</code></td></tr>
+<tr><td><a href="#F1653">F#1653</a></td><td style="text-align:right">11</td><td style="text-align:right">9</td><td style="text-align:right">24</td><td><code style="font-size:0.85em">autoware::pointcloud_preprocessor::PointCloudConcatenateDataSynchronizerComponen</code></td></tr>
+<tr><td><a href="#F1684">F#1684</a></td><td style="text-align:right">10</td><td style="text-align:right">9</td><td style="text-align:right">30</td><td><code style="font-size:0.85em">std::_Bind<void (cuda_blackboard::CudaBlackboardSubscriber<cuda_blackboard::Cuda</code></td></tr>
+<tr><td><a href="#F1699">F#1699</a></td><td style="text-align:right">10</td><td style="text-align:right">8</td><td style="text-align:right">28</td><td><code style="font-size:0.85em">std::_Bind<void (diagnostic_updater::Updater::*(diagnostic_updater::Updater*))()</code></td></tr>
+<tr><td><a href="#F1697">F#1697</a></td><td style="text-align:right">9</td><td style="text-align:right">5</td><td style="text-align:right">31</td><td><code style="font-size:0.85em">std::_Bind<void (autoware::pointcloud_preprocessor::Filter::*(autoware::pointclo</code></td></tr>
+<tr><td><a href="#F1666">F#1666</a></td><td style="text-align:right">8</td><td style="text-align:right">7</td><td style="text-align:right">30</td><td><code style="font-size:0.85em">std::_Bind<void (autoware::occupancy_grid_map::PointcloudBasedOccupancyGridMapNo</code></td></tr>
+<tr><td><a href="#F1667">F#1667</a></td><td style="text-align:right">7</td><td style="text-align:right">5</td><td style="text-align:right">26</td><td><code style="font-size:0.85em">std::_Bind<void (autoware::occupancy_grid_map::PointcloudBasedOccupancyGridMapNo</code></td></tr>
+<tr><td><a href="#F2516">F#2516</a></td><td style="text-align:right">7</td><td style="text-align:right">5</td><td style="text-align:right">28</td><td><code style="font-size:0.85em">std::_Bind<void (autoware::compare_map_segmentation::VoxelGridDynamicMapLoader::</code></td></tr>
+<tr><td><a href="#F1654">F#1654</a></td><td style="text-align:right">6</td><td style="text-align:right">5</td><td style="text-align:right">26</td><td><code style="font-size:0.85em">autoware::pointcloud_preprocessor::PointCloudConcatenateDataSynchronizerComponen</code></td></tr>
+<tr><td><a href="#F1687">F#1687</a></td><td style="text-align:right">5</td><td style="text-align:right">5</td><td style="text-align:right">17</td><td><code style="font-size:0.85em">std::_Bind<void (diagnostic_updater::Updater::*(diagnostic_updater::Updater*))()</code></td></tr>
+<tr><td><a href="#F1682">F#1682</a></td><td style="text-align:right">4</td><td style="text-align:right">4</td><td style="text-align:right">60</td><td><code style="font-size:0.85em">std::_Bind<void (autoware::pointcloud_preprocessor::Filter::*(autoware::pointclo</code></td></tr>
+<tr><td><a href="#F1677">F#1677</a></td><td style="text-align:right">3</td><td style="text-align:right">3</td><td style="text-align:right">38</td><td><code style="font-size:0.85em">std::_Bind<void (autoware::euclidean_cluster::VoxelGridBasedEuclideanClusterNode</code></td></tr>
+<tr><td><a href="#F1656">F#1656</a></td><td style="text-align:right">1</td><td style="text-align:right">1</td><td style="text-align:right">2</td><td><code style="font-size:0.85em">autoware::pointcloud_preprocessor::CloudCollector<autoware::pointcloud_preproces</code></td></tr>
+</table>
+<div class="cb" id="F1696">
+<h2>F#1696 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x7061500EBDC8</span></h2>
+<div class="label">std::_Bind<void (autoware::compare_map_segmentation::VoxelGridDynamicMapLoader::*(autoware::compare_map_segmentation::VoxelGridDynamicMapLoader*, std::_Placeholder<1>))(std::shared_ptr<nav_msgs::msg::Odometry_<std::allocator<void> > const>)></div>
+<div>
+<span class="stats">invocations=45</span>
+<span class="stats">signatures=25</span>
+<span class="stats alt">|skel|=23</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1696_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1696_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1696_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1696_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1696_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1696_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1696_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1696_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1696_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F1653">
+<h2>F#1653 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x7061A45BCFE8</span></h2>
+<div class="label">autoware::pointcloud_preprocessor::PointCloudConcatenateDataSynchronizerComponentTemplated<autoware::pointcloud_preprocessor::PointCloud2Traits>::initialize_pub_sub()::{lambda(std::shared_ptr<sensor_msgs::msg::PointCloud2_<std::allocator<void> > const>)#1}</div>
+<div>
+<span class="stats">invocations=11</span>
+<span class="stats">signatures=9</span>
+<span class="stats alt">|skel|=24</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1653_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1653_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1653_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1653_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1653_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1653_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1653_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1653_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1653_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F1684">
+<h2>F#1684 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x705EE60E0060</span></h2>
+<div class="label">std::_Bind<void (cuda_blackboard::CudaBlackboardSubscriber<cuda_blackboard::CudaPointCloud2>::*(cuda_blackboard::CudaBlackboardSubscriber<cuda_blackboard::CudaPointCloud2>*, std::_Placeholder<1>))(std::shared_ptr<sensor_msgs::msg::PointCloud2_<std::allocator<void> > const> const&)></div>
+<div>
+<span class="stats">invocations=10</span>
+<span class="stats">signatures=9</span>
+<span class="stats alt">|skel|=30</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1684_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1684_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1684_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1684_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1684_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1684_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1684_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1684_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1684_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F1699">
+<h2>F#1699 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x7061500C4EA0</span></h2>
+<div class="label">std::_Bind<void (diagnostic_updater::Updater::*(diagnostic_updater::Updater*))()></div>
+<div>
+<span class="stats">invocations=10</span>
+<span class="stats">signatures=8</span>
+<span class="stats alt">|skel|=28</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1699_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1699_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1699_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1699_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1699_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1699_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1699_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1699_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1699_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F1697">
+<h2>F#1697 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x7061500BE3A8</span></h2>
+<div class="label">std::_Bind<void (autoware::pointcloud_preprocessor::Filter::*(autoware::pointcloud_preprocessor::Filter*, std::_Placeholder<1>, std::shared_ptr<pcl_msgs::msg::PointIndices_<std::allocator<void> > const>))(std::shared_ptr<sensor_msgs::msg::PointCloud2_<std::allocator<void> > const>, std::shared_ptr<pcl_msgs::msg::PointIndices_<std::allocator<void> > const>)></div>
+<div>
+<span class="stats">invocations=9</span>
+<span class="stats">signatures=5</span>
+<span class="stats alt">|skel|=31</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1697_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1697_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1697_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1697_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1697_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1697_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1697_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1697_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1697_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F1666">
+<h2>F#1666 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x70617C0E4990</span></h2>
+<div class="label">std::_Bind<void (autoware::occupancy_grid_map::PointcloudBasedOccupancyGridMapNode::*(autoware::occupancy_grid_map::PointcloudBasedOccupancyGridMapNode*, std::_Placeholder<1>))(std::shared_ptr<sensor_msgs::msg::PointCloud2_<std::allocator<void> > const> const&)></div>
+<div>
+<span class="stats">invocations=8</span>
+<span class="stats">signatures=7</span>
+<span class="stats alt">|skel|=30</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1666_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1666_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1666_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1666_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1666_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1666_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1666_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1666_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1666_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F1667">
+<h2>F#1667 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x70617C0E77F0</span></h2>
+<div class="label">std::_Bind<void (autoware::occupancy_grid_map::PointcloudBasedOccupancyGridMapNode::*(autoware::occupancy_grid_map::PointcloudBasedOccupancyGridMapNode*, std::_Placeholder<1>))(std::shared_ptr<sensor_msgs::msg::PointCloud2_<std::allocator<void> > const> const&)></div>
+<div>
+<span class="stats">invocations=7</span>
+<span class="stats">signatures=5</span>
+<span class="stats alt">|skel|=26</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1667_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1667_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1667_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1667_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1667_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1667_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1667_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1667_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1667_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F2516">
+<h2>F#2516 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x7061500C4F60</span></h2>
+<div class="label">std::_Bind<void (autoware::compare_map_segmentation::VoxelGridDynamicMapLoader::*(autoware::compare_map_segmentation::VoxelGridDynamicMapLoader*))()>::continuation</div>
+<div>
+<span class="stats">invocations=7</span>
+<span class="stats">signatures=5</span>
+<span class="stats alt">|skel|=28</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F2516_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F2516_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F2516_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F2516_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F2516_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F2516_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F2516_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F2516_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F2516_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F1654">
+<h2>F#1654 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x7061A45C15B8</span></h2>
+<div class="label">autoware::pointcloud_preprocessor::PointCloudConcatenateDataSynchronizerComponentTemplated<autoware::pointcloud_preprocessor::PointCloud2Traits>::initialize_pub_sub()::{lambda(std::shared_ptr<sensor_msgs::msg::PointCloud2_<std::allocator<void> > const>)#1}</div>
+<div>
+<span class="stats">invocations=6</span>
+<span class="stats">signatures=5</span>
+<span class="stats alt">|skel|=26</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1654_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1654_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1654_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1654_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1654_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1654_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1654_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1654_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1654_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F1687">
+<h2>F#1687 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x705EE994D290</span></h2>
+<div class="label">std::_Bind<void (diagnostic_updater::Updater::*(diagnostic_updater::Updater*))()></div>
+<div>
+<span class="stats">invocations=5</span>
+<span class="stats">signatures=5</span>
+<span class="stats alt">|skel|=17</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1687_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1687_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1687_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1687_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1687_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1687_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1687_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1687_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1687_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F1682">
+<h2>F#1682 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x705EE8CC7C20</span></h2>
+<div class="label">std::_Bind<void (autoware::pointcloud_preprocessor::Filter::*(autoware::pointcloud_preprocessor::Filter*, std::_Placeholder<1>, std::shared_ptr<pcl_msgs::msg::PointIndices_<std::allocator<void> > const>))(std::shared_ptr<sensor_msgs::msg::PointCloud2_<std::allocator<void> > const>, std::shared_ptr<pcl_msgs::msg::PointIndices_<std::allocator<void> > const>)></div>
+<div>
+<span class="stats">invocations=4</span>
+<span class="stats">signatures=4</span>
+<span class="stats alt">|skel|=60</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1682_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1682_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1682_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1682_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1682_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1682_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1682_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1682_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1682_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F1677">
+<h2>F#1677 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x7061A0068608</span></h2>
+<div class="label">std::_Bind<void (autoware::euclidean_cluster::VoxelGridBasedEuclideanClusterNode::*(autoware::euclidean_cluster::VoxelGridBasedEuclideanClusterNode*, std::_Placeholder<1>))(std::shared_ptr<sensor_msgs::msg::PointCloud2_<std::allocator<void> > const>)></div>
+<div>
+<span class="stats">invocations=3</span>
+<span class="stats">signatures=3</span>
+<span class="stats alt">|skel|=38</span>
+<span class="stats">streams=[7, 13, 14]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1677_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1677_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1677_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1677_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1677_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1677_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1677_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1677_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1677_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+<div class="cb" id="F1656">
+<h2>F#1656 <span style="color:#666;font-weight:normal;font-size:0.85em">cb_addr=0x706180004DD0</span></h2>
+<div class="label">autoware::pointcloud_preprocessor::CloudCollector<autoware::pointcloud_preprocessor::PointCloud2Traits>::CloudCollector(std::shared_ptr<autoware::pointcloud_preprocessor::PointCloudConcatenateDataSynchronizerComponentTemplated<autoware::pointcloud_preprocessor::PointCloud2Traits> >&&, std::shared_ptr<autoware::pointcloud_preprocessor::CombineCloudHandler<autoware::pointcloud_preprocessor::PointCloud2Traits> >&, int, double, bool)::{lambda()#1}</div>
+<div>
+<span class="stats">invocations=1</span>
+<span class="stats">signatures=1</span>
+<span class="stats alt">|skel|=2</span>
+<span class="stats">streams=[13]</span>
+</div>
+<div class="figs">
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1656_all_fig1.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1656_all_fig1.png" alt="fig1"></a>
+<div class="fig-cap">fig1: backbone + collapsed branches · <a href="../postprocess/dag_out/skeleton_F1656_all_fig1.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1656_all_fig2.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1656_all_fig2.png" alt="fig2"></a>
+<div class="fig-cap">fig2: subseq backbone + substring overlay · <a href="../postprocess/dag_out/skeleton_F1656_all_fig2.svg" target="_blank">SVG</a></div>
+</div>
+<div class="fig"><a href="../postprocess/dag_out/skeleton_F1656_all_fig3.svg" target="_blank"><img src="../postprocess/dag_out/skeleton_F1656_all_fig3.png" alt="fig3"></a>
+<div class="fig-cap">fig3: full conditional graph (probabilities) · <a href="../postprocess/dag_out/skeleton_F1656_all_fig3.svg" target="_blank">SVG</a></div>
+</div>
+</div>
+</div>
+</body></html>

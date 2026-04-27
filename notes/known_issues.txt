@@ -74,3 +74,111 @@ FISH mitigation options:
      as part of data volume optimization (immediate_work.txt item 5).
 
 Current status: option 3 (accepted, documented).
+
+
+ISSUE-002: nsys `utcEpochNs` is actually LOCAL-epoch-ns (nsys/CUDA quirk)
+------------------------------------------------------------------------
+Date discovered: 2026-04-20
+Session: fish_20260419_211621
+
+Observation:
+  Any analysis that correlates nsys GPU timestamps with MongoDB
+  ros2_trace callback timestamps returns wildly misaligned results.
+  Example on a Europe/Amsterdam (UTC+2) machine:
+
+    nsys session_start (col labelled utcEpochNs): 1776633420939599477 ns
+      → naïvely interpreted as UTC, decodes to 2026-04-19 21:17:00 UTC
+    First ros2:callback_start (correct UTC):      1776626222756852919 ns
+      → decodes to 2026-04-19 19:17:02 UTC
+
+  Delta: 7200 s = exactly the Amsterdam UTC offset. Naïve time-window
+  membership then reports 100 % of CUDA calls "outside any callback
+  window" — because the CUDA timestamps are shifted 2 h forward
+  relative to the LTTng ones.
+
+Root cause:
+  `TARGET_INFO_SESSION_START_TIME.utcEpochNs` stores LOCAL epoch ns
+  despite its name. The two string columns (`utcTime`, `localTime`)
+  confirm this: both print the same ISO string (the local wall clock),
+  even though the pair is designed to differ. Long-standing misnomer
+  across several NSight Systems releases.
+
+  On dual-boot Windows/Linux machines a second effect compounds the
+  problem: Windows writes the RTC as LOCAL by default while Linux
+  expects UTC, so the hardware clock itself drifts by one UTC-offset
+  between boots. If the misalignment isn't exactly one UTC-offset,
+  suspect dual-boot RTC too — `timedatectl set-local-rtc 0` fixes the
+  Linux side permanently.
+
+Mitigation in FISH code:
+  postprocess/analyze_process_gpu.py (and any future per-sqlite
+  analyser) derives the true UTC epoch by treating the sqlite's
+  utcTime ISO string as local wall-clock and converting via the
+  system timezone (zoneinfo, defaults to Europe/Amsterdam; override
+  with `FISH_TZ` env var). Do NOT trust the raw utcEpochNs integer.
+
+User action:
+  - If local zone is UTC: the bug cancels out and nothing is required.
+  - Otherwise: set `FISH_TZ` in the environment (defaults to Europe/
+    Amsterdam in this repo) OR accept the default.
+  - Debugging: compute
+      delta = nsys_utcEpochNs - mongo_first_callback_start_ns
+    a value equal to the system UTC offset (in ns) confirms this issue.
+  - Longer term: re-ingest nsys data through a fixed timestamp
+    normaliser in postprocess/ingest.py::_ingest_nsys. Tracked in
+    notes/follow_up.txt (new item — to be added).
+
+
+ISSUE-003: --cuda-event-trace was OFF → no event↔waitEvent correlation
+-----------------------------------------------------------------------
+Date discovered: 2026-04-20
+Session: fish_20260419_211621 + fish_compose_20260419_161633
+
+Symptom:
+  CUPTI_ACTIVITY_KIND_SYNCHRONIZATION shows many type-2 StreamWaitEvent
+  rows (pointcloud: 3776, yolo: 3938) but the corresponding
+  cudaEventRecord / cuEventRecord calls are almost absent from
+  CUPTI_ACTIVITY_KIND_RUNTIME (pointcloud: 0, yolo: 1). Every SYNC
+  row's eventId column is -1 (not populated). We initially attributed
+  this to "TRT hides its internal event recording from CUPTI" and
+  resorted to a time-proximity heuristic for src→dst stream DAG edges
+  (notes/gpu_mapping_datapoints.txt obs F, notes/stream_bridge.txt).
+
+Actual root cause:
+  Our nsys invocation never enabled --cuda-event-trace. From NVIDIA
+  docs: this flag "Trace CUDA Event completion on the device side, and
+  get better correlation support among CUDA Event APIs (cudaEventRecord,
+  cudaStreamWaitEvent etc.)". Default is OFF in recent nsys versions.
+
+  So the missing records are a configuration choice on our side, not a
+  fundamental toolchain limit. With the flag enabled we expect:
+    - each type-2 SYNC row to carry a valid eventId
+    - matching cudaEventRecord/cuEventRecord calls in RUNTIME
+    - deterministic src_stream → dst_stream DAG edges (no heuristic)
+
+Fix applied (2026-04-20):
+  - fish_settings.ini [nsys] section: added `cuda_event_trace = true`
+  - postprocess-side build_nsys_command reads the setting and adds
+    `--cuda-event-trace=true` to the nsys command line (python/fish/gpu.py).
+  - launch_wrap (the composable-node path) reads env var
+    FISH_CUDA_EVENT_TRACE=1 to enable — off by default because the flag
+    may interact badly with multi-threaded component containers on
+    older nsys. Enable per run via `export FISH_CUDA_EVENT_TRACE=1`.
+
+Side-effects (per NVIDIA docs):
+  - "may increase runtime overhead and the likelihood of false
+    dependencies across CUDA Streams" (when cudaEvent timing is not
+    disabled). Paper measurement runs accept this cost in exchange for
+    deterministic DAG edges.
+  - auto mode turns the trace OFF automatically if the target process
+    has CUDA_DEVICE_MAX_CONNECTIONS=1.
+
+User action:
+  - Existing sessions (pre-2026-04-20) keep the time-proximity
+    heuristic. Not re-ingestable — the data wasn't captured.
+  - New sessions will have deterministic DAG edges. Expect the
+    stream_dag_unresolved field in gpu_task_graph meta to drop to 0.
+  - If runs crash under the flag on your CUDA/nsys version, override
+    in fish_settings.ini → `cuda_event_trace = false` and fall back
+    to the heuristic.
+

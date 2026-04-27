@@ -1,0 +1,142 @@
+FISH work stack (LIFO — top of stack is what we do NEXT)
+==========================================================
+
+This file ALWAYS reflects the current state of the stack. Top of file
+= top of stack = next item to pop and work on. Updated on every push /
+pop. See notes/stack_log.txt for the historical log of pushes/pops.
+
+Only unblocked, concrete, actionable items go here. Background
+context (follow-ups, paper observations, known issues) stay in their
+respective files.
+
+
+[TOP OF STACK] ────────────────────────────────────────────────────────
+
+#4  Tracepoint whitelist — drop unused ros2_tracing events before rerun
+    Pushed: 2026-04-20 22:05 CEST
+
+    Context: 36.5M ros2_trace events on the Autoware 150 s rosbag
+    replay (fish_20260419_211621), most of which FISH never reads.
+    Consequences:
+
+      - LTTng buffer overflow: 121,632 events discarded (0.76%) —
+        notes/known_issues.txt + immediate_work.txt #0d
+      - Ingest time dominated by bt2 streaming of events we throw
+        away (~17 min on the Autoware run)
+      - rclpy timer re-init inflation (ISSUE-001): 88K+ useless
+        rcl_timer_init events on a 30 s session
+
+    Approach:
+      - Inventory what FISH actually consumes from ros2_trace —
+        search postprocess/ for `event`:`ros2:*` queries and list
+        unique event names. Current inventory (from memory):
+          ros2:callback_start, ros2:callback_end, ros2:rcl_publish,
+          ros2:rclcpp_client_request_sent,
+          ros2:rcl_node_init, ros2:rcl_subscription_init,
+          ros2:rcl_publisher_init, ros2:rcl_client_init,
+          ros2:rcl_service_init, ros2:rcl_timer_init,
+          ros2:rclcpp_subscription_callback_added,
+          ros2:rclcpp_service_callback_added,
+          ros2:rclcpp_client_callback_added,
+          ros2:rclcpp_timer_callback_added,
+          ros2:rclcpp_subscription_init,
+          ros2:fish_*  (our own set — all needed)
+          ros2:rclpy_*  (our rclpy parity — all needed)
+      - Compile LTTng enable-event whitelist (`-u 'ros2:callback_start'
+        -u ...`) to replace current wildcard enable
+      - Audit: what would we LOSE? Anything in ingest.py loops that
+        isn't in the whitelist needs to stay or needs an explicit
+        decision (accept loss).
+      - Apply to trace_session.sh (or wherever `lttng enable-event`
+        is issued)
+      - Bump LTTng subbuf-size/num-subbuf while we're there — smaller
+        event volume means less risk of overflow even without buffer
+        tuning, but bigger buffers are cheap safety.
+
+    Acceptance:
+      - Tracepoint count inventory in notes/tracepoint_inventory.txt
+      - trace_session.sh uses explicit enable-event whitelist
+      - Rerun (item #2) shows ros2_trace row count materially lower
+        (target: ~3-5x reduction), ingest time down proportionally,
+        LTTng discards = 0
+      - Model extraction + gpu_task_graph identical structural
+        output vs pre-whitelist baseline (no signal lost)
+
+    Sequencing: do this BEFORE item #2 so the rerun captures both
+    the nsys flag changes AND the trimmed tracepoint set in one
+    pass. Otherwise we'd need two reruns.
+
+    Next action after pop: grep postprocess/ for "ros2:" event
+    consumers and draft the whitelist.
+
+
+#2  Rerun test with updated config for gpu trace
+    Pushed: 2026-04-20 21:55 CEST
+
+    Context: fish_settings.ini now enables
+      - --cuda-event-trace=true         (deterministic event↔wait join)
+      - --cuda-graph-trace=node         (per-kernel records under
+                                          cudaGraphLaunch)
+      - --cuda-trace-all-apis=true      (full CUDA API timeline)
+    launch_wrap.py additionally sets cuda-graph-trace + trace-all-apis
+    unconditionally; cuda-event-trace stays env-gated
+    (FISH_CUDA_EVENT_TRACE=1). Need a short Autoware rosbag rerun to
+    verify:
+
+      - SYNC rows now carry valid eventId (no more -1)
+      - cudaEventRecord / cuEventRecord visible in RUNTIME
+      - gpu_task_graph stream_dag_unresolved drops to 0
+      - per-kernel records present even if workload uses CUDA Graphs
+      - RUNTIME includes APIs previously skipped (more complete CPU
+        timeline)
+      - no crash on component_container_mt under the new flags
+      - trace volume + runtime overhead measured
+
+    Setup:
+      - Autoware logging_simulator + sample-rosbag (same as today)
+      - Short replay (~60s) sufficient
+      - export FISH_CUDA_EVENT_TRACE=1 before launch (composable
+        containers; gpu.py applies it via settings automatically for
+        standalone nodes)
+
+    Acceptance:
+      - Rerun produces a new session (fish_<YYYYMMDD_HHMMSS>)
+      - postprocess/gpu_task_graph.py run shows deterministic
+        edges (0 unresolved)
+      - No process-container crashes attributable to new flags
+
+    Task ID: #43 (Validate --cuda-event-trace with a short rerun)
+
+
+#1  Stream-dependency resolve — integrate into model + viz
+    Pushed: 2026-04-20 21:54 CEST
+
+    Context: 8 scenarios enumerated. Design direction: faithful
+    per-process Typed DAG across callbacks, with wait_event edges
+    as first-class inter-stream precedence. Scheduler primitive =
+    PDF §4.5 Typed DAG (CPU/SM/CE).
+
+    Concrete work:
+      - Extend gpu_attribution.py / gpu_task_graph.py to emit
+        intra-invocation wait_event edges on per-shape DAGs
+      - Build a cross-callback wait-edge set persisted on EX.A_v
+        (src_F, src_inv, src_node) → (dst_F, dst_inv, dst_node)
+      - Extend gpu_task_graph_viz.py to render wait-edges on both
+        shape view (curved cross-stream arrows) and process view
+      - Update notes/three_flags_gpu_model.txt flag-4 section with
+        the decided edge encoding
+      - Once item #2 rerun lands, switch from heuristic-based wait
+        edges to deterministic ones (eventId join)
+
+    Acceptance:
+      - F.gpu_dags[i].edges contain `wait_event` type edges where
+        applicable (single-callback internal waits)
+      - EX.gpu_task_graph.cross_callback_wait_edges populated
+      - Shape viz shows cross-stream arrows
+      - Process viz shows edge weights derived from both
+        callback-internal and cross-callback waits
+
+    Next action after pop: extend gpu_attribution.compute_stream_ownership
+    to also emit wait_event edges using cuda["syncs"] type-2 rows.
+
+[BOTTOM OF STACK] ─────────────────────────────────────────────────────

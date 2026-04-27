@@ -1,0 +1,257 @@
+Paper-important observations (bank)
+====================================
+
+Running collection of findings from FISH development / validation runs
+that look paper-worthy. Each entry states the observation, the
+supporting evidence (session + script), and why it matters for the
+paper narrative. Not a plan; a bank. Curate later.
+
+Index:
+  P1 — Autoware pointcloud pipeline is GPU-DAG-native (StreamWaitEvent only)
+  P2 — Stream-ID disambiguator is necessary under multi-threaded executors
+  P3 — Callback boundary ≠ task boundary for async-dispatch workloads
+  P4 — TRT execution-context pattern: one stream per inference engine
+  P5 — INIT phase interleaves with productive callbacks
+  P6 — Variation shapes encode branch structure (keep, don't discard as UNKNOWN)
+
+
+P1 — Autoware pointcloud pipeline is GPU-DAG-native
+-------------------------------------------------------
+
+Observation:
+  Of 3,776 CUPTI_ACTIVITY_KIND_SYNCHRONIZATION rows recorded for pid=3211
+  (pointcloud_container_mt) during a 150 s rosbag replay, 100 % are
+  syncType=2 (StreamWaitEvent). ZERO are syncType=3 (StreamSynchronize,
+  the CPU-blocking fence). During normal operation the CPU never
+  waits for a stream; every inter-stream dependency is expressed as
+  a GPU-internal cudaStreamWaitEvent(stream_dst, event_src).
+
+Evidence:
+  Session: fish_20260419_211621
+  nsys sqlite: nsys_pointcloud_container_20260419_211646_001.sqlite
+  Script: postprocess/analyze_process_gpu.py
+  Report line: "sync types: StreamWaitEvent=3776"
+  Schema reference: notes/gpu_mapping_datapoints.txt source B + join (4).
+
+Why it matters for the paper:
+  Classical real-time literature (Liu & Layland EDF, Nelissen EDD)
+  models GPU work as "CPU issues, waits, releases" — a sync-fence
+  pattern. In the TRT / rclcpp autoware stack this pattern does
+  NOT appear. The workload is already shaped like a heterogeneous
+  task DAG at the GPU hardware level (streams as vertices, wait-
+  events as edges). FISH can therefore LIFT that DAG directly
+  rather than inferring it from CPU-side sync proxies. This is
+  a clean story: the scheduling object is already present in the
+  hardware trace, FISH just surfaces it.
+
+  Cross-validation (2026-04-20): yolo_py (aircraft/
+  fish_compose_20260419_161633, pid=1252) shows the same
+  pattern at even higher purity — 3938 StreamWaitEvent (type 2)
+  vs exactly 1 ContextSynchronize (type 4) across the entire
+  session. The single CtxSync appears to be process-teardown.
+  So this is NOT an Autoware-specific quirk: modern CUDA /
+  TensorRT / ORT workloads in general express their
+  inter-stream dependencies as GPU-internal wait events.
+
+  Inter-stream DAG recovered (2026-04-20, stress-test via
+  stream_precedence_edges_heuristic in analyze_process_gpu.py):
+
+    Pointcloud pid=3211 (13 distinct edges, 99.9% resolved):
+      stream 14 → stream 7   : 2260  ← main producer→consumer
+      stream 7  → stream 14  :  518
+      stream 13 → stream 14  :  349
+      stream 14 → stream 13  :  308
+      stream 7  → stream 13  :  282
+      stream 13 → stream 7   :   48
+      (rest are init-time edges on streams 15-20, ≤2 each)
+
+    Yolo pid=1252 (3 edges, 53% resolved, rest too-sparse for heuristic):
+      stream 29 → stream 7   : 1865  ← main
+      stream 13 → stream 7   :  208
+      stream 30 → stream 29  :    1
+
+  Important: deterministic vs heuristic distinction
+
+    Deterministic (directly from CUPTI_ACTIVITY_KIND_SYNCHRONIZATION):
+      - the FACT of each wait (streamId = dst, syncType = 2)
+      - per-destination wait COUNTS (stream 7: 2308 waits, etc.)
+      - timestamps of waits
+      These are DAG-vertex data + vertex weights. Paper-grade
+      numbers, no inference.
+
+    Heuristic (our src→dst edge attribution):
+      - WHICH source stream each wait is waiting on
+      - forced into inference because SYNC.eventId is always -1
+        in our nsys output, and cudaEventRecord calls are issued
+        from inside closed-source libs (TRT, ORT) that don't surface
+        through CUPTI's RUNTIME table
+      - our rule: src = stream with most recently ENDED GPU activity
+        before the wait (any stream ≠ dst)
+      - empirically: 99.9 % resolved on pointcloud, 53 % on yolo
+        (yolo has regions where no other stream was active in the
+         look-back window; the heuristic stays silent rather than
+         guessing wrong)
+
+  Consequence for the paper:
+    • The task DAG's NODE set and NODE weights (waits per stream)
+      are reportable as measured data.
+    • The task DAG's EDGE set is deterministic too — once the
+      `--cuda-event-trace` nsys flag is enabled (added to
+      fish_settings.ini 2026-04-20; see known_issues.txt ISSUE-003).
+      Pre-ISSUE-003 traces used the time-proximity heuristic. Paper
+      measurement runs will have --cuda-event-trace on, so the DAG
+      is 100% data-driven. Clean story.
+
+  Also reshapes the "task = sync-to-sync span" definition (flag 4
+  in notes/three_flags_gpu_model.txt): the inter-task boundaries
+  we care about are stream-to-stream wait events, not CPU syncs.
+  A single paper figure can show: stream timeline on top, wait-
+  event edges projected down, callback windows above — all three
+  registered against the same wall clock.
+
+
+P2 — Stream-ID disambiguator is necessary under multi-threaded executors
+------------------------------------------------------------------------
+
+Observation:
+  pid=3211 has 6 executor threads firing callbacks concurrently; the
+  naïve per-tid time-membership test reports up to 32 callbacks
+  overlap any given instant. 82.4 % of host API calls fall inside
+  SOME window under naïve attribution, but of those, 71 % are
+  ambiguous (multiple candidate owners). Stream-ID attribution
+  (notes/stream_bridge.txt) resolves the ambiguity: 99.8 % of
+  GPU-producing host calls get a unique callback owner, and only 3
+  distinct stream IDs carry all the work across the workload.
+
+Evidence:
+  Session: fish_20260419_211621, pid=3211
+  Script: postprocess/analyze_process_gpu.py
+  Numbers: GPU-producing calls 18,417 — callback_bound_time 30.9 %,
+           callback_bound_stream 68.8 %, oort 0.2 %.
+
+Why it matters for the paper:
+  Under single-threaded or non-rclcpp (rclpy / standalone) workloads,
+  per-tid attribution is enough. Real production stacks (Autoware,
+  professional rclcpp multi-threaded executors) break that. The
+  stream-ID disambiguator is cheap (O(|runtime|·log|windows|)),
+  principled (CUDA stream is the scheduling primitive CUDA itself
+  uses), and empirically effective (0.2 % residual). It should be
+  part of the paper's attribution algorithm as a required step, not
+  a footnote.
+
+
+P3 — Callback boundary ≠ task boundary for async-dispatch workloads
+---------------------------------------------------------------------
+
+Observation:
+  In 180 GPU-touching callback invocations across 27 distinct
+  rclcpp callbacks on pid=3211:
+    73 % end with a kernel/memcpy launch, NOT a sync (async dispatch)
+    27 % end with a sync (atomic synchronous)
+  For async-dispatch callbacks, the work enqueued in callback A is
+  picked up by a sync in callback B (same stream). The scheduling-
+  relevant unit is the cross-callback stream span, not the callback.
+
+Evidence:
+  Session: fish_20260419_211621, pid=3211
+  Exemplar: cb=0x7EE2D00682B8, 843 ms window, 2 CUDA calls —
+           first a cudaStreamSynchronize (pickup prior), then a
+           cudaMemcpyAsync on stream 13 (dispatch new), then
+           callback returns with GPU work still in flight.
+  Full pattern table in notes/three_flags_gpu_model.txt FLAG 4.
+
+Why it matters for the paper:
+  Earlier FISH iterations treated each ros2 callback as the atomic
+  task unit, matching the PDF §4.5 task definition. On Autoware-
+  class workloads this is wrong: the CUDA task body can straddle
+  multiple callbacks. Paper-grade task model must use stream
+  sync-to-sync spans (or wait-event-bounded spans per P1) as the
+  GPU-side task, with callbacks providing CPU-side annotations
+  (arrival, jitter, executor policy) but NOT determining the task
+  boundary.
+
+
+P4 — TRT execution-context pattern: one stream per inference engine
+--------------------------------------------------------------------
+
+Observation:
+  pid=3211 runs multiple TensorRT execution contexts (pointcloud
+  preprocessor, voxel grid cluster, occupancy grid mapper, etc.) in
+  one Linux process. Their GPU activity is carried by exactly 3
+  streams (ids 7, 13, 14). Stream 13 is claimed by 122 callback
+  invocations, streams 14 and 7 by 67 each. No callback claims more
+  than one stream's main kernels (a few edge cases set up events
+  on multiple streams but don't run kernels).
+
+Evidence:
+  Session + pid as above.
+  Per-stream canonical shape (gap-based spans, threshold 1 ms):
+    stream 14: 236 spans, dominant 60-op shape at 40 %, variants
+               (58/59/60 op) collectively ~68 %
+    stream 13: 640 spans, canonical 22-op shape at 14 %, + 244
+               1-op spans (D2H readback)
+    stream 7:  387 spans, canonical 20-op shape at 31 %
+  (Running notes/embed_start.txt will produce cleaner numbers.)
+
+Why it matters for the paper:
+  Gives a concrete architectural fact that the paper can assert
+  without handwaving: on production rclcpp + TRT, one stream =
+  one inference engine = one heterogeneous task in the FISH task
+  model. That legitimises using streamId as the primary DAG
+  vertex label in figures.
+
+
+P5 — INIT phase interleaves with productive callbacks
+--------------------------------------------------------
+
+Observation:
+  On yolo_py (fish_compose_20260419_161633), the second productive
+  period (idx=1) scores higher on init_score (390) than the first
+  (297) because ORT's CUDA provider continues lazy library loads
+  during frame-1 inference. INIT cannot be defined as "before first
+  productive period" — it is a per-period score-based label.
+
+Evidence:
+  Session: fish_compose_20260419_161633
+  Script: postprocess/gpu_dag.py
+  Reference: notes/phase_detector.txt + the IMPORTANT observation
+             block on yolo-specific WARMUP.
+
+Why it matters for the paper:
+  The Liu/Layland periodic-task frame has a clean split between
+  "initial" and "steady" phases. In practice, driver-level lazy
+  loading makes this a gradient, not a step. Paper-grade INIT
+  definition must be score-based (init_score ≥ threshold on a
+  per-period basis) so that INIT can LABEL periods without
+  REQUIRING them to be contiguous at the start. Nelissen-style
+  EDD derivation then excludes INIT-labelled periods from the
+  steady-state arrival / jitter statistics.
+
+
+P6 — Variation shapes encode branch structure; don't discard as UNKNOWN
+------------------------------------------------------------------------
+
+Observation:
+  On pid=3211 oort threads, the phase detector classified 73 % of
+  periods as UNKNOWN because they differ from the dominant shape by
+  1-3 nodes. Manual inspection shows the differences are systematic:
+  driver-level kernel substitutions (cuBLAS/cuDNN algorithm
+  selection), TRT first-run tactics variance, and application-level
+  conditional post-processing. These are scheduling-relevant
+  variations, not noise.
+
+Evidence:
+  Session: fish_20260419_211621, pid=3211
+  Oort F vertices in graph_store (e.g. F#2427, tid=3364):
+    14 shapes, dominant 129-op canonical at 20 % coverage, 13
+    variations at 93-96 % length of dominant with 1-5 node
+    differences each.
+  Analysis plan: notes/embed_start.txt (Levenshtein + cluster).
+
+Why it matters for the paper:
+  A UNKNOWN bucket in the detector is a wasted paper opportunity.
+  The variation structure tells the story: "on Autoware, the
+  dominant pipeline stage has K distinct driver-chosen variants
+  whose aggregate coverage is >90 %". With edit-distance clustering
+  those variants become named sub-clusters with interpretable diffs
+  against the dominant — useful figure, useful paragraph.

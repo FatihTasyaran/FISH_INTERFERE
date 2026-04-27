@@ -1,0 +1,293 @@
+Four CS-level flags on the process-centric GPU task model
+==========================================================
+(renamed from "three" after 2026-04-20 stress-test surfaced flag 4)
+
+
+
+Context: 2026-04-20 discussion — reframing phase detection from
+per-thread (current oort-style) to per-process after observing
+Autoware's TRT-enqueueV3 pattern, where work enqueued by a callback on
+tid_main actually issues cudaLaunchKernel on a TRT async worker thread
+tid_worker. Process-centric is right, but three correctness points
+must be answered cleanly before we formalize.
+
+Companion: notes/phase_detector.txt (v1 algorithm, yolo-tuned);
+           notes/follow_up.txt #1, #5, #6 (partially subsumed here);
+           notes/notes.txt 2026-04-19/20 Autoware run.
+
+
+FLAG 1 — Per-tid attribution is not enough under multi-threaded
+         executors. Disambiguator: CUDA stream ID.
+----------------------------------------------------------------
+
+Observation:
+  pid=3209 (traffic_light_node_container) runs a MultiThreadedExecutor
+  with 6 worker threads firing callback_start on tids 3423, 3456,
+  4409, 4449, 4460, 4485 (≈2500-2770 callbacks each over 144 s).
+  TRT, when a callback calls `context->enqueueV3(stream)`, returns
+  immediately and dispatches kernel launches onto a TRT-internal thread
+  pool. On pid=3211 (pointcloud_container_mt) this pool is visible as
+  19 tids (3362-3380) each issuing cudaLaunchKernel asynchronously
+  from the call site on tid=3211.
+
+  Naïve per-tid attribution breaks on two axes:
+
+    (a) Temporal overlap across tids: two callbacks on two different
+        executor tids can be active simultaneously. A CUDA call at
+        time T on some tid cannot be attributed to "the enclosing
+        callback window" by time alone — multiple candidates exist.
+
+    (b) Cross-tid dispatch: tid_worker's cudaLaunchKernel has no
+        callback_start on its own tid. Per-tid membership test says
+        "not in any callback window" → misclassifies as oort, despite
+        being semantically the callback's work.
+
+Why stream ID works:
+  CUDA streams are the scheduling primitive. TRT execution contexts
+  use one stream per context. enqueueV3 records all its GPU work onto
+  that stream. Worker thread launches go onto the SAME stream. So:
+
+    If callback C on tid_main issues any host API call on stream S
+    during [cb_start, cb_end], C "owns" stream S for that window.
+    Subsequent host API calls on stream S (from any tid of the same
+    process, within some bounded look-ahead) belong to C.
+
+  Stream ID is process-scoped (valid within one CUDA context / one
+  process) — matches our process-level analysis unit exactly.
+
+  Yet-to-decide:
+    - Look-ahead bound: how far past cb_end does stream S "still
+      belong to C"? Candidates: (a) until next callback_start on ANY
+      tid of this process, (b) until next cudaStreamSynchronize on
+      S, (c) until the stream's next launch belongs (again by
+      ownership rule) to some new callback.
+      (b) is the cleanest semantically — synchronize is the "work
+      complete" marker. Tentatively go with (b).
+
+    - Many streams, one callback: a callback using multiple streams
+      (rare but legal) claims all of them during its window.
+
+    - Overlapping claims: if two concurrent callbacks both issue on
+      the SAME stream, they must serialize (CUDA stream is FIFO).
+      First-claimer wins; second-claimer starts after first-syncer.
+
+Implication for detect_oort_threads:
+  Replace "tid has no callback_start" with "stream has no callback
+  owner". A process with any stream-ownership coverage >= X% is
+  callback-bound; the residual is the oort piece.
+
+
+FLAG 2 — INIT is not definable as "before first callback_start".
+         It is a score-gated label on each period, not a time prefix.
+-------------------------------------------------------------------
+
+Observation:
+  On yolo_py, period idx=1 (the SECOND productive period in ROS
+  timeline) scored 390 on init_score — HIGHER than idx=0's 297 —
+  because ORT's CUDA provider still fires cuInit ×2 and
+  cuLibraryLoadData ×4 during frame-1 inference. The init signal is
+  not a contiguous time prefix; it bleeds into the first real
+  productive window.
+
+  On Autoware, likely similar: TRT engine deserialize + cuda context
+  setup may straddle the first 1-2 callback invocations.
+
+Consequence for the task model:
+  If we tag "INIT" as [t_start, first_callback_start) and "STEADY"
+  as the rest, then frame-1 with cuInit in it gets STEADY — WRONG.
+  Its shape is NOT the canonical steady DAG, and its timing is
+  contaminated by library-load serial delay.
+
+Correct approach (retain from v1):
+  INIT is a per-period label decided by init_score(P) >= 100. Can
+  label non-contiguous periods INIT if driver-side init continues.
+  WARMUP is the [20, 100) band, also per-period.
+
+Implication for arrival/jitter derivation (Nelissen-style):
+  When deriving arrival periods T, jitter J, minimum inter-arrival
+  time for the STEADY task graph, EXCLUDE periods labeled INIT or
+  WARMUP from the statistics. Their inter-arrival is distorted by
+  one-shot driver work. The per-period label is what gates that
+  inclusion.
+
+
+FLAG 3 — oort ↔ callback-bound is a spectrum, not a binary.
+           Don't create an oort F vertex per process unconditionally.
+--------------------------------------------------------------------
+
+Observation (from existing Autoware run):
+  Workloads span a range:
+
+    yolo_py (AAS)              : 100 % oort — no ros2 callbacks at all
+                                 for GPU work (main while-loop pattern)
+    TRT-autoware traffic_light :  ~0 % oort — every CUDA call fits in
+                                 some callback window (via stream rule)
+    Hybrid (future)            :   X %   — e.g. background prewarming
+                                 thread + callback-driven inference
+
+Consequence:
+  Current model: one F vertex of ptype="oort" per detected non-
+  executor thread that does CUDA work. This creates vertices in the
+  yolo case (good) AND one per TRT worker tid in the Autoware case
+  (bad — their work IS callback-bound via stream ownership; creating
+  an F for each pollutes the graph).
+
+Revised rule:
+  After process-level partition + stream attribution, compute:
+
+    oort_residual_fraction = cuda_ops_not_attributable / total_cuda_ops
+
+  Decision:
+    >= 10 %  → create ONE oort F per process (regardless of tid
+               count) summarizing the residual. yolo-case gets one
+               oort F with all its work.
+    < 10 %  → no oort F; residual becomes noise on the process's
+               callback-bound F set.
+
+  The single-oort-F-per-process rule also folds in follow_up #5's
+  taxonomy question: there is no "main_loop vs worker_pool" sub-type
+  problem because we don't create a vertex per worker anyway — the
+  work is either callback-bound (belongs to a callback's F) or oort
+  (belongs to the one process-level oort F).
+
+
+FLAG 4 — callback boundary ≠ task boundary (for async-dispatch workloads).
+           The scheduling unit is the stream sync-to-sync span, not the
+           callback invocation.
+--------------------------------------------------------------------
+
+Observation (stress-test 2026-04-20 on fish_20260419_211621, pid=3211):
+  Of 180 GPU-touching callback invocations across 27 distinct cb_addrs:
+    73 %   end with a kernel/memcpy launch, NOT a sync ("launch_last")
+    27 %   end with a sync ("sync_last")
+  Inside a single callback, the typical GPU-relevant pattern is:
+
+    cudaStreamSynchronize(stream_s)    ← wait for prior-callback's work
+    cudaMemcpyAsync / cudaLaunchKernel ← dispatch new work on stream_s
+    [callback returns]
+
+  The new work's SYNC lands in a LATER callback (next invocation of
+  the same pipeline stage or a downstream consumer). Example:
+    cb 0x7EE2D00682B8, 843 ms window, 2 CUDA calls — sync at t=279 ms,
+    memcpy launch at t=281 ms. The other 562 ms is CPU-only work.
+
+Consequence — two independent decomposition axes:
+
+  (a) Callback level: one F vertex per callback invocation. Gives us
+      the CPU-side timeline, rclcpp callback group info, pub/sub
+      dependencies, arrival/jitter data. Necessary for WCRT.
+
+  (b) Task level (CUDA work): one task invocation = one
+      stream-sync-to-sync span (the "pipeline stage"). Gives us the
+      Typed DAG (the CPU → SM → CE subgraph per PDF §4.5), kernel
+      execution time, stream-FIFO ordering. Necessary for roofline /
+      GPU-side WCET.
+
+  These two axes are LINKED by stream ownership (flag 1): the
+  callback(s) overlapping a sync-to-sync span own that span's task
+  invocation. An async-dispatch workload has M callbacks contributing
+  to N tasks where M > N (task body spans multiple callbacks).
+
+Model update:
+  Task = (stream_id, prev_sync, next_sync) on that stream.
+  Owner callback set = {callbacks whose window overlaps the span
+  [prev_sync, next_sync]}.
+  For synchronous callbacks (27 % here, 100 % of yolo_py) the span
+  starts and ends within one callback → M == N trivially.
+
+Implication for phase detection:
+  Shape signatures must be computed on TASK units (sync-to-sync spans
+  per stream), not on callback units. A callback that does
+  "sync + 1 memcpy launch" has a tiny 2-node DAG that looks like
+  nothing; chained as part of the enclosing task (prior callback's
+  launches + this callback's sync + further callbacks' continuation)
+  the task is the true canonical inference pipeline.
+
+Implication for paper task model:
+  Nelissen heterogenous EDD derivation should use TASK arrival
+  (= prev-sync timestamp on the stream) and TASK deadline
+  (= next-sync timestamp) — NOT callback arrival. Callback-level
+  jitter folds into the task's CPU-node duration variance.
+
+Open questions for FLAG 4:
+  - Stream fan-out: one callback launches on 2 streams; does it split
+    into 2 tasks? Tentative: yes, one task per (callback, stream).
+  - Short dispatch-only callbacks with 0 syncs (no prior work to
+    pickup): do these start a fresh task or extend the last one?
+    Tentative: start-fresh when the stream had been fully drained
+    (reference-counting on stream-active kernels).
+  - Inter-process streams via CUDA IPC: out of scope for v1.
+
+
+Mini summary — how the three four flags compose
+-------------------------------------------
+
+  For each GPU-profiled process pid:
+    1. Pull timeline of all CUDA calls, all tids of pid
+       (authoritative source: nsys sqlite PROCESSES+CUPTI, not
+        InfluxDB union — fixes cross-container bug from flag 3
+        follow-up).
+    2. Collect callback windows (callback_start/end events, any tid).
+    3. Establish stream ownership per callback (flag 1).
+    4. Score each time partition with init_score (flag 2).
+    5. Compute oort_residual_fraction (flag 3); create oort F only
+       when >= 10 %.
+    6. For callback-bound work: period per callback invocation,
+       shape/phase labels per period; STEADY aggregation across the
+       whole process (all threads, all workers — follow_up #1
+       subsumed).
+    7. Export arrival/jitter stats ONLY over STEADY periods.
+
+
+Stress-test plan (rerun-free, against fish_20260419_211621)
+-------------------------------------------------------------
+
+Before committing to a new tracepoint subset and rerunning, build an
+offline script that applies the three-flag rules to the existing
+session's raw data:
+
+  scripts/analyze_process_gpu.py <session> [<pid>]
+    For each pid (or just the given one), emit:
+      - (pid, pid_name)
+      - total_cuda_ops, total_tids
+      - n_callbacks, n_callback_windows, any_overlap
+      - per-stream: (stream_id, owner_callbacks_count, owned_ops)
+      - oort_residual_fraction
+      - per-period: (window, dag_signature, init_score, phase_label)
+      - STEADY shape coverage
+      - pointer to what would be the oort F (if any) vs
+        per-callback-bound F set
+
+Output is a per-process report (stdout + JSON under notes/
+working_data/). From that report we judge:
+  - Whether stream-ownership attribution actually lowers UNKNOWN on
+    Autoware
+  - Whether the tracepoint set can be trimmed (if we only need
+    callback_start/end + rcl/rclcpp init subset, we know what to cut)
+  - Whether any CS assumption needs revising before we touch the
+    model_improved + gpu_dag code paths
+
+No rerun, no model_improved changes, no graph_store writes. Purely
+analytical.
+
+
+Open questions
+--------------
+
+- Stream ownership look-ahead precise rule (see flag 1). Default
+  tentatively: "until next cudaStreamSynchronize on that stream".
+
+- Does every Autoware GPU callback use exactly one stream, or do
+  some use multiple? (Stream ownership can be multi-valued.) Answer
+  from stress-test.
+
+- 10 % threshold for oort-F creation is a guess. Calibrate from
+  stress-test data across the two workloads (yolo near 100 %,
+  Autoware near 0 %). A clean bimodal distribution would let us set
+  a robust cutoff.
+
+- For tid=3373 on pid=3211 (88 % init-concentrated): is its INIT
+  work actually callback-bound (stream-owned by some init-phase
+  callback like component load) or is it a pure oort init? The
+  distinction matters for arrival-parameter derivation — we do NOT
+  want to count init-phase streams as STEADY tasks.

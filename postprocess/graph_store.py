@@ -65,10 +65,20 @@ NODE_ATTR_KEYS = [
     "executor_addr", "executor_type", "num_threads", "cb_groups",
     "extra_executors",
     "callback_group",
+    # Callback pointer (hex string) — join key against ros2_trace
+    # payload.callback; used by gpu_task_graph.py to match a callback's
+    # CUDA activity back to its F vertex.
+    "cb_addr",
     # out-of-ROS thread (oort/oore) metadata — see EXPECTED_OBSERVED.txt §8
     "thread_tid",
-    # GPU DAG set (attached by postprocess/gpu_dag.py — coming soon)
+    # GPU DAG attribution (per callback invocation)
     "gpu_dags",
+    "gpu_invocations",
+    "gpu_streams",
+    # Process-level GPU task-graph metrics (on EX vertices), written by
+    # postprocess/gpu_task_graph.py. See notes/stream_bridge.txt +
+    # notes/paper_important_points.txt P1.
+    "gpu_task_graph",
 ]
 EDGE_ATTR_KEYS = [
     "rel", "level", "nature", "topic", "service",

@@ -311,6 +311,28 @@ def build_nsys_command(
     nsys_cmd.append(f"--sample={settings.get('nsys', 'sample')}")
     nsys_cmd.append(f"--cpuctxsw={settings.get('nsys', 'cpuctxsw')}")
     nsys_cmd.append(f"--export={settings.get('nsys', 'export')}")
+    # Optional: --cuda-event-trace for deterministic event→stream correlation
+    try:
+        cet = settings.get("nsys", "cuda_event_trace")
+        if cet and cet.lower() not in ("", "false", "0", "no"):
+            nsys_cmd.append(f"--cuda-event-trace={cet}")
+    except Exception:
+        pass  # key missing in older settings — keep old behaviour
+    # Optional: --cuda-graph-trace=node preserves per-kernel granularity
+    # when a workload uses cudaGraphLaunch. Default is graph (collapse).
+    try:
+        cgt = settings.get("nsys", "cuda_graph_trace")
+        if cgt:
+            nsys_cmd.append(f"--cuda-graph-trace={cgt}")
+    except Exception:
+        pass
+    # Optional: --cuda-trace-all-apis=true for completeness
+    try:
+        cta = settings.get("nsys", "cuda_trace_all_apis")
+        if cta and cta.lower() not in ("", "false", "0", "no"):
+            nsys_cmd.append(f"--cuda-trace-all-apis={cta}")
+    except Exception:
+        pass
     nsys_cmd.append("--force-overwrite=true")
     nsys_cmd.append("--stats=true")
     nsys_cmd.append("--show-output=true")
@@ -1010,17 +1032,57 @@ def _wait_for_stable(logger: FishLogger) -> None:
         f"{ex_required} identical → OK"
     )
 
+    # --- Per-poll debug log (written on every poll for both CL and EX) ---
+    # Not part of the event log (which only records state transitions);
+    # this file is meant for humans to see why stability is / isn't
+    # progressing. Line per poll, with timestamp + check + result.
+    POLL_LOG = "/tmp/fish_polls.log"
+    try:
+        with open(POLL_LOG, "w") as _f:
+            _f.write(
+                "# FISH stability poll log\n"
+                "# Format: iso_ts  CHECK  detail\n"
+            )
+    except Exception:
+        pass
+
+    def _log_poll(check: str, detail: str) -> None:
+        try:
+            ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+            with open(POLL_LOG, "a") as fp:
+                fp.write(f"{ts}  {check:2s}  {detail}\n")
+        except Exception:
+            pass
+
     # Component list state
     cl_prev: Optional[str] = None
     cl_count = 0
     cl_ok = False
     cl_next = time.monotonic() + cl_interval
+    cl_seen_nonempty = False  # has an earlier poll ever returned a non-empty
+                              # component list? Required before we allow
+                              # "empty stable → run mode" fallback, so that
+                              # we don't prematurely declare run-mode while a
+                              # launch system is still spawning composable-
+                              # node containers (that early window also looks
+                              # empty but is NOT run mode).
 
     # Executor started state
     ex_prev: Optional[int] = None
     ex_count = 0
     ex_ok = False
     ex_next = time.monotonic() + ex_interval
+    ex_seen_nonzero = False   # has an earlier poll ever seen >0 "process
+                              # started with pid" lines? Required before
+                              # "zero-stable → run mode" can trigger.
+
+    # Hard fallback: if neither non-empty CL nor non-zero EX has been seen
+    # within this many seconds of daemon start, we accept that the workload
+    # is truly run-mode (ros2 run, no launch system). Tuned longer than the
+    # longest plausible launch-spawn time on any workload we care about.
+    run_mode_fallback_s = max(cl_interval, ex_interval) * cl_required * 4
+
+    t_start = time.monotonic()
 
     tick = 0
 
@@ -1030,6 +1092,10 @@ def _wait_for_stable(logger: FishLogger) -> None:
             continue
 
         now = time.monotonic()
+        elapsed = now - t_start
+        fallback_unblock = (not cl_seen_nonempty
+                             and not ex_seen_nonzero
+                             and elapsed >= run_mode_fallback_s)
 
         # ── Component list check ──
         if not cl_ok and now >= cl_next:
@@ -1038,29 +1104,60 @@ def _wait_for_stable(logger: FishLogger) -> None:
             tick += 1
 
             if snapshot is None or snapshot == "":
-                # No components → ros2 run mode or no composable node containers.
-                # Treat empty as stable after cl_required consecutive polls.
+                # No components → ros2 run mode, OR launch still spawning.
+                # To distinguish: only treat empty as stable if we've
+                # previously SEEN a non-empty CL (launch was up, then idle)
+                # or the run-mode fallback timer fired.
                 if cl_prev == "" or cl_prev is None:
                     cl_count += 1
                 else:
                     cl_count = 1
                 cl_prev = ""
-                if cl_count >= cl_required:
+                empty_stable_allowed = cl_seen_nonempty or fallback_unblock
+                _log_poll("CL", f"empty cnt={cl_count}/{cl_required} "
+                                f"seen_nonempty={cl_seen_nonempty} "
+                                f"fallback={fallback_unblock} "
+                                f"allowed={empty_stable_allowed}")
+                if cl_count >= cl_required and empty_stable_allowed:
                     cl_ok = True
-                    logger.log_daemon("component_list_stable containers=0 components=0 mode=run")
-                    print(f"[FISH]   CL poll #{tick}: no components → run mode, OK ({cl_count}/{cl_required})")
+                    reason = ("empty-after-nonempty" if cl_seen_nonempty
+                              else "fallback-timeout")
+                    logger.log_daemon(
+                        f"component_list_stable containers=0 components=0 "
+                        f"mode=run reason={reason}"
+                    )
+                    print(
+                        f"[FISH]   CL poll #{tick}: no components → "
+                        f"run mode ({reason}) ({cl_count}/{cl_required})"
+                    )
                 else:
-                    print(f"[FISH]   CL poll #{tick}: no components ({cl_count}/{cl_required})")
+                    print(
+                        f"[FISH]   CL poll #{tick}: no components "
+                        f"({cl_count}/{cl_required}"
+                        f"{' — waiting for nonempty before allowing run-mode' if not cl_seen_nonempty else ''})"
+                    )
             else:
                 n_cont = sum(1 for ln in snapshot.splitlines()
                              if ln.startswith("/"))
                 n_comp = sum(1 for ln in snapshot.splitlines()
                              if not ln.startswith("/"))
-                if snapshot == cl_prev:
+                cl_seen_nonempty = True
+                # Compare by CONTAINER count only. Component (line under
+                # container) count fluctuates with DDS service discovery
+                # noise even after every composable node has loaded:
+                # observed swings 67-113 on Autoware within seconds. The
+                # structural signal we need is "all container processes
+                # are up" — which is the container count. Component count
+                # joins us for reporting, not for stability comparison.
+                cur_counts = n_cont
+                if cur_counts == cl_prev:
                     cl_count += 1
                 else:
                     cl_count = 1
-                    cl_prev = snapshot
+                    cl_prev = cur_counts
+                _log_poll("CL", f"cont={n_cont} comp={n_comp} "
+                                f"cnt={cl_count}/{cl_required} "
+                                f"{'same' if cl_count>1 else 'changed'}")
 
                 if cl_count >= cl_required:
                     cl_ok = True
@@ -1087,22 +1184,43 @@ def _wait_for_stable(logger: FishLogger) -> None:
             proc_count = _count_executor_started()
 
             if proc_count is None or proc_count == 0:
-                # No launch log or empty → likely ros2 run mode (no launch system).
-                # Count consecutive 0/None results; after ex_required polls
-                # assume no launch system and pass this check.
+                # No launch log or empty → could be ros2 run mode, OR launch
+                # hasn't yet spawned its first node. Same fallback guard as
+                # CL check: only declare "run mode" after we've either seen
+                # a non-zero count earlier, or the timeout elapsed.
                 ex_count += 1
-                if ex_count >= ex_required:
+                zero_stable_allowed = ex_seen_nonzero or fallback_unblock
+                _log_poll("EX", f"zero cnt={ex_count}/{ex_required} "
+                                f"seen_nonzero={ex_seen_nonzero} "
+                                f"fallback={fallback_unblock} "
+                                f"allowed={zero_stable_allowed}")
+                if ex_count >= ex_required and zero_stable_allowed:
                     ex_ok = True
-                    logger.log_daemon(f"executor_started_stable count={proc_count or 0} mode=run")
-                    print(f"[FISH]   EX: no launch processes → run mode, OK ({ex_count}/{ex_required})")
+                    reason = ("zero-after-nonzero" if ex_seen_nonzero
+                              else "fallback-timeout")
+                    logger.log_daemon(
+                        f"executor_started_stable count={proc_count or 0} "
+                        f"mode=run reason={reason}"
+                    )
+                    print(
+                        f"[FISH]   EX: no launch processes → "
+                        f"run mode ({reason}) ({ex_count}/{ex_required})"
+                    )
                 else:
-                    print(f"[FISH]   EX: no launch processes ({ex_count}/{ex_required})")
+                    print(
+                        f"[FISH]   EX: no launch processes "
+                        f"({ex_count}/{ex_required}"
+                        f"{' — waiting for nonzero before allowing run-mode' if not ex_seen_nonzero else ''})"
+                    )
             else:
+                ex_seen_nonzero = True
                 if proc_count == ex_prev:
                     ex_count += 1
                 else:
                     ex_count = 1
                     ex_prev = proc_count
+                _log_poll("EX", f"procs={proc_count} cnt={ex_count}/{ex_required} "
+                                f"{'same' if ex_count>1 else 'changed'}")
 
                 if ex_count >= ex_required:
                     ex_ok = True

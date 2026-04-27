@@ -1,0 +1,248 @@
+GPU ↔ ROS 2 mapping: data sources, join keys, evidence chain
+=============================================================
+
+Purpose:
+  Document precisely which tables, columns, and tracepoints FISH
+  uses to map GPU activity to ros2 callback invocations, so that any
+  reader can reproduce the chain and audit the semantics of every
+  join.
+
+Companion: notes/stream_bridge.txt (algorithm), notes/known_issues.txt
+ISSUE-002 (timezone normalisation).
+
+
+Source A — LTTng ros2_trace (MongoDB, per-session DB)
+-----------------------------------------------------
+
+Collection: ros2_trace
+Indices: {event:1}, {vpid:1, ts:1}, {payload.node_handle:1},
+         {payload.topic_name:1, ts:1}
+
+Relevant events (only the ones the GPU-side chain actually joins on):
+
+  ros2:callback_start
+    fields:
+      ts           (datetime, second resolution)
+      **ts_nanos** (int, full sub-second ns)
+      event        ('ros2:callback_start')
+      vpid         (int, process id)
+      **vtid**     (int, thread id of the executor thread)
+      cpu_id       (int)
+      payload.**callback**  (hex-string address of the callback object)
+
+  ros2:callback_end
+    same fields; matches a prior callback_start by (vpid, vtid) and
+    the NEXT occurrence on the same vtid.
+
+Derived wall-clock ns:
+  ts_wall_ns = int(ts.timestamp()*1e9) + ts_nanos
+  (UTC epoch ns, subject to babeltrace2→ZoneInfo handling in ingest.py;
+   see known_issues.txt ISSUE-002 on nsys-side timestamp quirks.)
+
+
+Source B — nsys sqlite (per-process, on disk)
+----------------------------------------------
+
+Path: ~/fish_traces/<session>/nsys/nsys_*_NNN.sqlite
+
+Relevant tables + columns FISH consumes:
+
+  TARGET_INFO_SESSION_START_TIME
+    col 0: utcEpochNs  (INT)  — NOT trustworthy; see ISSUE-002
+    col 1: utcTimeIso  (STR)  — ISO string, treated as LOCAL wall-clock
+    col 2: localTimeIso(STR)
+    Derived session_start_ns = tz(utcTimeIso).timestamp() * 1e9
+
+  PROCESSES
+    globalPid  (int)
+    pid        (int)           ← matches Linux pid
+    name       (str)
+    Derived:  gpid_prefix = globalPid >> 24
+              → any row with globalTid satisfying
+                (globalTid >> 24) == gpid_prefix belongs to this pid.
+
+  StringIds
+    id  → value (str)
+    Used by nameId / shortName / demangledName columns throughout.
+
+  CUPTI_ACTIVITY_KIND_RUNTIME
+    start, end            (ns relative to session_start_ns)
+    globalTid             (encodes both gpid prefix and tid)
+    **correlationId**     ← join key to KERNEL/MEMCPY/MEMSET/SYNC
+    nameId → StringIds    (api_name: cudaLaunchKernel, ...)
+
+  CUPTI_ACTIVITY_KIND_KERNEL
+    start, end
+    **streamId**
+    **correlationId**     ← same as RUNTIME (1:1 for every kernel launch)
+    shortName → StringIds (kernel_short_name, demangled)
+    gridX/Y/Z, blockX/Y/Z, ...
+
+  CUPTI_ACTIVITY_KIND_MEMCPY
+    start, end
+    **streamId**
+    **correlationId**
+    copyKind, bytes, srcKind, dstKind
+
+  CUPTI_ACTIVITY_KIND_MEMSET
+    start, end
+    **streamId**
+    **correlationId**
+    value (fill value), bytes
+
+  CUPTI_ACTIVITY_KIND_SYNCHRONIZATION
+    start, end
+    **streamId**
+    **correlationId**     ← host-side sync call via RUNTIME
+    syncType: 1=EventSync, 2=StreamWaitEvent, 3=StreamSync, 4=CtxSync
+    (type 3 is cudaStreamSynchronize; type 4 is cudaDeviceSynchronize —
+     the latter is an all-streams barrier.)
+
+Derived wall-clock ns for any nsys row:
+  row_wall_ns = session_start_ns + row.start
+
+
+Join edges (bold = join key on that edge)
+------------------------------------------
+
+  (1) process identity
+      nsys PROCESSES.**pid**           =  Linux pid from pstree / fish_events
+      nsys PROCESSES.**globalPid>>24** =  high bits of any globalTid column
+      → used to filter all CUPTI tables to rows belonging to this pid
+
+  (2) time containment (same-tid callback membership, stream-bridge
+      Rule A from stream_bridge.txt)
+      ros2:callback_start.**ts_wall_ns**  ≤  RUNTIME.**wall_ns**
+            ≤ ros2:callback_end.ts_wall_ns
+      AND  RUNTIME.globalTid & 0xFFFFFF == callback_start.**vtid**
+
+  (3) host → GPU activity (CUPTI correlation)
+      RUNTIME.**correlationId** =
+          KERNEL.correlationId     OR
+          MEMCPY.correlationId     OR
+          MEMSET.correlationId
+      → the host API call and its GPU-side record share correlationId
+
+  (4) host → sync (CUPTI correlation, reused)
+      RUNTIME.**correlationId** = SYNCHRONIZATION.correlationId
+      → the host sync call (cudaStreamSynchronize, etc.) and its CUPTI
+        synchronization record share correlationId; the SYNC row
+        carries **streamId** as an added tag.
+
+  (5) stream ownership (stream-bridge Rule B)
+      callback W (any tid) owns stream s ⟺
+          ∃ RUNTIME row during W's window whose correlationId maps to
+          KERNEL/MEMCPY/MEMSET.streamId = s
+      Works across tids: even when a TRT worker tid_w runs the host
+      launch outside W's time window, if W preceded and its issue
+      landed on stream s, W is the owner until the next sync on s.
+
+
+Concrete evidence chain — one real GPU event, fish_20260419_211621, pid=3211
+----------------------------------------------------------------------------
+
+All times shown are wall-clock ns (UTC epoch ns).
+
+  STAGE 1 — process identity
+    nsys PROCESSES row:
+      **pid=3211**  globalPid=281528848351232
+      name=/opt/ros/humble/lib/rclcpp_components/component_container_mt
+    → globalPid prefix used to filter tid rows: 16780427
+
+  STAGE 2 — ros2:callback_start event (MongoDB)
+    ts='2026-04-19 21:17:31'  ts_nanos=68282268
+    → ts_wall_ns = **1776626251068282268**
+    vpid=3211   **vtid=3362**
+    payload.callback = 0x7EE2C0057958
+
+  STAGE 3 — host API call inside that window (nsys RUNTIME)
+    filter: tid=3362, gpid_prefix=16780427,
+            cb_start_ns ≤ wall ≤ cb_end_ns
+    matching row:
+      start_rel_ns = 31807088595
+      start_wall_ns = **1776626251807088595**
+      globalTid = 281528848354594  →  tid = 3362 (= **vtid** from stage 2 ✓)
+      **correlationId = 31834**
+      api_name = 'cudaLaunchKernel_v7000'
+    time containment confirmed:
+      1776626251068282268  ≤  1776626251807088595  ≤  1776626252748450934
+
+  STAGE 4 — GPU kernel (nsys KERNEL)
+    filter: correlationId = 31834
+    matching row:
+      start_wall_ns = 1776626251807100379
+      end_wall_ns   = 1776626251807105147   (kernel ran 0.005 ms)
+      **streamId = 13**
+      shortName = 'copyMapRegionKernel'
+    launch → GPU delay: 0.012 ms
+
+  STAGE 5 — next stream-13 sync (nsys SYNCHRONIZATION)
+    filter: streamId=13, start ≥ kernel.end, globalPid=281528848351232
+    matching row:
+      start_wall_ns = 1776626251808588837  (+1.484 ms after kernel end)
+      **streamId = 13**
+      syncType = 2 (StreamWaitEvent)
+      **correlationId = 31854**
+    join back to host sync via correlationId=31854:
+      RUNTIME row: tid=3362
+        api = 'cudaStreamSynchronize_v3020'
+        wall_ns = 1776626251808587912
+      → sync issued on SAME tid, inside the same callback window
+        that launched the kernel (STAGE 2's callback).
+
+  STAGE 6 — ros2:callback_end (MongoDB)
+    ts='2026-04-19 21:17:32'  ts_nanos=748450934
+    → ts_wall_ns = 1776626252748450934
+    vpid=3211  vtid=3362  callback=0x7EE2C0057958
+    window duration = 1680.169 ms
+
+Observations from this chain:
+  • All five joins fire cleanly (**pid**, **vtid**, **correlationId**
+    for kernel + sync, **streamId** for the stream-level view).
+  • The callback body issued one kernel on stream 13 at t+738 ms into
+    its own 1680 ms window, then issued a stream-13 sync ~1.5 ms
+    later (still well within the window).
+  • This is the "atomic synchronous" pattern (flag 4 in
+    three_flags_gpu_model.txt). 27 % of GPU-touching Autoware
+    callbacks behave this way; the other 73 % launch without waiting
+    and the sync lands in a subsequent callback.
+
+
+Non-trustworthy or missing links (watch out for these)
+------------------------------------------------------
+
+  A. nsys utcEpochNs is actually local-epoch-ns (ISSUE-002). Always
+     derive session_start_ns from utcTimeIso + tz.
+
+  B. CUPTI_ACTIVITY_KIND_SYNCHRONIZATION exists but was NOT consumed
+     by analyze_process_gpu.py v1. Stream-bridge was implemented via
+     RUNTIME→KERNEL/MEMCPY/MEMSET only. Adding SYNC extends
+     stream-ownership release semantics ("until next sync on that
+     stream") — follow-up.
+
+  C. cudaStreamSynchronize host API calls DO NOT produce a
+     KERNEL/MEMCPY/MEMSET record, so they never hit corr_to_stream.
+     They DO produce SYNCHRONIZATION rows though — that's how we
+     recover the streamId.
+
+  D. InfluxDB `cuda_runtime` measurement merges RUNTIME rows from ALL
+     nsys sqlites under a single `container` tag in standalone
+     scope — do NOT use that measurement for per-process analysis
+     (cross-pid contamination). Read the sqlite directly (as
+     analyze_process_gpu.py does).
+
+  E. TARGET_INFO_CUDA_STREAM table exists and lists stream IDs with
+     priority + flags — useful for labelling streams as
+     "CAPTURE / DEFAULT / USER" in future paper figures.
+
+  F. fish_20260419_211621 pid=3211 surprise: all 3776 SYNC rows have
+     syncType=2 (StreamWaitEvent). ZERO type-3 (StreamSynchronize).
+     Implication: the entire pointcloud pipeline uses GPU-internal
+     cudaStreamWaitEvent to express inter-stream dependencies — the
+     CPU never issues a blocking cudaStreamSynchronize during normal
+     operation (it does issue some during init/teardown but those
+     don't surface here). This means the paper's "task = sync-to-
+     sync span" definition must treat GPU-internal waits as first-
+     class DAG edges, not CPU-sync fences. Good news: it means the
+     workload is already shaped like a heterogeneous task DAG at the
+     GPU level and FISH can lift that structure directly.

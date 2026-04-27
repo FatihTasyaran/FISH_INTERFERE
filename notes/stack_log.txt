@@ -1,0 +1,83 @@
+FISH work stack — historical log
+=================================
+
+Append-only log of every push / pop / re-order on notes/stack.txt.
+Format:
+  YYYY-MM-DD HH:MM:SS TZ  <op>  <id>  <one-line summary>
+    [multi-line context block, indented by 2 spaces]
+
+`<op>` is one of: PUSH, POP, MOVE, MERGE, DROP.
+`<id>` is a monotonically increasing integer assigned at push time.
+The stack file (stack.txt) always reflects the CURRENT state; this
+file is the history.
+
+
+2026-04-20 21:54 CEST  PUSH  #1  Stream-dependency resolve — integrate into model + viz
+  Design decided in live discussion: per-process faithful Typed DAG
+  across callbacks, wait_event as first-class edge. Work needed in
+  gpu_attribution.py + gpu_task_graph.py + viz script + notes.
+
+2026-04-20 21:54 CEST  PUSH  #2  Rerun test with updated config for gpu trace
+  Triggered by ISSUE-003 fix (notes/known_issues.txt): added
+  cuda_event_trace=true to fish_settings.ini and wired through
+  build_nsys_command + launch_wrap. Need a short Autoware rosbag
+  rerun to validate that SYNC eventId now populates and
+  stream_dag_unresolved drops to 0.
+  Linked: TaskList #43.
+
+2026-04-20 21:55 CEST  PUSH  #3  Review + apply additional nsys config flags
+  Nsys UserGuide review surfaced 5 missing flags worth adding before
+  the rerun:
+    - --trace=...,cudnn,cublas
+    - --cuda-graph-trace=node
+    - --cuda-trace-all-apis=true
+    - --cpuctxsw=process-tree
+    - --backtrace=dwarf
+  Pushed on top of #2 so the rerun benefits from the improved
+  config in one pass rather than two.
+
+2026-04-20 22:02 CEST  POP  #3  Review + apply additional nsys config flags
+  Applied 2 of the 5 candidate flags; dropped 3 after discussion:
+
+    Applied:
+      - --cuda-graph-trace=node
+          Preserves per-kernel records under cudaGraphLaunch.
+          Required for FISH Typed DAG work; safe to enable
+          unconditionally.
+      - --cuda-trace-all-apis=true
+          Full CPU-side CUDA API timeline. Slight overhead, no
+          stability concerns.
+
+    Dropped:
+      - --trace=...,cudnn,cublas
+          kernel_short_name already distinguishes cuDNN/cuBLAS
+          kernels in practice; library-level attribution not
+          needed for the paper task model.
+      - --cpuctxsw=process-tree
+          LTTng sched_switch already captures OS context switches;
+          adding nsys equivalent would be redundant data and risks
+          destabilising multi-threaded composable containers (same
+          risk class as the flags we already narrowed for stability
+          on component_container_mt).
+      - --backtrace=dwarf
+          Only need top-frame kernel symbols from CUPTI_KERNEL
+          .shortName; deep call-graph not paper-critical.
+
+  Files edited:
+    fish_settings.ini            (keys: cuda_graph_trace,
+                                  cuda_trace_all_apis + rationale
+                                  block for the rejected flags)
+    python/fish/gpu.py           (build_nsys_command reads the 2
+                                  new settings)
+    python/fish/launch_wrap.py   (NSYS_FLAGS list extended with
+                                  the 2 new flags)
+
+2026-04-20 22:05 CEST  PUSH  #4  Tracepoint whitelist — drop unused ros2_tracing events
+  Pushed ON TOP of #2 so the same rerun captures both the nsys
+  flag improvements (#3, already popped) and the ros2_tracing
+  volume reduction. Addresses LTTng buffer overflow (ISSUE-0d),
+  ingest time (~17 min dominated by bt2 throughput), and the
+  rclpy timer re-init inflation (ISSUE-001).
+  Expected: ~3-5× reduction in ros2_trace event count, 0 LTTng
+  discards, proportional ingest speedup, identical downstream
+  structural output.

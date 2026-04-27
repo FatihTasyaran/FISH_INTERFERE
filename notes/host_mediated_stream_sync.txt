@@ -1,0 +1,106 @@
+Finding (paper-grade): host-mediated stream serialization in Autoware
+=====================================================================
+
+Session: fish_20260427_165116
+Workload: Autoware logging_simulator + sample-rosbag (0.2x replay)
+GPU container: pointcloud_container_mt (pid=1173)
+Trace settings: --cuda-event-trace=true, --cuda-trace-all-apis=true,
+                --cuda-graph-trace=graph
+
+Observation
+-----------
+
+In CUPTI_ACTIVITY_KIND_SYNCHRONIZATION, all 4772 rows have syncType=2
+(STREAM_WAIT_EVENT according to ENUM_CUPTI_SYNC_TYPE). However:
+
+  - eventId is sentinel (4294967295 = uint32 -1) on every row.
+  - eventSyncId is 0 on every row.
+  - correlationId on every sync row maps 1:1 to a host-side
+    cudaStreamSynchronize_v3020 runtime call (4772 ↔ 4772).
+  - There are ZERO cudaStreamWaitEvent / cuStreamWaitEvent runtime calls
+    in the trace.
+  - cudaEventRecord is not in the runtime API list either; only
+    cudaEventCreateWithFlags (80×) and cudaEventDestroy (80×).
+
+Interpretation
+--------------
+
+The pointcloud TRT pipeline does NOT use GPU-side cross-stream
+synchronization (cudaStreamWaitEvent). Streams are serialized by the
+host issuing cudaStreamSynchronize, which blocks the host thread until
+the destination stream drains. nsys/CUPTI emits a STREAM_WAIT_EVENT
+activity record for the implicit GPU-side barrier installed by
+cudaStreamSynchronize, but the eventId is not user-visible (no
+matching cudaEventRecord exists).
+
+Consequence for FISH model
+--------------------------
+
+  - Per-destination wait counts ARE deterministic, read directly from
+    the SYNC table:
+        stream 7  → 3080 syncs (TRT engine A or main work stream)
+        stream 14 → 1034 syncs
+        stream 13 →  650 syncs
+        streams 15-20 → 1-2 syncs each (auxiliary)
+
+  - src→dst inter-stream EDGES cannot be deterministically extracted
+    on this workload, because the source of each implicit barrier is
+    "the host" (whichever CPU thread called cudaStreamSynchronize),
+    not another GPU stream. The previously-suspected
+    --cuda-event-trace=true gives no additional information here:
+    eventId is sentinel regardless, because there are no real
+    user-visible CUDA events being recorded.
+
+  - The heuristic time-proximity edge inference
+    (gpu_attribution.stream_precedence_edges_heuristic) IS appropriate
+    for this workload. The edges it produces represent "what was
+    finishing on another stream just before this host-sync was issued"
+    — a useful causal signal even though it isn't a true GPU-side wait.
+
+Cross-check on yolo (fish_compose_20260419_161633, aircraft/yolo_py)
+-------------------------------------------------------------------
+
+Same regime confirmed:
+  - 3938 type-2 + 1 type-4 (CtxSync from cudaDeviceSynchronize)
+  - All 3938 type-2 syncs correlate 1:1 to cudaStreamSynchronize
+  - cudaStreamSynchronize_v3020: 3938
+  - cudaStreamSynchronize       : 3938 (driver-API form, same calls
+                                  re-counted as host-API view)
+  - cudaEventRecord_v3020       : 1 (effectively zero usage)
+  - cudaEventCreateWithFlags    : 38 (events allocated but not used)
+  - All eventId values on type-2 syncs are sentinel.
+
+So both regimes-A workloads observed so far:
+  - Autoware pointcloud (TensorRT)  → host-mediated
+  - yolo_py (PyTorch + ORT/CUDA)   → host-mediated
+
+Hypothesis: regime (A) is the norm for ROS+CUDA workloads. Real
+GPU-side cudaStreamWaitEvent usage requires explicit framework
+choice (NCCL collectives, hand-coded stream graphs, custom CUDA
+graphs with dependency edges).
+
+Paper framing
+-------------
+
+Two distinct multi-stream synchronization regimes in the wild:
+
+  (A) Host-mediated (cudaStreamSynchronize): host serializes streams.
+      Inter-stream coupling is in CPU code, not GPU. Per-stream sync
+      counts are deterministic; src→dst causality is approximate
+      (time-proximity heuristic).
+      Observed in: Autoware pointcloud (this run).
+
+  (B) GPU-side wait (cudaStreamWaitEvent + cudaEventRecord):
+      streams wait directly on each other via events. With
+      --cuda-event-trace=true and user-visible events, src→dst edges
+      are deterministic.
+      Hypothesised for: workloads with explicit stream graph in
+      framework code (cuDNN/cuBLAS streams set, custom NCCL-like
+      coordination).
+
+The FISH model should expose the regime as a workload attribute and
+fall back to heuristic edge inference when in regime (A). The
+"deterministic per-stream wait count + inferred edges" output is
+correct for both regimes; only the edge-set provenance changes.
+
+Date: 2026-04-27

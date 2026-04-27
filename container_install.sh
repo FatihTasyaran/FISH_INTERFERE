@@ -86,13 +86,17 @@ docker exec "$CONTAINER" mkdir -p /root/fish_traces
 # 5. Commit — restore original entrypoint (container may have been started with --entrypoint sleep)
 echo ""
 echo "[5/5] Committing as $NEW_IMAGE..."
-ORIG_EP=$(docker inspect -f '{{json .Config.Entrypoint}}' "$ORIG_IMAGE" 2>/dev/null || echo '["bash"]')
-ORIG_CMD=$(docker inspect -f '{{json .Config.Cmd}}' "$ORIG_IMAGE" 2>/dev/null || echo 'null')
-echo "  Restoring entrypoint: $ORIG_EP cmd: $ORIG_CMD"
-docker commit \
-    --change "ENTRYPOINT $ORIG_EP" \
-    --change "CMD ${ORIG_CMD}" \
-    "$CONTAINER" "$NEW_IMAGE"
+ORIG_EP=$(docker inspect -f '{{json .Config.Entrypoint}}' "$ORIG_IMAGE" 2>/dev/null)
+ORIG_CMD=$(docker inspect -f '{{json .Config.Cmd}}' "$ORIG_IMAGE" 2>/dev/null)
+[[ -z "$ORIG_EP"  || "$ORIG_EP"  == "null" ]] && ORIG_EP='["/bin/bash"]'
+echo "  Restoring entrypoint: $ORIG_EP  cmd: $ORIG_CMD"
+COMMIT_ARGS=(--change "ENTRYPOINT $ORIG_EP")
+# Only set CMD if the original had one — passing the string "null" as CMD
+# results in `sh -c null` which is broken.
+if [[ -n "$ORIG_CMD" && "$ORIG_CMD" != "null" ]]; then
+    COMMIT_ARGS+=(--change "CMD $ORIG_CMD")
+fi
+docker commit "${COMMIT_ARGS[@]}" "$CONTAINER" "$NEW_IMAGE"
 
 echo ""
 echo "=== Done ==="

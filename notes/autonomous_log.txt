@@ -1,0 +1,61 @@
+FISH autonomous execution log
+==============================
+
+Timestamped log of actions taken while running unattended.
+Format: YYYY-MM-DD HH:MM:SS TZ  [phase]  <message>
+Newest entries go at BOTTOM (append-only).
+
+Session: starting Autoware + AAS reruns with updated config
+  - fish_events.txt: 31-event whitelist (45 → 31)
+  - fish_settings.ini: cuda_event_trace=true, cuda_graph_trace=node,
+                        cuda_trace_all_apis=true
+  - launch_wrap.py NSYS_FLAGS: added --cuda-graph-trace=node,
+                                --cuda-trace-all-apis=true
+  - gpu_attribution.py / gpu_task_graph.py: new library for
+                                             process-centric analysis
+User directive (2026-04-20 ~22:25 CEST):
+  "autoware ve aas re-runlarini yap ingest et vs, end-to-end
+   calistir bozuk birsey varsa duzelt falan sonra bulgularini
+   paylas bunu basarana kadar durma"
+
+Remark from user: Autoware's GPU work is handled mostly by launch_wrap
+(ComposableNodeContainer patching), not much kill/relaunch. So the
+NSYS_FLAGS in launch_wrap.py are the ones that actually apply to the
+Autoware composable-node GPU containers.
+
+
+---------------------------------------------------------------------
+
+2026-04-20 22:33:49 CEST  [diag]  PATH issue — ros2 resolves to /opt/ros/humble/bin/ros2 not fish wrapper. Root cause: /opt/ros/humble/setup.bash prepends its own bin AFTER .bashrc set fish/bin first, so fish wrapper loses priority. Fix: re-prepend fish/bin after ros2 setup.
+2026-04-20 22:33:58 CEST  [cleanup] killed all ros2/autoware/nsys processes + lttng destroy --all
+2026-04-20 22:34:31 CEST  [launch] started Autoware logging_simulator with FISH_ENABLED=1, FISH_CUDA_EVENT_TRACE=1, PATH fixed to pick fish wrapper
+2026-04-20 22:34:57 CEST  [launch] FISH session started: fish_20260420_203431, 31 events enabled, daemon running
+2026-04-20 22:41:36 CEST  [cleanup] killed all Autoware, removed fish_20260420_203431 (not stabilized — rviz2 respawn loop disturbed executor_started_stability). Retry with rviz:=false
+2026-04-20 22:41:56 CEST  [launch] restart with rviz:=false to avoid respawn loop
+2026-04-20 22:42:53 CEST  [cleanup] full container stop — too many orphan processes from previous attempts, cleanest path forward is container restart
+2026-04-20 22:43:25 CEST  [launch] fresh container — Autoware logging_simulator rviz:=false FISH_ENABLED=1 FISH_CUDA_EVENT_TRACE=1
+2026-04-20 23:02:00 CEST  [manual] started rosbag play manually (daemon stuck in stabilization; 4 nsys wrappers already active)
+2026-04-20 23:05:46 CEST  [manual] rosbag replay finished; sending SIGINT to nsys processes to save traces
+2026-04-20 23:08:54 CEST  [done] nsys traces saved: 4 sqlite + 4 nsys-rep. Sizes: pointcloud=1.2GB, traffic_light×2=930MB each, tracker=750MB. Stopping LTTng and copying to host
+2026-04-20 23:14:08 CEST  [reset] discarded fish_20260420_204325 (empty ros2_trace — overlay workspace not sourced, tracepoints never fired). Will source trace_overlay_ws on next launch.
+2026-04-20 23:14:19 CEST  [launch-3] 3rd attempt — sourcing trace_overlay_ws BEFORE fish PATH prepend
+2026-04-20 23:14:57 CEST  [launch-4] 4th attempt — single launch, overlay sourced, no extra ros2 command
+2026-04-20 23:20:33 CEST  [reset] full container restart — orphaned launches accumulating. Fresh attempt with overlay sourced.
+2026-04-20 23:20:42 CEST  [launch-5] fresh container, single launch with overlay sourced
+2026-04-20 23:26:20 CEST  [manual] rosbag play started (daemon stuck in CL stabilization; bypassing)
+2026-04-20 23:30:02 CEST  [teardown] bag play done. ros2 96MB captured. Signaling nsys + stopping LTTng
+2026-04-20 23:47:57 CEST  [copy] session fish_20260420_212042 (1.6GB) copied to host
+2026-04-20 23:49:15 CEST  [ingest] starting ingest for fish_20260420_212042r (ros2=93MB vs previous 1.3GB)
+2026-04-20 23:58:35 CEST  [prep] cleaned root-owned failed sessions from host fish_traces
+2026-04-21 00:00:49 CEST  [fresh-launch] new image-based run, setup_fish.sh --yes done, overlay confirmed, rviz:=false
+2026-04-21 00:14:34 CEST  [daemon-fix] wait_for_stable now requires seen_nonempty/nonzero before run-mode; 120s fallback for true run-mode
+2026-04-21 00:14:44 CEST  [relaunch] with daemon fix — should wait for autoware to actually load now
+2026-04-21 00:32:45 CEST  [daemon-fix-2] CL stability now count-based (n_cont, n_comp) not content. Restarted daemon on running autoware.
+2026-04-21 00:34:59 CEST  [fresh-container] full restart from image. Daemon has both fixes (seen_nonempty guard + count-based CL stability).
+2026-04-21 00:47:46 CEST  [fresh-3] new container, cl_count=2, poll log → /tmp/fish_polls.log
+2026-04-21 00:55:10 CEST  [ingest] fresh session after daemon fix. pointcloud nsys missing; 4 containers + 2 standalone nodes.
+2026-04-21 00:57:09 CEST  [reset] stopped ingest + container. Starting fresh with rviz:=true
+2026-04-21 00:57:32 CEST  [launch-rviz] fresh container, rviz:=true, xhost allowed for root
+2026-04-21 01:02:24 CEST  [launch-container-only-stability] CL compares only container count (component noise too high)
+2026-04-21 01:13:02 CEST  [launch-drop-trace-all] fresh container; --cuda-trace-all-apis disabled
+2026-04-21 01:17:45 CEST  [launch-graph-lighter] graph-trace=graph (default), trace-all-apis=true, event-trace=true

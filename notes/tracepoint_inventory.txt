@@ -1,0 +1,274 @@
+FISH tracepoint inventory
+==========================
+
+Every LTTng event name that fish_events.txt enables. Each row tagged
+used / not used based on what postprocess/ actually reads from
+MongoDB. Usage citations are file:line references; a tracepoint with
+no citation is emitted but never queried. Source of truth for the
+whitelist work (stack item #4).
+
+Generated: 2026-04-20 22:05 CEST — if you add or remove tracepoints,
+refresh this file.
+
+
+Standard ROS 2 / ros2_tracing tracepoints (upstream)
+-----------------------------------------------------
+
+ros2:rcl_init
+  — NOT USED. RCL library-level init event (process-wide bootstrap).
+
+ros2:rcl_node_init
+  — USED in postprocess/model.py:139,152
+           postprocess/model_improved.py:140,150
+    Extracts (vpid, node_name, namespace) → layer-0 executor + layer-1
+    node vertices.
+
+ros2:rmw_publisher_init
+  — NOT USED. Low-level middleware publisher bootstrap.
+
+ros2:rcl_publisher_init
+  — USED in postprocess/utils.py:189
+           postprocess/model.py:586
+           postprocess/model_improved.py:805,885
+    Publisher handles → topic names, stored as pub_aspects on N.
+
+ros2:rclcpp_publish
+  — NOT USED. Per-publish rclcpp shim event (high volume).
+
+ros2:rcl_publish
+  — NOT USED. Per-publish RCL-level event (high volume).
+
+ros2:rmw_publish
+  — NOT USED. Per-publish middleware event (highest volume).
+
+ros2:rmw_subscription_init
+  — NOT USED. Low-level subscription bootstrap.
+
+ros2:rcl_subscription_init
+  — USED in postprocess/utils.py:184
+           postprocess/model_improved.py:310,534
+    subscription_handle → topic_name → subscriber entity vertices.
+
+ros2:rclcpp_subscription_init
+  — USED in postprocess/model.py:349
+           postprocess/model_improved.py:311
+    subscription_handle → rclcpp subscription wrapper (chain anchor).
+
+ros2:rclcpp_subscription_callback_added
+  — USED in postprocess/model.py:350
+           postprocess/model_improved.py:312
+    subscription → callback link (C++ chain resolution).
+
+ros2:rmw_take
+  — NOT USED. Message dequeue at middleware level.
+
+ros2:rcl_take
+  — NOT USED. Message dequeue at RCL level.
+
+ros2:rclcpp_take
+  — NOT USED. Message dequeue at rclcpp level.
+
+ros2:rcl_service_init
+  — USED in postprocess/utils.py:194
+           postprocess/model_improved.py:314,538
+    service_handle → service_name → service entity vertices.
+
+ros2:rclcpp_service_callback_added
+  — USED in postprocess/model.py:353
+           postprocess/model_improved.py:315
+    service_handle → callback link.
+
+ros2:rcl_client_init
+  — USED in postprocess/utils.py:199
+           postprocess/model.py:593
+           postprocess/model_improved.py:811,892
+    client_handle → service_name → cli_aspects on N.
+
+ros2:rcl_timer_init
+  — USED in postprocess/utils.py:206
+    timer_handle → period_ns on timer entity. (High volume under
+    rclpy with use_sim_time — see known_issues.txt ISSUE-001.)
+
+ros2:rclcpp_timer_callback_added
+  — USED in postprocess/model.py:354
+           postprocess/model_improved.py:316
+    timer_handle → callback link (C++ chain resolution).
+
+ros2:rclcpp_timer_link_node
+  — USED in postprocess/utils.py:204
+    timer_handle → node_handle (critical for node-fallback timer
+    discovery).
+
+ros2:rclcpp_callback_register
+  — USED in postprocess/model.py:351
+           postprocess/model_improved.py:313
+    callback_addr → C++ symbol string (function vertex labelling).
+
+ros2:callback_start
+  — USED in postprocess/pre_analysis.py:145
+           postprocess/gpu_attribution.py:243,250
+           postprocess/analyze_process_gpu.py:249,256
+           postprocess/model.py:610
+           postprocess/model_improved.py:686,904
+    Opens callback window; anchor for stream-bridge attribution.
+
+ros2:callback_end
+  — USED in postprocess/gpu_attribution.py:243,250
+           postprocess/analyze_process_gpu.py:249
+           postprocess/model.py:611
+           postprocess/model_improved.py:905
+    Closes callback window. Paired with callback_start on same vtid.
+
+ros2:rcl_lifecycle_state_machine_init
+  — NOT USED. Lifecycle state machine bootstrap.
+
+ros2:rcl_lifecycle_transition
+  — NOT USED. Lifecycle state transitions.
+
+ros2:rclcpp_executor_get_next_ready
+  — NOT USED. Executor "what's ready" poll — high volume, per spin.
+
+ros2:rclcpp_executor_wait_for_work
+  — NOT USED. Executor idle wait marker — high volume.
+
+ros2:rclcpp_executor_execute
+  — NOT USED. Per-executor-iteration execute marker — high volume.
+
+
+FISH custom — action server (C++)
+----------------------------------
+
+ros2:rclcpp_action_server_init
+  — USED in postprocess/model.py:290
+           postprocess/model_improved.py:290
+    Resolves action goal/cancel/result component services into
+    entities with action_name + role.
+
+ros2:rclcpp_action_execute_goal
+  — NOT USED. Reserved for future per-goal lifecycle analysis.
+
+ros2:rclcpp_action_execute_cancel
+  — NOT USED. Reserved.
+
+ros2:rclcpp_action_execute_result
+  — NOT USED. Reserved.
+
+
+FISH custom — rclpy parity (Python)
+------------------------------------
+
+ros2:rclpy_subscription_callback_added
+  — USED in postprocess/model.py:356
+           postprocess/model_improved.py:317
+    Python-side fallback for subscription → callback when rclcpp
+    variant is absent.
+
+ros2:rclpy_service_callback_added
+  — USED in postprocess/model.py:357
+           postprocess/model_improved.py:318
+    Python-side fallback for service → callback.
+
+ros2:rclpy_timer_callback_added
+  — USED in postprocess/model.py:358
+           postprocess/model_improved.py:319
+    Python-side fallback for timer → callback. (Very high-volume
+    under rclpy sim-time — see known_issues.txt ISSUE-001.)
+
+ros2:rclpy_timer_link_node
+  — NOT USED. Emitted but no postprocess consumer; parity-only.
+
+ros2:rclpy_callback_register
+  — USED in postprocess/model.py:359
+           postprocess/model_improved.py:320
+    Python-side fallback for callback → symbol.
+
+
+FISH custom — service client
+-----------------------------
+
+ros2:rclcpp_client_request_sent
+  — USED in postprocess/model.py:613
+           postprocess/model_improved.py:907,1064
+    Client-side send event; paired with callback window to attribute
+    cli_aspects.
+
+ros2:rclcpp_client_response_received
+  — NOT USED. Emitted but no postprocess consumer.
+
+
+FISH custom — callback-link attribution
+----------------------------------------
+
+ros2:fish_publish_link
+  — USED in postprocess/model_improved.py:783
+    (publisher_handle, callback_addr) pairs → pub-aspect attribution
+    at F vertex granularity.
+
+ros2:fish_client_link
+  — USED in postprocess/model_improved.py:784
+    (client_handle, callback_addr) pairs → cli-aspect attribution
+    and callback-continuation splitting.
+
+
+FISH custom — scheduler introspection
+--------------------------------------
+
+ros2:fish_executor_init
+  — USED in postprocess/model_improved.py:481
+    Executor type (SingleThreaded / MultiThreaded) + num_threads
+    → EX vertex attrs.
+
+ros2:fish_callback_group_init
+  — USED in postprocess/model_improved.py:482
+    Group type (MutuallyExclusive / Reentrant) → E-vertex attr.
+
+ros2:fish_cbgroup_add
+  — USED in postprocess/model_improved.py:483
+    entity ↔ callback_group binding.
+
+ros2:fish_executor_add_cbgroup
+  — USED in postprocess/model_improved.py:484
+    callback_group ↔ executor binding.
+
+
+Summary
+-------
+
+  Total tracepoints declared in fish_events.txt  : 45 (pre-trim)
+    Used       (queried by postprocess/)         : 26
+    Not used, reserved (kept for future work)    :  5
+    Not used, dropped (high volume noise)        : 14
+
+  Post-trim whitelist (applied 2026-04-20)       : 31 events
+
+  Breakdown of Not Used:
+    ros2:rcl_init                              — init bootstrap
+    ros2:rmw_publisher_init                    — low-level pub
+    ros2:rclcpp_publish                        — per-publish
+    ros2:rcl_publish                           — per-publish
+    ros2:rmw_publish                           — per-publish
+    ros2:rmw_subscription_init                 — low-level sub
+    ros2:rmw_take                              — per-take
+    ros2:rcl_take                              — per-take
+    ros2:rclcpp_take                           — per-take
+    ros2:rcl_lifecycle_state_machine_init      — lifecycle
+    ros2:rcl_lifecycle_transition              — lifecycle
+    ros2:rclcpp_executor_get_next_ready        — per-spin
+    ros2:rclcpp_executor_wait_for_work         — per-spin
+    ros2:rclcpp_executor_execute               — per-executor-iter
+    ros2:rclcpp_action_execute_goal            — reserved (FISH)
+    ros2:rclcpp_action_execute_cancel          — reserved (FISH)
+    ros2:rclcpp_action_execute_result          — reserved (FISH)
+    ros2:rclpy_timer_link_node                 — parity (FISH)
+    ros2:rclcpp_client_response_received       — unused (FISH)
+
+  (19 entries above — 13 are standard ROS 2 low-volume or lifecycle,
+   6 are FISH extras reserved for future use.)
+
+Whitelist decision:
+  - Drop the 13 high-volume / per-message / per-spin events with no
+    consumer — these dominate the 36.5M event count on Autoware.
+  - Keep the 6 FISH-reserved events even if not currently consumed:
+    cheap, low volume, and they anchor future work (action dispatch
+    timing, rclpy parity, client response round-trip).
+  - Resulting whitelist: 28 consumed + 6 reserved = 34 events.

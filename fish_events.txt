@@ -1,21 +1,20 @@
 # FISH tracepoint events
 # Lines starting with # are comment and skipped
 # After altering this file, run source install_fish_interfere.sh
+#
+# Whitelist compiled 2026-04-20 — see notes/tracepoint_inventory.txt
+# for per-event usage citations. Drops 14 high-volume / per-message /
+# per-spin standard ros2_tracing events that the FISH postprocess
+# never queries. Keeps 5 "reserved" FISH-custom events (action
+# execute, rclpy_timer_link_node, client_response_received) for
+# imminent work even though they are not yet consumed.
 
-ros2:rcl_init
+# --- Core foundation: init + callback chain (all consumed) ---
 ros2:rcl_node_init
-ros2:rmw_publisher_init
 ros2:rcl_publisher_init
-ros2:rclcpp_publish
-ros2:rcl_publish
-ros2:rmw_publish
-ros2:rmw_subscription_init
 ros2:rcl_subscription_init
 ros2:rclcpp_subscription_init
 ros2:rclcpp_subscription_callback_added
-ros2:rmw_take
-ros2:rcl_take
-ros2:rclcpp_take
 ros2:rcl_service_init
 ros2:rclcpp_service_callback_added
 ros2:rcl_client_init
@@ -25,30 +24,49 @@ ros2:rclcpp_timer_link_node
 ros2:rclcpp_callback_register
 ros2:callback_start
 ros2:callback_end
-ros2:rcl_lifecycle_state_machine_init
-ros2:rcl_lifecycle_transition
-ros2:rclcpp_executor_get_next_ready
-ros2:rclcpp_executor_wait_for_work
-ros2:rclcpp_executor_execute
-# Action server dispatch (FISH custom)
+
+# --- Action server dispatch (FISH custom) ---
+# server_init consumed; execute_* reserved for future per-goal timing
 ros2:rclcpp_action_server_init
 ros2:rclcpp_action_execute_goal
 ros2:rclcpp_action_execute_cancel
 ros2:rclcpp_action_execute_result
-# rclpy callback chain (FISH custom)
+
+# --- rclpy callback chain (FISH custom) ---
+# timer_link_node is emitted but not yet consumed (reserved)
 ros2:rclpy_subscription_callback_added
 ros2:rclpy_service_callback_added
 ros2:rclpy_timer_callback_added
 ros2:rclpy_timer_link_node
 ros2:rclpy_callback_register
-# Service client tracing (FISH custom)
+
+# --- Service client (FISH custom) ---
+# response_received reserved for future client round-trip work
 ros2:rclcpp_client_request_sent
 ros2:rclcpp_client_response_received
-# Callback-link tracing (FISH custom)
+
+# --- Callback-link attribution (FISH custom, all consumed) ---
 ros2:fish_publish_link
 ros2:fish_client_link
-# Scheduler introspection (FISH custom)
+
+# --- Scheduler introspection (FISH custom, all consumed) ---
 ros2:fish_executor_init
 ros2:fish_callback_group_init
 ros2:fish_cbgroup_add
 ros2:fish_executor_add_cbgroup
+
+# --- DROPPED (not consumed, high volume on production stacks) ---
+#   ros2:rcl_init                           (init-only, no consumer)
+#   ros2:rmw_publisher_init                 (low-level init)
+#   ros2:rmw_subscription_init              (low-level init)
+#   ros2:rclcpp_publish                     (per-message, high volume)
+#   ros2:rcl_publish                        (per-message, high volume)
+#   ros2:rmw_publish                        (per-message, high volume)
+#   ros2:rmw_take                           (per-message, high volume)
+#   ros2:rcl_take                           (per-message, high volume)
+#   ros2:rclcpp_take                        (per-message, high volume)
+#   ros2:rcl_lifecycle_state_machine_init   (lifecycle, no consumer)
+#   ros2:rcl_lifecycle_transition           (lifecycle, no consumer)
+#   ros2:rclcpp_executor_get_next_ready     (per-spin, high volume)
+#   ros2:rclcpp_executor_wait_for_work      (per-spin, high volume)
+#   ros2:rclcpp_executor_execute            (per-iteration, high volume)

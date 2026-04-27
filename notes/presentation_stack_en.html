@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>FISH GPU task-graph extraction — 4-layer stack</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 1000px; margin: 2em auto; color: #222; }
+h1 { font-size: 1.5em; margin-bottom: 1em; }
+h2 { color: #333; margin-top: 2em; }
+.layer-stack { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 1em 0; }
+.layer {
+  border: 2px solid #444; border-radius: 6px; padding: 10px 18px;
+  background: #f7f7f9; width: 78%; box-shadow: 1px 1px 4px rgba(0,0,0,0.05);
+}
+.layer .title { font-weight: 700; color: #1a5490; }
+.layer .q { font-style: italic; color: #666; font-size: 0.9em; margin-left: 0.5em; }
+.layer .method { font-family: ui-monospace, Menlo, Consolas, monospace;
+                 font-size: 0.85em; color: #333; margin-top: 4px; }
+.arrow { color: #888; font-size: 1.2em; line-height: 1; }
+.arrow-data { font-family: ui-monospace, Menlo, monospace; color: #666; font-size: 0.8em; }
+.final {
+  border: 2px dashed #2a7a2a; border-radius: 6px; padding: 8px 14px;
+  background: #edf7ed; width: 78%; font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.9em;
+}
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #666; padding: 6px 12px; text-align: left;
+         vertical-align: top; }
+th { background: #eee; }
+td.num { text-align: right; }
+p.hint { color: #888; font-size: 0.85em; font-style: italic; }
+pre.alg { background: #f3f3f3; border-left: 4px solid #1a5490; padding: 12px;
+          font-size: 0.85em; line-height: 1.4; overflow-x: auto; }
+.kw { color: #a0206a; font-weight: 600; }
+.cm { color: #888; font-style: italic; }
+</style></head><body>
+<p class="hint">Open this file in your browser; select the graphic (or table) and copy into Google Slides — table grids and box outlines are preserved by Slides when HTML is pasted.</p>
+
+<h1>FISH GPU task-graph extraction — 4-layer stack</h1>
+
+<div class="layer-stack">
+  <div class="final"><b>Input:</b> CUPTI tables (RUNTIME, KERNEL, MEMCPY, MEMSET, SYNCHRONIZATION) + ros2_trace callback_start/end</div>
+  <div class="arrow">▼</div>
+
+  <div class="layer">
+    <div><span class="title">1. Period detection</span>
+         <span class="q">— "Where do DAG invocations begin and end?"</span></div>
+    <div class="method">sync-boundary pattern: cudaStreamSynchronize followed by &gt; 5 ms idle gap marks boundary.
+    Alternative (v2): GPU-side gap-based partition per stream.</div>
+  </div>
+  <div class="arrow">▼</div>
+  <div class="arrow-data">list of <code>(start_idx, end_idx)</code> pairs per tid / stream</div>
+  <div class="arrow">▼</div>
+
+  <div class="final">Typed-DAG builder: for each period, emit CPU/SM/CE nodes + launch, stream_fifo, cpu_order edges.</div>
+  <div class="arrow">▼</div>
+  <div class="arrow-data">list of Typed DAGs (one per period)</div>
+  <div class="arrow">▼</div>
+
+  <div class="layer">
+    <div><span class="title">2. Shape detection</span>
+         <span class="q">— "Which periods are structurally equivalent?"</span></div>
+    <div class="method">signature hash over <code>(pe, name)</code> sequence + sorted edges. Exact match only.
+    Future: edit-distance clustering (embed_start.txt).</div>
+  </div>
+  <div class="arrow">▼</div>
+  <div class="arrow-data">{signature → count + template DAG}</div>
+  <div class="arrow">▼</div>
+
+  <div class="layer">
+    <div><span class="title">3. Phase detection</span>
+         <span class="q">— "What lifecycle role does each period play?"</span></div>
+    <div class="method">init_score weighted by CUDA-init API tokens + rule classifier.
+    Labels: INIT / WARMUP / STEADY / TAIL / COALESCED(N) / UNKNOWN.</div>
+  </div>
+  <div class="arrow">▼</div>
+  <div class="arrow-data">labelled periods + primary phase per shape</div>
+  <div class="arrow">▼</div>
+
+  <div class="layer">
+    <div><span class="title">4. Stream-bridge attribution</span>
+         <span class="q">— "Which callback invocation owns each CUDA call?"</span></div>
+    <div class="method">correlationId → streamId join. Ownership rules:<br>
+      (A) same-tid time-window membership<br>
+      (B) stream-claim bridge (cross-tid dispatch)<br>
+      (C) oort residual</div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="final"><b>Output:</b> per-callback gpu_dags + inter-stream wait-event graph
+    (node counts deterministic from CUPTI; edges deterministic when
+    --cuda-event-trace is enabled, otherwise time-proximity heuristic)</div>
+</div>
+
+<h2>Future work — multi-stream formalization (pending)</h2>
+<ul>
+  <li><b>Task unit</b>: replace "callback invocation" with "stream sync-to-sync span" (flag 4).</li>
+  <li><b>Inter-stream precedence DAG</b>: deterministic via <code>--cuda-event-trace</code>, currently heuristic.</li>
+  <li><b>Heterogeneous EDD extension</b>: task parameters (T, C_cpu, C_sm, C_ce, D, jitter) over the task graph.</li>
+  <li><b>Callback ↔ stream ownership mapping</b>: tabular formalization.</li>
+  <li><b>oort residual</b> as a distinct task type (yolo main-loop case).</li>
+</ul>
+
+<h1>Phase detection algorithm (G5)</h1>
+
+<table>
+<tr><th>Field</th><th>Definition</th></tr>
+<tr><td><b>Input</b></td><td>a set of periods <code>P = { (start_i, end_i, DAG_i, api_names_i) }</code></td></tr>
+<tr><td><b>Output</b></td><td>for each period: <code>label ∈ {INIT, WARMUP, STEADY, TAIL, COALESCED(N), UNKNOWN}</code></td></tr>
+<tr><td><b>Source</b></td><td><code>notes/phase_detector.txt</code> (G5 spec)</td></tr>
+</table>
+
+<h3>Step 1 — Initialization score per period</h3>
+<pre class="alg"><span class="kw">function</span> init_score(api_names):
+    <span class="cm"># Count init-signature tokens in this period's API call list</span>
+    counts ← { }
+    <span class="kw">for</span> name <span class="kw">in</span> api_names:
+        <span class="kw">for</span> (token, threshold, weight) <span class="kw">in</span> INIT_SIGNALS:
+            <span class="kw">if</span> token <span class="kw">in</span> name:
+                counts[token] ← counts.get(token, 0) + 1
+
+    score ← 0
+    <span class="kw">for</span> (token, threshold, weight) <span class="kw">in</span> INIT_SIGNALS:
+        c ← counts.get(token, 0)
+        <span class="kw">if</span> threshold = NONE:
+            score ← score + weight · c          <span class="cm"># per-count weak signal</span>
+        <span class="kw">else if</span> c ≥ threshold:
+            score ← score + weight              <span class="cm"># threshold-gated hard signal</span>
+    <span class="kw">return</span> score
+
+INIT_SIGNALS:
+    ("cuInit",                       1,  100)     <span class="cm"># one-time process startup</span>
+    ("cuLibraryLoadData",            1,  100)
+    ("cuDevicePrimaryCtxRetain",     1,  100)
+    ("cuCtxCreate",                  1,  100)
+    ("cudaGetDeviceProperties",      1,   20)
+    ("cuModuleGetLoadingMode",       1,   20)
+    ("cuGetProcAddress",           100,   50)     <span class="cm"># big symbol-resolution burst</span>
+    ("cudaMalloc",                NONE,    5)     <span class="cm"># per-count weak signal</span>
+    ("cudaStreamCreate",          NONE,    3)
+    ("cudaEventCreate",           NONE,    1)</pre>
+
+<h3>Step 2 — Dominant signature over the productive subset</h3>
+<pre class="alg">productive ← { p ∈ P : init_score(p) &lt; 20 }
+sig_of(p)  ← SHA1( (pe, name) tuple sequence(DAG_p) ⊕ sorted edges(DAG_p) )
+
+dom_sig    ← argmax<sub>s</sub>  | { p ∈ productive : sig_of(p) = s } |
+dom_seq    ← node sequence of the canonical DAG with signature dom_sig</pre>
+
+<h3>Step 3 — Classification rules (priority order)</h3>
+<pre class="alg"><span class="kw">for</span> each period p <span class="kw">in</span> P:
+    s    ← init_score(p)
+    seq  ← node_seq(DAG_p)
+    pos  ← chronological index of p in P
+
+    <span class="cm"># Rule 1 — hard init</span>
+    <span class="kw">if</span> s ≥ 100:
+        label(p) ← INIT
+        <span class="kw">continue</span>
+
+    <span class="cm"># Rule 2 — dominant-shape steady state</span>
+    <span class="kw">if</span> sig_of(p) = dom_sig:
+        label(p) ← STEADY
+        <span class="kw">continue</span>
+
+    <span class="cm"># Rule 3 — coalesced repeat (detector miss)</span>
+    <span class="kw">if</span>  |seq| mod |dom_seq| = 0
+        <span class="kw">and</span> |seq| &gt; |dom_seq|
+        <span class="kw">and</span> ∀ k ∈ [0, |seq|) : seq[k] = dom_seq[k mod |dom_seq|]:
+        N ← |seq| / |dom_seq|
+        label(p) ← COALESCED(N)
+        <span class="kw">continue</span>
+
+    <span class="cm"># Rule 4 — tail (fuzzy prefix of dominant with trailing sync-only cleanup)</span>
+    <span class="kw">if</span>  pos ≥ |P| − 3
+        <span class="kw">and</span> |seq| ≥ 10
+        <span class="kw">and</span> |seq| &lt; |dom_seq|:
+        m ← longest k such that seq[0..k] = dom_seq[0..k]
+        <span class="kw">if</span>  m / |seq| ≥ 0.95
+            <span class="kw">and</span> ∀ k ∈ [m, |seq|) : "Synchronize" ∈ seq[k].name:
+            label(p) ← TAIL
+            <span class="kw">continue</span>
+
+    <span class="cm"># Rule 5 — warmup</span>
+    <span class="kw">if</span>  20 ≤ s &lt; 100
+        <span class="kw">and</span> pos &lt; 3:
+        label(p) ← WARMUP
+        <span class="kw">continue</span>
+
+    <span class="cm"># Rule 6 — fallthrough</span>
+    label(p) ← UNKNOWN</pre>
+
+<h3>Validation on yolo_py (fish_compose_20260419_161633)</h3>
+<table>
+<tr><th>Label</th><th>Period count</th><th>Notes</th></tr>
+<tr><td>INIT</td><td class="num">2</td><td>frames 0–1, cuInit + cuLibraryLoadData bleed</td></tr>
+<tr><td>WARMUP</td><td class="num">0</td><td>merged into INIT on yolo (ORT lazy load)</td></tr>
+<tr><td>STEADY</td><td class="num">1,857</td><td>dominant sig, 99.7 % of productive periods</td></tr>
+<tr><td>TAIL</td><td class="num">1</td><td>716-op prefix of canonical + 2 trailing syncs</td></tr>
+<tr><td>COALESCED(2)</td><td class="num">2</td><td>detector merged two inferences into one period</td></tr>
+<tr><td>COALESCED(3)</td><td class="num">1</td><td>detector merged three</td></tr>
+<tr><td>UNKNOWN</td><td class="num">0</td><td>every period accounted for</td></tr>
+<tr><th>TOTAL</th><th class="num">1,863</th><th></th></tr>
+</table>
+
+</body></html>
