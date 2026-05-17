@@ -1,19 +1,25 @@
-# FISH
+# Welcome to the Function-level Inspection of Scheduling Hierarchies (FISH) repository! 🐟
 
-**F**unction-level **I**nspection of **S**cheduling **H**ierarchies.
+FISH is a retrospection and task-generation tool that produces
+[SAG-ready](https://github.com/SAG-org) tasksets and rich
+visualisations for **any** ROS 2 application — especially GPU-using ones.
 
-FISH is a profiling framework for ROS 2 + GPU workloads. It captures
-LTTng kernel/userspace traces, NVIDIA Nsight Systems GPU profiling data,
-and system-state snapshots from inside the container where the target
-ROS 2 nodes run, then reconstructs a typed task-graph (executors →
-nodes → entities → callbacks → GPU kernels) and exports it for
-analysis and visualisation.
+---
 
-> **Status — pre-release.** FISH is research software developed at
-> TU Eindhoven. The post-processing pipeline is stable; tests, CI, and
-> the installable Python package are landing now (May 2026). Expect
-> CLI surface and on-disk schemas to firm up over the next few
-> releases. See `notes/immediate_work.txt` for what is next.
+## What FISH actually does
+
+Under the hood, FISH captures LTTng kernel/userspace traces, NVIDIA
+Nsight Systems GPU profiling data, and system-state snapshots from
+inside the container where your ROS 2 nodes run. It then reconstructs
+a typed task-graph (executors → nodes → entities → callbacks → GPU
+kernels) and exports it for analysis, scheduling-tool consumption,
+and visualisation.
+
+> **Status — pre-release.** FISH is research software. The
+> post-processing pipeline is stable; tests, CI, and the installable
+> Python package are landing now (May 2026). Expect the CLI surface
+> and on-disk schemas to firm up over the next few releases. See
+> `notes/immediate_work.txt` for what is next.
 
 ---
 
