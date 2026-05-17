@@ -1,12 +1,25 @@
-MongoDB structure — one DB per session
-========================================
+MongoDB + InfluxDB layout — session-keyed Mongo, single shared Influx
+======================================================================
 
-Date: 2026-04-19
+Date: 2026-04-19, updated 2026-05-17.
 Context: Replacing the old "one DB per container role" convention
 (aircraft / ground / simulation / fish_meta) with a session-centric
 structure. Per the user: drop the old aircraft/ground/simulation
 pattern; keep legacy DBs (e.g. fish_20260322_212915) untouched since
 older empirical notes reference them.
+
+InfluxDB 3 Core enforces a hard cap of 5 databases. A naive "one
+InfluxDB DB per session" mirror of the Mongo layout hits the cap on
+the sixth session and breaks future ingests. The 2026-05-17 refactor
+collapses all nsys/GPU data into ONE shared InfluxDB database `fish`
+with `session` + `container` tags written on every point, so:
+
+  • The 5-DB cap can never block a new session.
+  • Cross-session queries are natural (one WHERE, no UNION ALL).
+  • All FISH post-processing reads from a single connection.
+
+Every query against the shared DB must filter on at least
+`session='<db_name>'`, otherwise it aggregates across unrelated runs.
 
 
 Problem with the previous structure
@@ -223,3 +236,66 @@ containing:
 `db.listCollectionNames()` should produce that full list. No entries
 in `fish_meta`. No `aircraft` / `ground` / `simulation` top-level DBs
 created for this session.
+
+
+InfluxDB layout (shared `fish` DB, 2026-05-17)
+==============================================
+
+Single InfluxDB 3 database, named `fish`, shared across all FISH
+sessions forever. The InfluxDB 3 Core 5-DB cap is irrelevant under
+this layout because the count never grows.
+
+Measurements (schema-stable, set by ingest.py):
+
+  gpu_kernels        CUPTI_ACTIVITY_KIND_KERNEL
+  gpu_memcpy         CUPTI_ACTIVITY_KIND_MEMCPY
+  gpu_memset         CUPTI_ACTIVITY_KIND_MEMSET   (Volta+ fill kernel)
+  gpu_sync           CUPTI_ACTIVITY_KIND_SYNCHRONIZATION (GPU-side)
+  gpu_overhead       CUPTI_ACTIVITY_KIND_OVERHEAD
+  gpu_mem_usage      CUDA_GPU_MEMORY_USAGE_EVENTS
+  cuda_runtime       CUPTI_ACTIVITY_KIND_RUNTIME  (host-side API)
+  nvtx_events        NVTX markers / ranges
+  cuda_callchain     reference lookup (per-callchainId stack frames,
+                     not time-series — pseudo-ts ordering only)
+
+Mandatory tags on every point:
+
+  session    matches the MongoDB database name
+             e.g. `fish_compose_20260419_161633` or `fish_20260427_165116`
+  container  matches the role suffix (`aircraft`, `simulation`,
+             `ground`, ...). For standalone runs this is the session
+             name itself (so the WHERE clause is symmetrical).
+  source     basename of the nsys .sqlite file the row came from
+
+Per-measurement extra tags carry CUPTI identifiers
+(deviceId, contextId, streamId, copyKind, eventClass, ...).
+
+Every SELECT from postprocess code MUST scope the read:
+
+  SELECT ...
+  FROM gpu_kernels
+  WHERE session='<db_name>' AND container='<role>'
+    AND ...
+
+Code already enforces this:
+  postprocess/gpu_dag.py   — all 4 measurement queries scoped
+  postprocess/model_improved.py
+                            — detect_oort_threads cuda_runtime query scoped
+  postprocess/pre_analysis.py
+                            — gpu_histogram + gpu_activity_chart accept
+                              session/container params via _scope_where helper
+
+connect_influx() returns a client bound to `database="fish"` always.
+The optional `db_name` + `role` arguments are kept only so callers
+can log what they intend to filter on; the bound DB does not change.
+
+Cleanup of legacy InfluxDB DBs
+------------------------------
+
+The five pre-refactor per-session InfluxDB databases
+(fish_20260322_212915, fish_20260329_182842, fish_20260330_184541,
+ fish_20260330_234647, fish_20260412_195042) were dropped before the
+refactor was first wired up; the current server shows only `_internal`
+and `fish`. The corresponding MongoDB databases for those sessions
+remain untouched per the "notes-referenced sessions are read-only
+archive" rule (see legacy-DB list above).

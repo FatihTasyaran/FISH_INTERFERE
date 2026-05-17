@@ -216,7 +216,17 @@ python3 graph_store.py mutations <session> <scope> [-n 20]
 GPU/nsys data lives in a single shared InfluxDB 3 database called **`fish`**
 (one per installation, never per-session). Measurements inside:
 
-- `gpu_kernels`, `gpu_memcpy`, `cuda_runtime`, `gpu_mem_usage`, `nvtx_events`
+| Measurement      | Source (nsys table)                     | Notes                                       |
+|------------------|-----------------------------------------|---------------------------------------------|
+| `gpu_kernels`    | `CUPTI_ACTIVITY_KIND_KERNEL`            | name, grid/block, regs/thread, shared mem   |
+| `gpu_memcpy`     | `CUPTI_ACTIVITY_KIND_MEMCPY`            | copyKind, bytes, duration                   |
+| `gpu_memset`     | `CUPTI_ACTIVITY_KIND_MEMSET`            | SM-side fill kernel (Volta+)                |
+| `gpu_sync`       | `CUPTI_ACTIVITY_KIND_SYNCHRONIZATION`   | GPU-side sync events                        |
+| `gpu_overhead`   | `CUPTI_ACTIVITY_KIND_OVERHEAD`          | CUPTI's own profiling cost                  |
+| `gpu_mem_usage`  | `CUDA_GPU_MEMORY_USAGE_EVENTS`          | alloc/free events                           |
+| `cuda_runtime`   | `CUPTI_ACTIVITY_KIND_RUNTIME`           | host-side API calls                         |
+| `nvtx_events`    | `NVTX_EVENTS`                           | NVTX markers / ranges                       |
+| `cuda_callchain` | `CUDA_CALLCHAINS` (reference, not time) | per-callchainId stack frames                |
 
 Every point carries two extra tags so cross-session queries stay natural
 and one session can be dropped without touching the others:
@@ -226,7 +236,9 @@ and one session can be dropped without touching the others:
 
 Why one database: InfluxDB 3 Core enforces a 5-database limit. Consolidating
 to a shared `fish` DB avoids that limit and avoids asking downstream users
-to config-hack their InfluxDB. Example filter:
+to config-hack their InfluxDB.
+
+Reads — **every** SELECT from FISH post-processing scopes by both tags:
 
 ```sql
 SELECT COUNT(*)
@@ -235,10 +247,17 @@ WHERE session = 'fish_compose_20260419_161633'
   AND container = 'aircraft'
 ```
 
-Deleting a session's GPU data:
+This is enforced in code: `gpu_dag.py` and `model_improved.detect_oort_threads`
+both inline the filter; `pre_analysis.py` accepts `session`/`container`
+arguments via a `_scope_where` helper. Forgetting the filter aggregates
+across unrelated runs.
+
+Deleting one session's GPU data (when you really want to — most archived
+sessions are paper evidence, see `notes/db_structure.txt`):
 
 ```sql
-DELETE FROM gpu_kernels WHERE session = 'fish_compose_20260419_161633'
+DELETE FROM gpu_kernels
+WHERE session = 'fish_compose_20260419_161633'
 -- repeat per measurement
 ```
 

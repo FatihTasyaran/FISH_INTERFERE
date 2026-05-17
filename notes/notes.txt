@@ -523,3 +523,58 @@ Next up
   2. rclpy scheduler tracepoints (above).
   3. Per-callback roofline (immediate_work.txt #9).
   4. Invariant validation on graph mutations (immediate_work.txt #13).
+
+
+2026-05-17 — InfluxDB consolidation finalised, pre-release pivot
+-----------------------------------------------------------------
+
+Context: the 2026-04-19 refactor moved Mongo to one DB per session but
+left InfluxDB on the same one-DB-per-session pattern. That blows up
+against InfluxDB 3 Core's hard 5-database cap as soon as the sixth
+session is ingested. Today's pass finishes the consolidation.
+
+Code changes (most already merged before today; one new patch +
+end-to-end verification today):
+
+  - ingest.py `ingest_session` writes nsys data to a fixed `fish`
+    InfluxDB DB. Every line-protocol row carries `session=<db_name>`
+    and `container=<role or db_name>` tags, threaded down through
+    `ingest_nsys → _ingest_nsys_table / _ingest_nvtx / _ingest_callchains`.
+  - model_improved.connect_influx() always returns a client bound to
+    `database="fish"`; optional `db_name` / `role` args are logging
+    hints only.
+  - model_improved.detect_oort_threads + gpu_dag.extract_for_oort
+    queries all scope SELECTs on (session, container).
+  - pre_analysis.py gpu_histogram + gpu_activity_chart now accept
+    (session, container) via a new `_scope_where()` helper — was
+    the last unscoped reader. (Standalone tooling; no in-tree caller.)
+
+Today's verification (no new ingest needed):
+
+  - InfluxDB lists `_internal` + `fish` only — the five legacy
+    fish_<ts> Influx DBs were already dropped before today.
+  - Per-(session, container) row counts in `fish`:
+      fish_compose_20260419_161633 / aircraft : 854,495 kernels / 1,029,170 cuda_runtime
+      fish_20260427_165116          / self    :  14,576 kernels /    85,263 cuda_runtime
+      fish_20260419_211621          / self    :  12,356 kernels /    80,004 cuda_runtime
+      fish_20260420_212042r         / self    :     247 kernels /   117,091 cuda_runtime
+    These match the numbers cited in paper_important_points.txt and
+    fish_computable_properties.txt — so the load-bearing GPU evidence
+    survived the move intact.
+  - Mongo composed-graph export for fish_compose_20260419_161633
+    still produces 131 nodes / 180 edges with executor_type and
+    cb_groups fields preserved.
+
+What did NOT happen:
+  - No Mongo or Influx DB was dropped today. Two unreferenced Mongo
+    DBs (fish_20260412_195042, fish_20260420_224756_h) are candidates
+    for archive-then-drop but stay in place until we have a
+    `mongodump → archive/` flow.
+  - No fish_compose re-ingest — every artifact already present and
+    verified in place.
+
+Pivot: software release prep starts after this commit. Top of the
+queue: a `mongodump`-to-archive flow so hypothesis-supporting sessions
+can be safely off-loaded from the live DBs without losing the
+empirical record (per 2026-05-17 user directive: "notes.txt'de refer
+edilen bir veriyi silmeyelim, onun yerine arşivleyelim").

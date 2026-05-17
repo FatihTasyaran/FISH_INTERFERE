@@ -88,13 +88,29 @@ def event_histogram(db, out_dir):
     print(f"  → ros2_event_type_hist.png")
 
 
-def gpu_histogram(influx, out_dir):
+def _scope_where(session: str = "", container: str = "") -> str:
+    """Build a WHERE clause that restricts rows to one (session, container).
+
+    The InfluxDB `fish` database is shared across all FISH sessions; every
+    point carries `session` + `container` tags written by the ingester.
+    Charts must filter by both or they'd aggregate across unrelated runs.
+    """
+    parts = []
+    if session:
+        parts.append(f"session='{session}'")
+    if container:
+        parts.append(f"container='{container}'")
+    return (" WHERE " + " AND ".join(parts)) if parts else ""
+
+
+def gpu_histogram(influx, out_dir, session: str = "", container: str = ""):
     """InfluxDB measurement counts → nsys_event_type_histogram.png"""
     measurements = ["gpu_kernels", "gpu_memcpy", "cuda_runtime", "nvtx_events", "gpu_mem_usage"]
+    where = _scope_where(session, container)
     counts = {}
     for m in measurements:
         try:
-            table = influx.query(f'SELECT COUNT(*) AS cnt FROM "{m}"')
+            table = influx.query(f'SELECT COUNT(*) AS cnt FROM "{m}"{where}')
             cnt = table.column("cnt")[0].as_py()
             counts[m] = cnt
         except Exception as e:
@@ -224,13 +240,16 @@ def thread_activity_chart(db, out_dir):
     print(f"  → event_producing_threads_callbacks_short.png")
 
 
-def gpu_activity_chart(influx, out_dir):
+def gpu_activity_chart(influx, out_dir, session: str = "", container: str = ""):
     """GPU kernel/memcpy/API breakdown → gpu_event_producing_executions.png"""
+
+    where = _scope_where(session, container)
 
     try:
         kern = influx.query(
             'SELECT kernel_short_name, COUNT(*) AS cnt '
             'FROM gpu_kernels '
+            f'{where} '
             'GROUP BY kernel_short_name '
             'ORDER BY cnt DESC '
             'LIMIT 15'
@@ -248,6 +267,7 @@ def gpu_activity_chart(influx, out_dir):
             '  SUM(duration_ns) AS total_ns, '
             '  AVG(duration_ns) AS avg_ns '
             'FROM gpu_kernels '
+            f'{where} '
             'GROUP BY kernel_short_name '
             'ORDER BY total_ns DESC '
             'LIMIT 10'
@@ -267,6 +287,7 @@ def gpu_activity_chart(influx, out_dir):
             '  SUM(bytes) AS total_bytes, '
             '  SUM(duration_ns) AS total_ns '
             'FROM gpu_memcpy '
+            f'{where} '
             'GROUP BY "copyKind" '
             'ORDER BY cnt DESC'
         )
@@ -282,6 +303,7 @@ def gpu_activity_chart(influx, out_dir):
         api = influx.query(
             'SELECT api_name, COUNT(*) AS cnt, SUM(duration_ns) AS total_ns '
             'FROM cuda_runtime '
+            f'{where} '
             'GROUP BY api_name '
             'ORDER BY cnt DESC '
             'LIMIT 10'
@@ -505,8 +527,14 @@ def gpu_thread_activity_chart(session_dir, out_dir):
 # Main
 # ---------------------------------------------------------------------------
 
-def run_all(mongo_db, influx_client, session_dir, out_dir):
-    """Run all pre-analysis charts and save PNGs to out_dir."""
+def run_all(mongo_db, influx_client, session_dir, out_dir,
+            session: str = "", container: str = ""):
+    """Run all pre-analysis charts and save PNGs to out_dir.
+
+    `session` + `container` filter InfluxDB charts to the right slice of
+    the shared `fish` database. If left empty, charts aggregate across
+    every session in the DB (rarely what you want).
+    """
     os.makedirs(out_dir, exist_ok=True)
     print(f"[FISH pre-analysis] output → {out_dir}")
 
@@ -514,13 +542,13 @@ def run_all(mongo_db, influx_client, session_dir, out_dir):
     event_histogram(mongo_db, out_dir)
 
     print("\n--- InfluxDB measurement histogram ---")
-    gpu_histogram(influx_client, out_dir)
+    gpu_histogram(influx_client, out_dir, session=session, container=container)
 
     print("\n--- Thread activity (ROS2) ---")
     thread_activity_chart(mongo_db, out_dir)
 
     print("\n--- GPU activity (InfluxDB) ---")
-    gpu_activity_chart(influx_client, out_dir)
+    gpu_activity_chart(influx_client, out_dir, session=session, container=container)
 
     print("\n--- GPU thread activity (nsys SQLite) ---")
     gpu_thread_activity_chart(session_dir, out_dir)
