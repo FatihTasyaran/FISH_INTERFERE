@@ -4,6 +4,15 @@ FISH turns any running ROS 2 application — GPU-accelerated workloads
 included — into [SAG-ready](https://github.com/SAG-org) tasksets and
 interactive task-graph visualisations.
 
+This README is a summary of FISH's capabilities and a quick start.
+For everything else:
+
+- 📖 [Full Documentation](#)   *(ReadTheDocs link — coming soon)*
+- 🎬 [Live Demo](#)            *(hosted task-graph + Grafana panels — coming soon)*
+- 📄 [Paper](#)                *(in preparation, mid-2026)*
+- 🗺️ [Roadmap](notes/immediate_work.txt)
+- 💬 [Discussions](https://github.com/FatihTasyaran/FISH_INTERFERE/discussions)
+
 ---
 
 ## What FISH actually does
