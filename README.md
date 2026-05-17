@@ -1,9 +1,8 @@
 # Welcome to the Function-level Inspection of Scheduling Hierarchies (FISH) repository! 🐟
 
-FISH is a retrospection and task-generation tool that produces
-[SAG-ready](https://github.com/SAG-org) tasksets and rich
-visualisations for **any** ROS 2 application, with first-class
-support for GPU-accelerated workloads.
+FISH turns any running ROS 2 application — GPU-accelerated workloads
+included — into [SAG-ready](https://github.com/SAG-org) tasksets and
+interactive task-graph visualisations.
 
 ---
 
