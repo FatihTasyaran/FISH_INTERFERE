@@ -39,10 +39,11 @@ echo "New image:      $NEW_IMAGE"
 
 # 1. Copy fish_interfere into the container
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 echo ""
 echo "[1/5] Copying fish_interfere/ into container..."
 docker exec "$CONTAINER" rm -rf /root/fish_interfere 2>/dev/null || true
-docker cp "$SCRIPT_DIR/." "$CONTAINER":/root/fish_interfere
+docker cp "$REPO_ROOT/." "$CONTAINER":/root/fish_interfere
 
 # 2. Install dependencies + tracepoints + framework
 echo ""
@@ -52,7 +53,7 @@ docker exec -w /root/fish_interfere "$CONTAINER" bash -c '
     export DEBIAN_FRONTEND=noninteractive
     # Ensure git is available (needed for some deps)
     apt-get update -qq && apt-get install -y -qq git lttng-tools liblttng-ust-dev babeltrace2 > /dev/null 2>&1 || true
-    source setup_fish.sh --yes
+    source scripts/setup_fish.sh --yes
 '
 
 # 3. Configure .bashrc for FISH

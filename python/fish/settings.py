@@ -10,7 +10,13 @@ import os
 from pathlib import Path
 
 _SETTINGS_SEARCH_PATHS = [
+    # Installed location (after scripts/install_fish.sh copies the file).
     "/opt/ros/humble/fish/fish_settings.ini",
+    # Repo checkout — current layout.
+    os.path.expanduser("~/fish_interfere/config/fish_settings.ini"),
+    os.path.join(os.path.dirname(__file__), "..", "..", "config",
+                 "fish_settings.ini"),
+    # Repo checkout — legacy layout (pre-2026-05-17 top-level placement).
     os.path.expanduser("~/fish_interfere/fish_settings.ini"),
     os.path.join(os.path.dirname(__file__), "..", "..", "fish_settings.ini"),
 ]

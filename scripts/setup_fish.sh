@@ -16,6 +16,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 AUTO_FLAG=""
 [ "${1:-}" = "--yes" ] || [ "${1:-}" = "-y" ] && AUTO_FLAG="--yes"
 
@@ -66,10 +67,10 @@ echo ""
 echo -e "${BOLD}━━━ Step 2/3: Custom Tracepoints ━━━${NC}"
 echo ""
 
-if [ ! -x "$SCRIPT_DIR/fish_tracepoints/install_fish_tracepoints" ]; then
-    chmod +x "$SCRIPT_DIR/fish_tracepoints/install_fish_tracepoints"
+if [ ! -x "$REPO_ROOT/fish_tracepoints/install_fish_tracepoints" ]; then
+    chmod +x "$REPO_ROOT/fish_tracepoints/install_fish_tracepoints"
 fi
-FISH_SETUP_PARENT=1 "$SCRIPT_DIR/fish_tracepoints/install_fish_tracepoints" --all
+FISH_SETUP_PARENT=1 "$REPO_ROOT/fish_tracepoints/install_fish_tracepoints" --all
 
 # ─── Step 3: FISH framework ─────────────────────────────────────────────────
 echo ""

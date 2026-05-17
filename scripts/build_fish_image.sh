@@ -16,6 +16,7 @@ BASE_IMAGE="${1:-aircraft-image:latest}"
 FISH_IMAGE="aircraft-fish-image:latest"
 CONTAINER_NAME="fish-build-$$"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -66,7 +67,7 @@ log "  Container started"
 
 # ─── Step 2: Copy fish_interfere ─────────────────────────────────────────────
 log "[2/4] Copying fish_interfere into container..."
-docker cp "$SCRIPT_DIR" "$CONTAINER_NAME:/root/fish_interfere"
+docker cp "$REPO_ROOT" "$CONTAINER_NAME:/root/fish_interfere"
 log "  Copied"
 
 # ─── Step 3: Run setup_fish.sh inside container ─────────────────────────────
@@ -74,7 +75,7 @@ log "[3/4] Running setup_fish.sh..."
 echo ""
 
 docker exec "$CONTAINER_NAME" bash -c \
-    "cd /root/fish_interfere && chmod +x setup_fish.sh && ./setup_fish.sh --yes"
+    "cd /root/fish_interfere && chmod +x scripts/setup_fish.sh && scripts/setup_fish.sh --yes"
 
 echo ""
 log "  Setup complete"

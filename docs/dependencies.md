@@ -3,7 +3,7 @@
 ## Container-side (required)
 
 These must be installed inside the container where ROS 2 nodes run.
-Use `./install_fish_deps.sh` to check and install automatically.
+Use `./scripts/install_fish_deps.sh` to check and install automatically.
 
 | Package | What for |
 |---------|----------|
@@ -22,8 +22,8 @@ Use `./install_fish_deps.sh` to check and install automatically.
 |---------|----------|
 | `nsight-systems-2025.6.3` | NVIDIA Nsight Systems for GPU kernel profiling |
 
-`install_fish_deps.sh` will offer to install nsys from the NVIDIA CUDA apt
-repository if not found.
+`scripts/install_fish_deps.sh` will offer to install nsys from the NVIDIA CUDA
+apt repository if not found.
 
 ## Host-side (post-processing)
 

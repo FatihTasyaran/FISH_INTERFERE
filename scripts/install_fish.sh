@@ -22,29 +22,31 @@ FISH_BIN=$FISH_ROOT/bin
 FISH_SCRIPTS=$FISH_ROOT/scripts
 FISH_PYTHON=$FISH_ROOT/python
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CONFIG_DIR="$REPO_ROOT/config"
 
 mkdir -p $FISH_BIN $FISH_SCRIPTS $FISH_PYTHON/fish
 
 # --- Read events from fish_events.txt ---
-if [[ -f "$SCRIPT_DIR/fish_events.txt" ]]; then
-    EVENTS=$(grep -v '^#' "$SCRIPT_DIR/fish_events.txt" | grep -v '^$' | tr '\n' ' ')
+if [[ -f "$CONFIG_DIR/fish_events.txt" ]]; then
+    EVENTS=$(grep -v '^#' "$CONFIG_DIR/fish_events.txt" | grep -v '^$' | tr '\n' ' ')
 else
-    echo "[FISH] WARNING: fish_events.txt not found, using all events"
+    echo "[FISH] WARNING: config/fish_events.txt not found, using all events"
     EVENTS=""
 fi
 
 # --- Copy Python package ---
-if [[ -d "$SCRIPT_DIR/python/fish" ]]; then
-    cp "$SCRIPT_DIR"/python/fish/*.py $FISH_PYTHON/fish/
+if [[ -d "$REPO_ROOT/python/fish" ]]; then
+    cp "$REPO_ROOT"/python/fish/*.py $FISH_PYTHON/fish/
 else
     echo "[FISH] WARNING: python/fish/ not found, GPU/snapshot features unavailable"
 fi
 
 # --- Copy settings file ---
-if [[ -f "$SCRIPT_DIR/fish_settings.ini" ]]; then
-    cp "$SCRIPT_DIR/fish_settings.ini" $FISH_ROOT/fish_settings.ini
+if [[ -f "$CONFIG_DIR/fish_settings.ini" ]]; then
+    cp "$CONFIG_DIR/fish_settings.ini" $FISH_ROOT/fish_settings.ini
 else
-    echo "[FISH] WARNING: fish_settings.ini not found, using defaults"
+    echo "[FISH] WARNING: config/fish_settings.ini not found, using defaults"
 fi
 
 # --- Generate trace session script (bash) ---

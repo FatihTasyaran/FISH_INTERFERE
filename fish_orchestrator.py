@@ -7,8 +7,8 @@ waits for FISH readiness, executes a scripted action sequence,
 stops FISH, and collects traces into a unified compose session.
 
 Usage:
-    python3 fish_orchestrator.py missions/aas_single_drone.yaml
-    python3 fish_orchestrator.py missions/aas_single_drone.yaml --dry-run
+    python3 fish_orchestrator.py examples/aas_single_drone.yaml
+    python3 fish_orchestrator.py examples/aas_single_drone.yaml --dry-run
 
 The compose session directory is the input for fish_compose.py,
 which merges per-container models into a unified FISH graph with
@@ -478,8 +478,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 fish_orchestrator.py missions/aas_single_drone.yaml
-  python3 fish_orchestrator.py missions/aas_single_drone.yaml --dry-run
+  python3 fish_orchestrator.py examples/aas_single_drone.yaml
+  python3 fish_orchestrator.py examples/aas_single_drone.yaml --dry-run
         """,
     )
     ap.add_argument("mission", help="Path to mission YAML file")

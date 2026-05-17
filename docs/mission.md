@@ -5,15 +5,15 @@ sequences, designed for the
 [Aerial Autonomy Stack (AAS)](https://github.com/JacopoPan/aerial-autonomy-stack)
 drone simulation platform.
 
-## `fish_mission.sh`
+## `scripts/fish_mission.sh`
 
 Sends a predefined mission (takeoff → orbit → land) to the aircraft container
 via `docker exec`. Runs on the **host** while `sim_run.sh` is active.
 
 ```bash
-./fish_mission.sh                       # default container name
-./fish_mission.sh <container_name>      # custom container name
-INSTANCE=1 ./fish_mission.sh            # for multi-instance
+./scripts/fish_mission.sh                       # default container name
+./scripts/fish_mission.sh <container_name>      # custom container name
+INSTANCE=1 ./scripts/fish_mission.sh            # for multi-instance
 ```
 
 The mission sequence:
@@ -28,19 +28,19 @@ The mission sequence:
 9. Wait 10s
 10. Write manifest to `/tmp/fish_mission_*.log`
 
-## `fish_auto_mission.sh`
+## `scripts/fish_auto_mission.sh`
 
 Full automated session: starts simulation, runs mission, stops everything.
 Single command, zero interaction.
 
 ```bash
-./fish_auto_mission.sh
+./scripts/fish_auto_mission.sh
 ```
 
 Flow:
 1. Starts `sim_run.sh` in background (via named pipe for stdin control)
 2. Waits for aircraft container to come up
-3. Runs `fish_mission.sh`
+3. Runs `scripts/fish_mission.sh`
 4. Sends keystroke to `sim_run.sh` to trigger shutdown
 5. FISH stop → snapshot → trace save → container cleanup
 
@@ -63,14 +63,14 @@ The manifest logs each action with UTC timestamps:
 2026-03-30T23:33:33.639Z  END    mission
 ```
 
-## `build_fish_image.sh`
+## `scripts/build_fish_image.sh`
 
 Automates the FISH image build process. Starts a temporary container,
-copies `fish_interfere/`, runs `setup_fish.sh --yes`, and commits.
+copies `fish_interfere/`, runs `scripts/setup_fish.sh --yes`, and commits.
 
 ```bash
-./build_fish_image.sh                   # default: aircraft-image:latest
-./build_fish_image.sh <base_image>      # custom base image
+./scripts/build_fish_image.sh                   # default: aircraft-image:latest
+./scripts/build_fish_image.sh <base_image>      # custom base image
 ```
 
 ## Simulation command

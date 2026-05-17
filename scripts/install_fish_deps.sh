@@ -168,8 +168,8 @@ fi
 # ─── Summary (skip when called from setup_fish.sh) ──────────────────────────
 if [ "${FISH_SETUP_PARENT:-}" != "1" ]; then
     echo -e "${GREEN}[FISH]${NC} Dependency check complete. Next steps:"
-    echo "  1. source install_fish.sh"
-    echo "  2. cd fish_tracepoints && ./install_fish_tracepoints"
+    echo "  1. source scripts/install_fish.sh"
+    echo "  2. fish_tracepoints/install_fish_tracepoints --all"
     echo ""
 
     PARANOID=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo "?")

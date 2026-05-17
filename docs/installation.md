@@ -8,7 +8,7 @@ FISH runs **inside** the container where ROS 2 nodes execute. Copy the
 ```bash
 docker cp fish_interfere <container>:/root/fish_interfere
 docker exec -it <container> bash
-cd /root/fish_interfere && ./setup_fish.sh
+cd /root/fish_interfere && ./scripts/setup_fish.sh
 source ~/.bashrc
 ```
 
@@ -17,10 +17,10 @@ this image will trace automatically.
 
 ## Installation Scripts
 
-FISH has four install scripts. `setup_fish.sh` calls the other three in order,
-but each can be run independently.
+FISH has four install scripts, all under `scripts/`. `scripts/setup_fish.sh`
+calls the other three in order, but each can be run independently.
 
-### `setup_fish.sh`
+### `scripts/setup_fish.sh`
 
 One-shot installer that runs everything.
 
@@ -33,11 +33,11 @@ One-shot installer that runs everything.
 - Adds overlay source, PATH, PYTHONPATH, and `FISH_ENABLED=1` to `.bashrc`
 
 ```bash
-./setup_fish.sh          # interactive (asks before each install step)
-./setup_fish.sh --yes    # non-interactive (accepts all prompts)
+./scripts/setup_fish.sh          # interactive (asks before each install step)
+./scripts/setup_fish.sh --yes    # non-interactive (accepts all prompts)
 ```
 
-### `install_fish_deps.sh`
+### `scripts/install_fish_deps.sh`
 
 Checks and installs container-side dependencies.
 
@@ -48,8 +48,8 @@ the NVIDIA CUDA apt repository and installs `nsight-systems-2025.6.3`. Warns
 about `perf_event_paranoid` if it needs to be changed on the host.
 
 ```bash
-./install_fish_deps.sh          # interactive
-./install_fish_deps.sh --yes    # non-interactive
+./scripts/install_fish_deps.sh          # interactive
+./scripts/install_fish_deps.sh --yes    # non-interactive
 ```
 
 ### `fish_tracepoints/install_fish_tracepoints`
@@ -77,7 +77,7 @@ Builds custom LTTng tracepoints in an overlay workspace and patches rclpy.
 ./install_fish_tracepoints --all        # all (same as no flags)
 ```
 
-### `install_fish.sh`
+### `scripts/install_fish.sh`
 
 Installs the FISH framework: ros2 wrapper, trace session management, GPU
 daemon, and snapshot tools.
@@ -90,17 +90,19 @@ daemon, and snapshot tools.
   automatic tracing when `FISH_ENABLED=1`
 - Generates `trace_session.sh` for LTTng session lifecycle management
 - Copies FISH Python package (GPU daemon, snapshot, settings)
+- Reads `config/fish_events.txt` and `config/fish_settings.ini` (relative to
+  the repo root)
 - Adds PATH and PYTHONPATH to `.bashrc`
 
 **Must be sourced** (not executed):
 
 ```bash
-source install_fish.sh
+source scripts/install_fish.sh
 ```
 
 ## Baking into a Docker image
 
-After running `setup_fish.sh` (or the individual scripts), commit the
+After running `scripts/setup_fish.sh` (or the individual scripts), commit the
 container to create a reusable image:
 
 ```bash
@@ -124,8 +126,8 @@ Any container started from this image is ready to trace.
 There is also an automated build script:
 
 ```bash
-./build_fish_image.sh                   # default base image (aircraft-image:latest)
-./build_fish_image.sh <base_image>      # custom base image
+./scripts/build_fish_image.sh                   # default base image (aircraft-image:latest)
+./scripts/build_fish_image.sh <base_image>      # custom base image
 ```
 
 ## Host requirements
@@ -141,4 +143,5 @@ echo 'kernel.perf_event_paranoid=1' | sudo tee -a /etc/sysctl.conf
 ```
 
 This is a host-level setting and cannot be changed from inside a container.
-`install_fish_deps.sh` and `setup_fish.sh` will warn if this needs attention.
+`scripts/install_fish_deps.sh` and `scripts/setup_fish.sh` will warn if this
+needs attention.

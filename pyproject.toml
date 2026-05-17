@@ -1,0 +1,92 @@
+# FISH packaging — STUB.
+#
+# This file defines the host-side `fish` Python package metadata used
+# for editable installs (`pip install -e .`) and, eventually, wheel
+# builds. It does not yet ship as PyPI release; see notes/immediate_work
+# #15 for the test + CI / release plan that turns this stub into a
+# proper package.
+#
+# The in-container ROS-side tooling lives in `python/fish/` and is
+# installed via `scripts/install_fish.sh` directly into
+# `/opt/ros/humble/fish/`; that path remains shell-driven for now.
+# Eventual Phase-2 work: consolidate both into one `src/fish/` package
+# with a console-scripts entry-point block.
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fish-profiler"
+version = "0.1.0.dev0"
+description = "Function-level Inspection of Scheduling Hierarchies — a ROS 2 + GPU profiling framework"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Fatih Tasyaran", email = "fatihtasyaran@sabanciuniv.edu" },
+]
+license = { text = "TBD — see LICENSE" }
+keywords = ["ros2", "profiling", "lttng", "nsight-systems", "task-graph", "real-time"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: Other/Proprietary License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Embedded Systems",
+]
+
+# Host-side post-processing dependencies. The in-container side has its
+# own (ROS-package) install path and is intentionally not duplicated
+# here.
+dependencies = [
+    "pymongo>=4.0",
+    "influxdb3-python>=0.7",
+    "networkx>=3.0",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "umap-learn>=0.5",
+    "scikit-learn>=1.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-mock>=3.12",
+    "ruff>=0.4",
+    "mypy>=1.7",
+]
+docs = [
+    "sphinx>=7.0",
+    "myst-parser>=2.0",
+    "sphinx-rtd-theme>=2.0",
+]
+
+[project.urls]
+# Filled in once the public repo URL is decided.
+
+# Console scripts will be added in Phase 2, once we consolidate
+# postprocess/* into src/fish/ as a proper package. Today the entry
+# points are bare scripts run with `python3 -m postprocess.<module>`.
+
+[tool.setuptools]
+# Phase 1 (now): no automatic package discovery — pip install -e .
+# is allowed but does not yet expose post-process modules as a package.
+# Phase 2 will switch to a `src/fish/` layout with packages = ["fish"].
+packages = []
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B"]
+ignore = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-ra -q"
