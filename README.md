@@ -33,63 +33,79 @@ and visualisation.
 ## Capability inventory
 
 What FISH extracts from a trace today, and where each data point
-stands in the visualisation pipeline. Visualisation column is a
-deliberate placeholder — every row reads `X` until we audit which
-data points already have a viz and which still need one.
+stands in the visualisation pipeline. Every row is **derived** — the
+"Aggregated from" column lists the raw events / nsys measurements /
+snapshot files it is computed over. Source taxonomy:
+
+- **LTTng tracepoints (MongoDB `ros2_trace`)** — standard
+  rclcpp/rclpy events (`callback_start`, `rcl_*_init`, ...) and the
+  FISH custom set (`fish_executor_init`, `fish_callback_group_init`,
+  `fish_publish_link`, `fish_client_link`, action probes).
+- **nsys CUPTI tables (InfluxDB `fish`)** — `gpu_kernels`,
+  `gpu_memcpy`, `gpu_memset`, `gpu_sync`, `cuda_runtime`,
+  `nvtx_events`, `cuda_callchain`.
+- **Snapshot files (MongoDB `snapshot_*` + topic_info / node_info /
+  process_tree)** — captured at trace stop.
+- **FISH daemon log (MongoDB `fish_events`)** — kill / resurrect /
+  stabilisation timestamps.
+
+The Viz column is a deliberate placeholder — every row reads `X`
+until we audit which data points already have a visual representation
+and which still need one.
 
 ### Graph topology
 
-| Data point                                                                              | Viz |
-|-----------------------------------------------------------------------------------------|-----|
-| Hierarchical task graph (CN → EX → N → E → F)                                           |  X  |
-| Per-process executor count and types (ST / MT / StaticST)                               |  X  |
-| Per-executor callback-group composition (MutuallyExclusive vs Reentrant)                |  X  |
-| Per-entity QoS, message type, and peer counts (pub fan-out, srv ↔ cli pairs)            |  X  |
-| Cross-container external boundary edges (process A pub → process B sub)                 |  X  |
-| Composed multi-container graph totals (\|CN\|, \|EX\|, \|N\|, \|E\|, \|F\|, edge mix)   |  X  |
-| Out-of-ROS (oort) thread detection — CUDA-active workers outside any executor           |  X  |
+| Data point                                                                              | Aggregated from                                                                                                                                                                                                                              | Viz |
+|-----------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----|
+| Hierarchical task graph (CN → EX → N → E → F)                                           | `rcl_node_init`, `rcl_{publisher,subscription,service,client,timer}_init`, `rclcpp_callback_register`, `rclcpp_subscription_callback_added` (LTTng); `gpu_kernels.globalPid` ↔ `process_tree` for the CN layer                                |  X  |
+| Per-process executor count and types (ST / MT / StaticST)                               | `fish_executor_init` (pid → executor_type, num_threads)                                                                                                                                                                                       |  X  |
+| Per-executor callback-group composition (MutuallyExclusive vs Reentrant)                | `fish_callback_group_init` (group_addr → type); `fish_cbgroup_add` (entity ↔ group); `fish_executor_add_cbgroup` (group ↔ executor)                                                                                                          |  X  |
+| Per-entity QoS, message type, and peer counts (pub fan-out, srv ↔ cli pairs)            | `rcl_publisher_init.qos`, `rcl_subscription_init.qos` + msg type fields; snapshot `topic_info` (subscriber count per topic), `node_info`                                                                                                      |  X  |
+| Cross-container external boundary edges (process A pub → process B sub)                 | Snapshot `topic_info` across all container roles + topic-name matching during `fish_compose` merge                                                                                                                                            |  X  |
+| Composed multi-container graph totals (\|CN\|, \|EX\|, \|N\|, \|E\|, \|F\|, edge mix)   | Aggregation over the per-container subgraphs by `fish_compose.compose_graphs`                                                                                                                                                                 |  X  |
+| Out-of-ROS (oort) thread detection — CUDA-active workers outside any executor           | InfluxDB `SELECT DISTINCT tid FROM cuda_runtime` ∖ MongoDB `callback_start.vtid` (per pid)                                                                                                                                                    |  X  |
 
 ### Callback & entity timing (CPU)
 
-| Data point                                                                              | Viz |
-|-----------------------------------------------------------------------------------------|-----|
-| Per-callback invocation count + duration distribution                                   |  X  |
-| Per-callback-group serialisation pattern (MX → no overlap, RE → parallel allowed)       |  X  |
-| Inter-callback gap → empirical period estimate                                          |  X  |
-| Publisher → subscription latency (via `fish_publish_link`)                              |  X  |
-| Service round-trip latency (request_sent → response_received, paired by seq number)     |  X  |
-| Action latency per phase (goal / cancel / result)                                       |  X  |
-| Split-callback durations (`::part1` + `::continuation`)                                 |  X  |
+| Data point                                                                              | Aggregated from                                                                                                                                                                                                          | Viz |
+|-----------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----|
+| Per-callback invocation count + duration distribution                                   | `callback_start` ↔ `callback_end` paired by (`callback`, `vtid`); duration = `end.ts` − `start.ts`                                                                                                                       |  X  |
+| Per-callback-group serialisation pattern (MX → no overlap, RE → parallel allowed)       | `fish_callback_group_init.type`                                                                                                                                                                                          |  X  |
+| Inter-callback gap → empirical period estimate                                          | Successive `callback_start` timestamps for the same callback handle                                                                                                                                                       |  X  |
+| Publisher → subscription latency (via `fish_publish_link`)                              | `fish_publish_link` (pub_handle → sub_callback_handle); paired with the receiving `callback_start.ts`                                                                                                                     |  X  |
+| Service round-trip latency (request_sent → response_received, paired by seq number)     | `rclcpp_service_send_request` ↔ `rclcpp_service_receive_response` (paired on `sequence_number`); or `fish_client_link` for the deterministic variant                                                                     |  X  |
+| Action latency per phase (goal / cancel / result)                                       | FISH custom probes `action_execute_goal`, `action_execute_cancel`, `action_execute_result`                                                                                                                                |  X  |
+| Split-callback durations (`::part1` + `::continuation`)                                 | `callback_start` → `client_request_sent` (part1); `client_response_received` → `callback_end` (continuation)                                                                                                              |  X  |
 
 ### GPU side
 
-| Data point                                                                              | Viz |
-|-----------------------------------------------------------------------------------------|-----|
-| Per-process totals: CUDA runtime calls, kernels, memcpys, memsets, syncs                |  X  |
-| Per-stream wait count + per-stream usage histogram (which callbacks claim it)           |  X  |
-| Inter-stream DAG: src → dst weighted edges                                              |  X  |
-| Per-callback Typed DAG shape signatures and distinct-shape count                        |  X  |
-| Per-shape phase class (dominant / variant / anomaly / init / shutdown)                  |  X  |
-| Per-token statistics: duration, kernel dims, regs, shmem, memcpy bytes, memset bytes    |  X  |
-| Conditional graph per skeleton position (entry, continue, end probabilities)            |  X  |
-| LCS skeleton (longest common subseq + substring) per callback                           |  X  |
+| Data point                                                                              | Aggregated from                                                                                                                                                                                                                                                                       | Viz |
+|-----------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----|
+| Per-process totals: CUDA runtime calls, kernels, memcpys, memsets, syncs                | `COUNT(*)` over InfluxDB `cuda_runtime`, `gpu_kernels`, `gpu_memcpy`, `gpu_memset`, `gpu_sync` filtered by `session`, `container`                                                                                                                                                      |  X  |
+| Per-stream wait count + per-stream usage histogram (which callbacks claim it)           | `gpu_sync.streamId` (wait counts); `gpu_kernels.streamId` + `gpu_memcpy.streamId` (usage); claim assignments from Rule-A/B attribution                                                                                                                                                |  X  |
+| Inter-stream DAG: src → dst weighted edges                                              | `gpu_sync` rows that bound cross-stream transitions (host-mediated regime); `cudaStreamWaitEvent` rows in `cuda_runtime` for the deterministic regime (currently absent in Autoware / yolo workloads)                                                                                 |  X  |
+| Per-callback Typed DAG shape signatures and distinct-shape count                        | `cuda_runtime` rows inside `[callback_start, callback_end]` joined to `gpu_kernels` / `gpu_memcpy` / `gpu_memset` on `correlationId`; canonical structural hash per invocation                                                                                                        |  X  |
+| Per-shape phase class (dominant / variant / anomaly / init / shutdown)                  | Per-signature invocation count + `init_score` over API-name list + duration anomaly tests (mean+kσ ∨ modified z-score ∨ trivially-small)                                                                                                                                              |  X  |
+| Per-token statistics: duration, kernel dims, regs, shmem, memcpy bytes, memset bytes    | `gpu_kernels.{gridX,gridY,gridZ,blockX,blockY,blockZ,registersPerThread,staticSharedMemory,dynamicSharedMemory,duration_ns}`; `gpu_memcpy.{copyKind,bytes,duration_ns}`; `gpu_memset.{bytes,value,duration_ns}`; `cuda_runtime.{api_name,duration_ns}`                                  |  X  |
+| Conditional graph per skeleton position (entry, continue, end probabilities)            | Trie over canonical-token sequences from each invocation, keyed on skeleton position; per-node counts of (entries, continues, ends)                                                                                                                                                   |  X  |
+| LCS skeleton (longest common subseq + substring) per callback                           | Per-invocation canonical-token sequence; multi-sequence LCS (subseq-with-gaps + contiguous-substring) across invocations of the same callback                                                                                                                                         |  X  |
 
 ### Stream-bridge attribution
 
-| Data point                                                                              | Viz |
-|-----------------------------------------------------------------------------------------|-----|
-| Rule A: callback-window time fraction (same tid)                                        |  X  |
-| Rule B: bridged-via-stream-claim fraction                                               |  X  |
-| Rule C: oort residual fraction (and post-sync-release subset)                           |  X  |
-| Per-callback attribution share — how much of each callback's GPU work came from each rule|  X |
+| Data point                                                                              | Aggregated from                                                                                                                                                                                                                                            | Viz |
+|-----------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----|
+| Rule A: callback-window time fraction (same tid)                                        | `gpu_kernels.duration_ns` + `gpu_memcpy.duration_ns` + `gpu_memset.duration_ns` inside `[callback_start, callback_end]` matching on `tid` ↔ `vtid`                                                                                                          |  X  |
+| Rule B: bridged-via-stream-claim fraction                                               | Stream-ownership graph derived from prior Rule-A assignments; GPU work outside any callback window attributed via the stream's current owner                                                                                                               |  X  |
+| Rule C: oort residual fraction (and post-sync-release subset)                           | GPU work not attributable by A or B → tagged to oort threads; post-sync-release subset = oort work whose preceding event is a `cudaStreamSynchronize` boundary                                                                                              |  X  |
+| Per-callback attribution share — how much of each callback's GPU work came from each rule | Per callback: numerator = sum of `duration_ns` attributed to that callback under each rule; denominator = the callback's total attributed GPU `duration_ns`                                                                                              |  X  |
 
 ### Trace-level meta
 
-| Data point                                                                              | Viz |
-|-----------------------------------------------------------------------------------------|-----|
-| Event volume pre / post whitelist + ingest throughput (docs/s)                          |  X  |
-| Run duration, stabilisation time, detected GPU PID count                                |  X  |
-| Launch-wrap vs relaunch attribution                                                     |  X  |
+| Data point                                                                              | Aggregated from                                                                                                                          | Viz |
+|-----------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------|-----|
+| Event volume pre / post whitelist + ingest throughput (docs/s)                          | LTTng session-stats counters; `ingest.py` per-second log timestamps (`docs/s` derived from cumulative insert count over wall clock)      |  X  |
+| Run duration, stabilisation time, detected GPU PID count                                | `fish_events` daemon log (start / settle / stop entries); distinct `gpu_kernels.globalPid` resolved via the nsys `PROCESSES` table        |  X  |
+| Launch-wrap vs relaunch attribution                                                     | `fish_events` daemon log entries (`launch_wrap`, `relaunch` actions per pid)                                                              |  X  |
 
 ### Pending (not yet computed)
 
