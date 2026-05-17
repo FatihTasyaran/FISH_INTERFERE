@@ -1,0 +1,83 @@
+# FISH Mission: Isaac ROS AprilTag detection (single container)
+#
+# Traces the NVIDIA Isaac ROS AprilTag detection pipeline running
+# against a pre-recorded camera rosbag. Chosen as a compact GPU-heavy
+# reference workload — small enough to live in the repo as a fixture
+# trace, large enough to exercise stream-bridge attribution, shape
+# clustering, and per-token GPU statistics.
+#
+# Prerequisites
+# -------------
+#   1. Pull the Isaac ROS dev image (x86_64 or arm64 — both work):
+#        docker pull nvcr.io/nvidia/isaac/ros:x86_64-humble-1.0.0
+#
+#   2. Bake FISH into that image:
+#        ./scripts/build_fish_image.sh nvcr.io/nvidia/isaac/ros:x86_64-humble-1.0.0
+#
+#   3. Place the AprilTag input rosbag at
+#      ~/fish_inputs/apriltag_camera.bag (or update INPUT_BAG below).
+#      Any rosbag with /image_rect + /camera_info works; the
+#      isaac_ros_apriltag_pipeline launch file consumes both topics.
+#
+#   4. Run:
+#        python3 fish_orchestrator.py examples/isaac_apriltag.yaml
+#
+# Note: AprilTag exact launch arguments may differ across Isaac ROS
+# versions. Verify against
+#   https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_apriltag
+# at the version of the dev image you're using and update LAUNCH_CMD
+# accordingly.
+
+name: isaac_apriltag_mini
+
+containers:
+  apriltag:
+    docker_name: isaac-apriltag-fish
+    fish: true
+    trace_path: /root/fish_traces
+    host_trace_path: ~/fish_traces/isaac_apriltag
+    role: apriltag
+
+launch:
+  command: >
+    docker run -d --rm --name isaac-apriltag-fish
+    --runtime=nvidia --gpus all
+    --privileged
+    --net host
+    -v $HOME/fish_inputs:/root/fish_inputs:ro
+    -v $HOME/fish_traces:/root/fish_traces
+    -e FISH_ENABLED=1
+    nvcr.io/nvidia/isaac/ros:x86_64-humble-1.0.0-fish
+    bash -c "source /opt/ros/humble/setup.bash &&
+             ros2 launch isaac_ros_apriltag isaac_ros_apriltag_pipeline.launch.py
+               image_topic:=/image_rect
+               camera_info_topic:=/camera_info"
+  timeout: 60
+
+ready:
+  fish_stable:
+    - apriltag
+  timeout: 60
+
+actions:
+  - log: "Replaying AprilTag input rosbag for 30 s..."
+  - exec:
+      container: apriltag
+      run: >
+        source /opt/ros/humble/setup.bash &&
+        timeout 30 ros2 bag play /root/fish_inputs/apriltag_camera.bag
+                                  --rate 1.0
+      wait: true
+      timeout: 40
+
+  - sleep: 5
+  - log: "Capture complete"
+
+finish:
+  fish_stop:
+    - apriltag
+  wait_after_stop: 10
+  collect_traces: true
+  stop_containers: true
+
+output: ~/fish_traces

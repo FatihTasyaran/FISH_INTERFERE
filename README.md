@@ -121,6 +121,29 @@ following also become first-class data points:
 
 ---
 
+## Validated on (use-case suite)
+
+A small, deliberate set of workloads FISH is captured against
+end-to-end. Each one stresses a different part of the pipeline; each
+one ships with a trimmed trace fixture in `tests/fixtures/` so the
+CI/CD smoke job can re-derive its load-bearing numbers from scratch.
+See [`notes/use_cases.txt`](notes/use_cases.txt) for rationale per
+entry.
+
+| Workload                                                                                    | Why it is in the suite                                       | Status |
+|---------------------------------------------------------------------------------------------|---------------------------------------------------------------|--------|
+| **NVIDIA Isaac ROS — AprilTag detection**                                                   | Clean, compact GPU-only reference pipeline                    | planned (mission: [`examples/isaac_apriltag.yaml`](examples/isaac_apriltag.yaml)) |
+| **Autoware — `logging_simulator` + sample-rosbag**                                          | Scale: 3160-vertex graph, 13 GPU-active callbacks, 14.5k kernels | captured (`fish_20260427_165116`) |
+| **Aerial Autonomy Stack (AAS) — yolo_py + PX4 SITL**                                        | Multi-container compose flow, oort thread pattern, mission scenario | captured (`fish_compose_20260419_161633`) |
+| **demo_nodes_cpp talker / listener** (backup)                                               | Pure-CPU mini — proves FISH works without nsys                | planned |
+| **rclpy 3-node chain** (backup)                                                             | GIL-bound executor profile, different from rclcpp             | planned (blocked on rclpy scheduler tracepoints) |
+
+Once a workload moves from *planned* to *captured*, the corresponding
+row in `tests/paper_anchors.json` locks in the counts the CI/CD job
+asserts on every run — see [Roadmap](notes/immediate_work.txt) item 15.
+
+---
+
 ## What FISH gives you
 
 - **Hierarchical task graph** (CN → EX → N → E → F) for any ROS 2

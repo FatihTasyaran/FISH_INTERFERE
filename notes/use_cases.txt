@@ -1,0 +1,157 @@
+FISH use-case suite — planning
+==============================
+
+Date: 2026-05-17
+
+Purpose
+-------
+A small, deliberate set of workloads FISH is validated against. The
+suite serves three goals at once:
+
+  1. README "Tested on" credibility — show breadth (rclcpp / rclpy /
+     multi-container / GPU-heavy / GPU-light).
+  2. Paper Results section evidence — load-bearing numbers cite
+     these sessions by name.
+  3. CI/CD test surface — small variants of each become fixtures
+     (tests/fixtures/<name>/) for the smoke + contract test tiers.
+
+Each use-case is captured ONCE end-to-end, the trimmed trace lives
+in the repo (Git LFS for the > 50 MB ones), and paper_anchors.json
+locks in the load-bearing counts derived from it. Drift on those
+counts is what the CI/CD smoke job tests.
+
+
+Current suite
+-------------
+
+A. Aerial Autonomy Stack — yolo_py + PX4 SITL (multi-container)
+   Session: fish_compose_20260419_161633 (aircraft + ground + simulation)
+   What it exercises:
+     - Multi-container compose flow (3 roles, cross-process pub/sub edges)
+     - rclcpp + rclpy mix
+     - oort-thread pattern (yolo_py main loop = pure Python thread,
+       not under any executor; runs ONNX Runtime + CUDA inference)
+     - Action / service / publish flows over the mission scenario
+   GPU footprint:
+     - aircraft container: yolo_py tid=1252 produces ~850k kernels,
+       ~80k memcpys, ~12k memsets, ~4k syncs over the mission window
+   Status: load-bearing in paper_important_points.txt, EXPECTED_OBSERVED,
+     modeling_memset, cuda_api_model, phase_detector.
+
+B. Autoware — logging_simulator + sample-rosbag
+   Session: fish_20260427_165116 (standalone)
+   What it exercises:
+     - Single large process, many composable containers
+     - Per-callback TRT (TensorRT) inference workload
+     - Heavy callback graph (3160 vertices, 5874 edges in the FISH model)
+     - 13 GPU-active callbacks, 67 GPU-touched callbacks
+   GPU footprint:
+     - pointcloud_container: 14,576 kernels, 49,651 runtime calls,
+       3,700 memcpys, 4,772 syncs (all type-2)
+   Status: load-bearing in host_mediated_stream_sync,
+     fish_computable_properties, skeleton extraction.
+
+C. Autoware — earlier stress-test run
+   Session: fish_20260419_211621 (standalone)
+   What it exercises: same as B but on an earlier point in the
+     callback-bound GPU-DAG development. Kept for cross-checks.
+   Status: load-bearing in stream_bridge, three_flags_gpu_model.
+
+
+Planned additions (release-readiness)
+-------------------------------------
+
+D. Isaac ROS AprilTag (NEW, planned 2026-05-17)
+   Why this one:
+     - Well-known NVIDIA reference workload — anyone in the ROS 2 +
+       GPU community has heard of Isaac ROS, so claiming
+       "FISH profiles Isaac ROS AprilTag end-to-end" is a credible
+       single-line elevator pitch.
+     - Compact: one container, one camera input, one detection node.
+       Trace under 30 s captures the whole steady-state pipeline.
+     - Pure GPU pipeline — every callback either does CUDA work or
+       feeds something that does. Stream-bridge attribution (Rule A
+       in particular) and per-token GPU statistics are showcased
+       cleanly.
+     - Deterministic input (rosbag replay) — repeatable across runs,
+       so paper_anchors numbers stay stable.
+     - Realistic but small. Where the Autoware AAS pair stresses
+       SCALE, AprilTag stresses CLEAN-CASE — exactly what a paper
+       wants for its first results figure.
+
+   Components to capture:
+     - Single container: nvcr.io/nvidia/isaac/ros:<tag>-fish
+     - Node graph: rosbag_play → image_rect / camera_info →
+                   apriltag_node → /tag_detections sink
+     - Mission length: 30 s of replay
+     - Trace artefact target size (after trim): ~20 MB CTF +
+                   ~5 MB nsys.sqlite → fits inside Git LFS budget,
+                   maybe even direct repo.
+
+   Mission YAML: examples/isaac_apriltag.yaml (committed today)
+   Fixture target: tests/fixtures/isaac_apriltag_mini/
+   Paper anchors target (placeholder pending first capture):
+     n_kernels: TBD
+     n_runtime: TBD
+     graph_nodes: TBD
+     graph_edges: TBD
+     apriltag_callback_invocations: TBD
+     apriltag_distinct_shapes: TBD
+
+E. (Backup) Pure-CPU mini — demo_nodes_cpp talker_listener (NEW, lower priority)
+   Why: prove FISH works on workloads with zero GPU activity (graph
+     extraction, callback timing, CPU-only attribution). Catches
+     the bug where FISH silently assumes nsys data is present.
+   Mission: 30 s of `ros2 run demo_nodes_cpp talker` + `listener`
+   Trace size target: < 5 MB total — committable directly.
+   Status: not started; nice-to-have for CI/CD contract tier.
+
+F. (Backup) rclpy-only chain (NEW, lower priority)
+   Why: rclpy executor model is GIL-bound, fundamentally different
+     concurrency profile from rclcpp. The detect_oort_threads code
+     path is exercised differently.
+   Mission: TBD — a 3-node rclpy chain (pub → middle → sub)
+   Status: not started; would land after rclpy scheduler tracepoints
+     (see notes.txt 'Next up' #2).
+
+
+CI/CD wiring
+------------
+
+For each use-case in the "Current" + "Planned" sections:
+  1. Capture session → trim trace → commit fixture
+  2. Add a paper_anchors.json entry with the load-bearing counts
+  3. Add a smoke test that runs the full pipeline against the
+     fixture and asserts those counts (with a small tolerance)
+
+The smoke job in .github/workflows/ci.yml runs on a schedule +
+release-prep branch trigger (see immediate_work.txt #15). Each
+use-case adds maybe 30 s to that job. Five use-cases × 30 s =
+~2.5 min total — comfortable within free-tier minutes.
+
+What NOT to put in the suite:
+  - Synthetic micro-benchmarks (one kernel, one callback) — no
+    paper credibility, and they don't surface integration bugs.
+  - Anything that requires recompiling a 3rd-party stack from
+    source as part of CI — set-up time dominates.
+  - Anything that needs network access during CI (downloading
+    large weights, fetching map tiles). Bake the inputs into the
+    fixture.
+
+
+Next step
+---------
+
+1. Verify the examples/isaac_apriltag.yaml mission against the
+   current Isaac ROS dev image — Isaac ROS version drift may have
+   changed the launch file name / args. Fix the YAML if so.
+2. Source or record a small input rosbag with /image_rect +
+   /camera_info topics. Store at ~/fish_inputs/apriltag_camera.bag.
+3. Run the mission once, capture the trace, ingest it, derive the
+   placeholder paper_anchors numbers from a real run.
+4. Trim the trace down to the smallest fixture that still produces
+   the same anchor numbers, commit to tests/fixtures/.
+5. Add the smoke test that loads + asserts the fixture's anchors.
+
+Date: 2026-05-17
+Author: Fatih Tasyaran (with Claude Opus 4.7)
