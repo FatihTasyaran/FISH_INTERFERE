@@ -812,3 +812,146 @@ Candidates to evaluate:
 
 Priority: MEDIUM (current stair layout works, but better layout would
   significantly improve readability for paper figures)
+
+
+15. Test strategy + GitHub Actions CI/CD (release blocker)
+-----------------------------------------------------------
+Date added: 2026-05-17
+Context: pivot to release-ready software. A research tool of this size
+(~10-20 KLOC Python, single-author, transitioning to release) does
+NOT benefit from broad unit-test coverage — the bugs that matter live
+at boundaries (trace schema drift, paper-number drift after refactor,
+session-filter forgotten somewhere on the shared `fish` InfluxDB).
+Wrong shape: 90% line coverage on every helper. Right shape: a few
+"regression anchor" tests that guard the load-bearing claims.
+
+Test pyramid (inverted from typical):
+
+  Tier 1 — Pure-logic unit tests  (tests/unit/, fast, no DB)
+    - stream-bridge attribution Rule A/B/C
+    - LCS subseq vs LCS substring
+    - trie conditional probability calc
+    - phase classifier rule scoring (init_score, anomaly tests)
+    - callback split logic
+    - shape_signature determinism
+    - kernel-name shortener
+  These are the ONLY things worth typical unit tests — pure functions,
+  no external state, refactor-prone.
+
+  Tier 2 — Fixture contract tests  (tests/contract/, ~2 min with services)
+    Fixtures in tests/fixtures/mini_session/ (< 50 MB, repo-committed):
+      a 30 s standalone trace with CTF + nsys.sqlite + snapshot dir.
+    Tests:
+    - babeltrace2 line parser yields expected dict for known input
+    - nsys CUPTI_ACTIVITY_KIND_KERNEL / RUNTIME / MEMCPY rows carry
+      the fields ingest expects
+    - InfluxDB filter regression guard:
+        unfiltered SELECT yields rows from > 1 session
+        filtered SELECT yields rows from exactly that (session, container)
+    - ScopedMongo correctly suffixes scoped collection names
+    - graph_store save_graph → load_graph round-trip preserves
+      vertex attrs (t_v, id_v, A_v, level)
+
+  Tier 3 — One golden-session smoke  (tests/e2e/, ~5-10 min, nightly+pre-release)
+    Bigger fixture (or download in CI). Full pipeline:
+      ingest_session → identify_executors → identify_entities →
+      identify_callbacks → attribute_aspects → attach_callback_groups →
+      detect_oort_threads → split_callbacks → create_graph →
+      gpu_dag.extract → save_graph
+    Assertions against tests/paper_anchors.json — a single source of
+    truth listing load-bearing numbers (≈ 8-10 entries):
+      fish_20260427_165116:
+        n_kernels: 14576
+        n_runtime: 85263
+        graph_nodes: 3160
+        graph_edges: 5874
+        oort_threads: 56
+      fish_compose_20260419_161633 / aircraft:
+        n_kernels: 854495
+        n_runtime: 1029170
+        F1696_invocations: 45
+        F1696_distinct_shapes: 25
+      (etc.)
+    Drift > some tolerance → CI red → either fix the code or update
+    the paper.
+
+GitHub Actions integration:
+
+  .github/workflows/ci.yml (push + pull_request):
+
+    jobs:
+      lint:
+        runs-on: ubuntu-latest
+        steps: ruff/black/mypy --strict postprocess/
+
+      unit-contract:
+        runs-on: ubuntu-latest
+        services:
+          mongo:
+            image: mongo:7
+            ports: ['27017:27017']
+          influxdb:
+            image: influxdata/influxdb:3-core
+            ports: ['8181:8181']
+            env: { INFLUXDB3_AUTH_TOKEN: test-token }
+        steps:
+          - actions/checkout@v4 (lfs: true)
+          - actions/setup-python@v5
+          - actions/cache for ~/.cache/pip
+          - pip install -r requirements.txt -r requirements-dev.txt
+          - pytest tests/unit tests/contract -v
+
+      smoke:
+        if: github.event_name == 'schedule' || contains(github.ref, 'release-prep')
+        runs-on: ubuntu-latest
+        services: { mongo: ..., influxdb: ... }
+        steps:
+          - download golden fixture (LFS or gh release asset)
+          - pytest tests/e2e --paper-anchors tests/paper_anchors.json
+          - on drift: open GH issue with diff report
+
+  .github/workflows/release.yml (on: push: tags: v*):
+    - build wheel (python -m build)
+    - upload to GH Release attachments
+    - (later) PyPI via twine
+
+  .github/dependabot.yml — weekly Python deps PRs
+
+  Branch protection on main: require ci.yml green; force-push off;
+  signed commits optional.
+
+Fixture storage decision tree:
+  < 50 MB     → commit directly to repo (tests/fixtures/mini_session/)
+  50 MB - 1 GB → Git LFS (free 1 GB storage / month)
+  > 1 GB      → upload as GH Release asset, gh release download in CI
+
+CUDA/ROS NOT needed in CI: pre-recorded CTF + pre-recorded nsys.sqlite
+mean no NVIDIA runner required. babeltrace2 installs via apt.
+
+Implementation order:
+  Step 1. Record a fixture mini_session (~30 s standalone trace, < 50 MB).
+          Without this every other test is paper-mâché.
+  Step 2. tests/paper_anchors.json — list the 8-10 load-bearing numbers
+          that paper currently cites (audit paper_important_points.txt
+          and fish_computable_properties.txt for what is quoted).
+  Step 3. Tier 1 unit tests (pure logic) — cheapest to write, no infra.
+  Step 4. Tier 2 contract tests + mini_session fixture.
+  Step 5. ci.yml with lint + unit-contract jobs only. Branch protection on.
+  Step 6. Golden-session smoke + smoke job + paper_anchors comparison.
+          Nightly cron + release-prep branch trigger.
+
+What NOT to do:
+  - Coverage gate (% lines) — wrong metric, encourages noise tests.
+  - Mock the database in integration tests — past lesson: real DB
+    catches schema drift; mocks pass while prod breaks.
+  - Test every helper. Pure logic at boundaries only.
+
+Effort estimate:
+  lint + unit + contract job working in CI: 1 day
+  mini_session fixture + paper_anchors.json + tier 2: 2-3 days
+  golden-session smoke + drift report job: 2 days
+  Total: ~1 week for full pipeline.
+
+Priority: HIGH (release blocker — without anchor tests, future
+  refactors silently invalidate paper numbers; without CI, contributors
+  cannot land changes safely).
