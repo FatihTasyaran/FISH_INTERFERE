@@ -2,7 +2,8 @@
 
 FISH is a retrospection and task-generation tool that produces
 [SAG-ready](https://github.com/SAG-org) tasksets and rich
-visualisations for **any** ROS 2 application — especially GPU-using ones.
+visualisations for **any** ROS 2 application, with first-class
+support for GPU-accelerated workloads.
 
 ---
 
