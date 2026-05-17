@@ -25,12 +25,12 @@ requires-python = ">=3.10"
 authors = [
     { name = "Fatih Tasyaran", email = "fatihtasyaran@sabanciuniv.edu" },
 ]
-license = { text = "TBD — see LICENSE" }
+license = { text = "MIT" }
 keywords = ["ros2", "profiling", "lttng", "nsight-systems", "task-graph", "real-time"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: Other/Proprietary License",
+    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",

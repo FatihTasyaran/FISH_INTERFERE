@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+title: "FISH: Function-level Inspection of Scheduling Hierarchies"
+message: >-
+  If you use FISH in academic work, please cite it.
+  An accompanying paper is in preparation; until it appears,
+  please cite this repository.
+type: software
+authors:
+  - family-names: Tasyaran
+    given-names: Fatih
+    email: fatihtasyaran@sabanciuniv.edu
+repository-code: "https://github.com/FatihTasyaran/FISH_INTERFERE"
+abstract: >-
+  FISH is a profiling framework for ROS 2 + GPU workloads. It captures
+  LTTng kernel/userspace traces, NVIDIA Nsight Systems GPU profiling
+  data, and system-state snapshots from inside the container where the
+  target ROS 2 nodes run, then reconstructs a typed task-graph
+  (executors -> nodes -> entities -> callbacks -> GPU kernels) and
+  exports it for analysis and visualisation.
+keywords:
+  - ros2
+  - profiling
+  - lttng
+  - nsight-systems
+  - task-graph
+  - real-time
+  - gpu
+license: MIT
+version: 0.1.0-dev

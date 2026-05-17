@@ -139,14 +139,19 @@ python3 postprocess/graph_store.py export fish_<ts> __main__ \
 
 ## Citing FISH
 
-Paper in preparation (mid-2026). Until publication, please cite the
-repository:
+A paper is in preparation (mid-2026). Until publication, please cite
+the repository — see `CITATION.cff` (GitHub renders a "Cite this
+repository" button from it):
 
 ```
 Tasyaran, F. (2026). FISH: Function-level Inspection of Scheduling
-Hierarchies. TU Eindhoven. https://github.com/<TBD>/fish_interfere
+Hierarchies. https://github.com/FatihTasyaran/FISH_INTERFERE
 ```
 
 ## License
 
-See `LICENSE`.
+MIT — see [`LICENSE`](LICENSE). Use it freely (including commercial
+use); the only legal requirement is to keep the copyright notice
+when redistributing. If you publish work that builds on FISH,
+citing it via `CITATION.cff` is appreciated but not required by the
+license.
