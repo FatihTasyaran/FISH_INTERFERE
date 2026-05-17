@@ -30,6 +30,17 @@ and visualisation.
 > and on-disk schemas to firm up over the next few releases. See
 > `notes/immediate_work.txt` for what is next.
 
+## Supported architectures
+
+What FISH has been captured end-to-end on so far. Anything else is
+likely-to-work but not yet exercised — if you run FISH on a different
+configuration we'd love a [Discussions](https://github.com/FatihTasyaran/FISH_INTERFERE/discussions)
+post.
+
+| CPU       | GPU architecture                           | CUDA                                                          | ROS 2                  |
+|-----------|--------------------------------------------|---------------------------------------------------------------|------------------------|
+| `x86_64`  | NVIDIA Ampere — `sm_86` (RTX A1000 Laptop) | runtime 12.x inside containers; host driver supports CUDA 13.0 | Humble (`ros-humble-*`) |
+
 ## Capability inventory
 
 What FISH extracts from a trace today, and where each data point
