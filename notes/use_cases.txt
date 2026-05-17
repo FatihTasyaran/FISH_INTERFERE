@@ -153,5 +153,116 @@ Next step
    the same anchor numbers, commit to tests/fixtures/.
 5. Add the smoke test that loads + asserts the fixture's anchors.
 
+
+===============================================================================
+Strategic dependency: NVIDIA-ISAAC-ROS/ros2_benchmark
+===============================================================================
+Date added: 2026-05-17
+
+The repository https://github.com/NVIDIA-ISAAC-ROS/ros2_benchmark is
+a substantial gift for the FISH use-case suite. Three independently
+valuable axes:
+
+Axis 1 — rosbag + use-case source
+---------------------------------
+Hosted on NVIDIA NGC as the `r2b` dataset family.
+
+  r2b 2024 (~2.9 GB total, 4 sequences):
+    r2b_galileo        (471 MB)  room w/ 4× LI HAWK stereo + objects
+    r2b_galileo2       (986 MB)  same env, RealSense D455
+    r2b_robotarm       (1.4 GB)  robot arm + tray-with-objects
+    r2b_whitetunnel    (503 MB)  hallway, HAWK cameras
+
+  r2b 2023 (~15.8 GB total, 8 sequences):
+    r2b_lounge / storage / hallway / datacenter / cafe / hideaway /
+    mezzanine (1.2–3.9 GB each), r2b_hope (30 MB, single 6-DoF pose
+    estimation image)
+
+Download:
+    ./ngc-cli/ngc registry resource download-version \
+        "nvidia/isaac/r2bdataset2023:3"
+
+These are paper-cited datasets. "Validated on the r2b dataset" is a
+single-line credibility win.
+
+Axis 2 — ground-truth graph topology
+------------------------------------
+Every ros2_benchmark workload runs under a known 4-node template:
+
+    ComposableNodeContainer (component_container_mt)
+      ├── DataLoaderNode          ← reads rosbag
+      ├── PlaybackNode            ← controls publish rate
+      ├── <workload-specific>     ← AprilTag / Stereo / etc.
+      └── MonitorNode             ← collects latency / fps / jitter
+
+Single-node scripts in their /scripts/ directory:
+    apriltag_ros_apriltag_node.py
+    image_proc_rectify_node.py
+    image_transport_h264_encoder_node.py
+    image_transport_h264_decoder_node.py
+    stereo_image_proc_node.py
+    realsense2_node.py
+
+Multi-node graph scripts:
+    apriltag_ros_apriltag_graph.py
+    stereo_image_proc_graph.py
+
+For each script the EXACT (N, E, F) cardinality is derivable from the
+launch file. This becomes the strongest possible ground truth FISH
+can be tested against: "FISH extracted X nodes — the benchmark's
+launch defined exactly X nodes."
+
+Status: tests/integration/test_graph_ground_truth.py is task #52
+(pending).
+
+Axis 3 — overhead measurement (paper-required)
+----------------------------------------------
+MonitorNode emits a stable JSON metric block per run:
+
+    MEAN_FRAME_RATE             (fps)
+    FIRST_SENT_RECEIVED_LATENCY (ms)
+    LAST_SENT_RECEIVED_LATENCY  (ms)
+    MAX_JITTER, MEAN_JITTER     (ms)
+    NUM_MISSED_FRAMES           (count)
+    RECEIVED_DURATION           (ms)
+    MAX_CPU_UTIL, MEAN_CPU_UTIL (%)
+    BASELINE_CPU_UTIL           (%)
+
+A/B protocol — for each benchmark workload:
+
+  1. Run vanilla:          FISH_ENABLED=0  ros2 launch <bench>
+  2. Run FISH-enabled:     FISH_ENABLED=1  ros2 launch <bench>
+  3. Diff the JSON outputs → fps / latency / jitter / dropped-frames
+     deltas attributable to FISH wrapping (LTTng + nsys + GPU daemon).
+
+Reference values to beat:
+  AprilTag node: 90.8 fps @ 11 ms latency on Intel NUC
+  AprilTag node: 56.3 fps @ 18 ms latency on AGX Orin
+
+If FISH adds ≤ 5 % to mean frame rate degradation and < 1 ms to mean
+latency on the AGX Orin numbers, the paper's overhead claim is
+defensible. If not, we know where to look.
+
+Status: paper Verification section data; task #51 (pending).
+
+Complementary narrative for the paper
+-------------------------------------
+ros2_benchmark answers:  "Is this pipeline fast enough?"
+FISH answers:            "Where is the time going?"
+
+So when ros2_benchmark reports a benchmark missing its SLA, FISH can
+break the result down per-callback and per-skeleton-token. The two
+tools live in the same paper without competing.
+
+Practical wiring for the use-case suite
+---------------------------------------
+The Isaac ROS AprilTag entry above (use-case D) gets retargeted to
+use ros2_benchmark's apriltag_ros_apriltag_node.py rather than a
+hand-rolled launch. Mission YAML examples/isaac_apriltag.yaml will
+be updated once we verify the ros2_benchmark setup runs inside the
+FISH-baked Isaac ROS image. (Currently the YAML targets the
+isaac_ros_apriltag stand-alone pipeline; switching to ros2_benchmark
+gives us the MonitorNode metrics for free.)
+
 Date: 2026-05-17
 Author: Fatih Tasyaran (with Claude Opus 4.7)

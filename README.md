@@ -132,11 +132,33 @@ entry.
 
 | Workload                                                                                    | Why it is in the suite                                       | Status |
 |---------------------------------------------------------------------------------------------|---------------------------------------------------------------|--------|
-| **NVIDIA Isaac ROS — AprilTag detection**                                                   | Clean, compact GPU-only reference pipeline                    | planned (mission: [`examples/isaac_apriltag.yaml`](examples/isaac_apriltag.yaml)) |
+| **NVIDIA Isaac ROS — AprilTag detection** (via [`ros2_benchmark`](https://github.com/NVIDIA-ISAAC-ROS/ros2_benchmark)) | Clean, compact GPU-only reference pipeline + ground-truth graph + MonitorNode-driven overhead measurement | planned (mission: [`examples/isaac_apriltag.yaml`](examples/isaac_apriltag.yaml)) |
 | **Autoware — `logging_simulator` + sample-rosbag**                                          | Scale: 3160-vertex graph, 13 GPU-active callbacks, 14.5k kernels | captured (`fish_20260427_165116`) |
 | **Aerial Autonomy Stack (AAS) — yolo_py + PX4 SITL**                                        | Multi-container compose flow, oort thread pattern, mission scenario | captured (`fish_compose_20260419_161633`) |
 | **demo_nodes_cpp talker / listener** (backup)                                               | Pure-CPU mini — proves FISH works without nsys                | planned |
 | **rclpy 3-node chain** (backup)                                                             | GIL-bound executor profile, different from rclcpp             | planned (blocked on rclpy scheduler tracepoints) |
+
+### Why `ros2_benchmark` matters
+
+NVIDIA's [`ros2_benchmark`](https://github.com/NVIDIA-ISAAC-ROS/ros2_benchmark)
+gives FISH three things at once:
+
+- **r2b dataset** (NGC-hosted, paper-cited rosbags) — `r2b_galileo`,
+  `r2b_robotarm`, `r2b_lounge`, ... — deterministic inputs for the
+  use-case suite, no need for FISH to maintain its own captured rosbags.
+- **Ground truth for graph extraction.** Each benchmark runs under a
+  fixed 4-node template (`DataLoaderNode → PlaybackNode → <workload>
+  → MonitorNode` inside `component_container_mt`), so the exact
+  expected `(N, E, F)` cardinality of FISH's extracted graph is
+  knowable up front.
+- **Overhead measurement.** `MonitorNode` emits a stable JSON metric
+  block per run (`MEAN_FRAME_RATE`, `LATENCY`, `JITTER`,
+  `NUM_MISSED_FRAMES`). A/B-ing vanilla vs `FISH_ENABLED=1` runs is
+  the cleanest way to put a number on FISH's wrapper cost — exactly
+  what the paper's Verification section needs.
+
+ros2_benchmark answers "is it fast enough?"; FISH answers "where is
+the time going?". They are complementary, not competitive.
 
 Once a workload moves from *planned* to *captured*, the corresponding
 row in `tests/paper_anchors.json` locks in the counts the CI/CD job

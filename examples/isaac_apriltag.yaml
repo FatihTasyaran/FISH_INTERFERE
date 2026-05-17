@@ -6,6 +6,17 @@
 # trace, large enough to exercise stream-bridge attribution, shape
 # clustering, and per-token GPU statistics.
 #
+# Two variants of this workload exist. The second is preferred for
+# release because it also gives us SLA metrics + ground truth:
+#   (a) bespoke isaac_ros_apriltag_pipeline.launch.py  — what this
+#       YAML still references today
+#   (b) ros2_benchmark's apriltag_ros_apriltag_node.py — wraps the
+#       same node in a DataLoaderNode→PlaybackNode→<>→MonitorNode
+#       template that emits frame-rate / latency / jitter / dropped-
+#       frames as JSON. Switch to (b) once we verify it runs inside a
+#       FISH-baked Isaac ROS image; see notes/use_cases.txt for
+#       rationale.
+#
 # Prerequisites
 # -------------
 #   1. Pull the Isaac ROS dev image (x86_64 or arm64 — both work):
