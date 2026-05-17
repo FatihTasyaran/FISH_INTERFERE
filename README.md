@@ -30,6 +30,79 @@ and visualisation.
 > and on-disk schemas to firm up over the next few releases. See
 > `notes/immediate_work.txt` for what is next.
 
+## Capability inventory
+
+What FISH extracts from a trace today, and where each data point
+stands in the visualisation pipeline. Visualisation column is a
+deliberate placeholder — every row reads `X` until we audit which
+data points already have a viz and which still need one.
+
+### Graph topology
+
+| Data point                                                                              | Viz |
+|-----------------------------------------------------------------------------------------|-----|
+| Hierarchical task graph (CN → EX → N → E → F)                                           |  X  |
+| Per-process executor count and types (ST / MT / StaticST)                               |  X  |
+| Per-executor callback-group composition (MutuallyExclusive vs Reentrant)                |  X  |
+| Per-entity QoS, message type, and peer counts (pub fan-out, srv ↔ cli pairs)            |  X  |
+| Cross-container external boundary edges (process A pub → process B sub)                 |  X  |
+| Composed multi-container graph totals (\|CN\|, \|EX\|, \|N\|, \|E\|, \|F\|, edge mix)   |  X  |
+| Out-of-ROS (oort) thread detection — CUDA-active workers outside any executor           |  X  |
+
+### Callback & entity timing (CPU)
+
+| Data point                                                                              | Viz |
+|-----------------------------------------------------------------------------------------|-----|
+| Per-callback invocation count + duration distribution                                   |  X  |
+| Per-callback-group serialisation pattern (MX → no overlap, RE → parallel allowed)       |  X  |
+| Inter-callback gap → empirical period estimate                                          |  X  |
+| Publisher → subscription latency (via `fish_publish_link`)                              |  X  |
+| Service round-trip latency (request_sent → response_received, paired by seq number)     |  X  |
+| Action latency per phase (goal / cancel / result)                                       |  X  |
+| Split-callback durations (`::part1` + `::continuation`)                                 |  X  |
+
+### GPU side
+
+| Data point                                                                              | Viz |
+|-----------------------------------------------------------------------------------------|-----|
+| Per-process totals: CUDA runtime calls, kernels, memcpys, memsets, syncs                |  X  |
+| Per-stream wait count + per-stream usage histogram (which callbacks claim it)           |  X  |
+| Inter-stream DAG: src → dst weighted edges                                              |  X  |
+| Per-callback Typed DAG shape signatures and distinct-shape count                        |  X  |
+| Per-shape phase class (dominant / variant / anomaly / init / shutdown)                  |  X  |
+| Per-token statistics: duration, kernel dims, regs, shmem, memcpy bytes, memset bytes    |  X  |
+| Conditional graph per skeleton position (entry, continue, end probabilities)            |  X  |
+| LCS skeleton (longest common subseq + substring) per callback                           |  X  |
+
+### Stream-bridge attribution
+
+| Data point                                                                              | Viz |
+|-----------------------------------------------------------------------------------------|-----|
+| Rule A: callback-window time fraction (same tid)                                        |  X  |
+| Rule B: bridged-via-stream-claim fraction                                               |  X  |
+| Rule C: oort residual fraction (and post-sync-release subset)                           |  X  |
+| Per-callback attribution share — how much of each callback's GPU work came from each rule|  X |
+
+### Trace-level meta
+
+| Data point                                                                              | Viz |
+|-----------------------------------------------------------------------------------------|-----|
+| Event volume pre / post whitelist + ingest throughput (docs/s)                          |  X  |
+| Run duration, stabilisation time, detected GPU PID count                                |  X  |
+| Launch-wrap vs relaunch attribution                                                     |  X  |
+
+### Pending (not yet computed)
+
+The process-level period extractor lands next; once it does, the
+following also become first-class data points:
+
+- End-to-end frame latency + jitter
+- Per-frame phase classification (INIT / WARMUP / STEADY / TAIL / COALESCED(N) / UNKNOWN)
+- EDD-style task parameters per period (T, C_cpu, C_sm, C_ce, D, jitter)
+- Bottleneck callback per period
+- Per-period concurrency analysis (same-stream serial vs cross-stream parallel)
+- Per-period anomaly correlation ("do anomaly shapes cluster in WARMUP periods?")
+
 ---
 
 ## What FISH gives you
