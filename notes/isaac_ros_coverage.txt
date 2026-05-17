@@ -1,0 +1,298 @@
+Isaac ROS coverage tracker — FISH validation roadmap
+====================================================
+
+Date created: 2026-05-17
+Source: https://nvidia-isaac-ros.github.io/index.html  (Isaac ROS 4.4)
+
+This file tracks every Isaac ROS package / reference workflow against
+the FISH validation plan. It is the master inventory; the README's
+"Validated on" table surfaces only the top-priority subset.
+
+Coverage taxonomy
+-----------------
+
+  P0 — Paper-required.  GPU-heavy, has an isaac_ros_benchmark script,
+       has known rosbag input. These become FISH fixtures and feed
+       paper_anchors.json.
+
+  P1 — Supporting.      Useful coverage breadth — multi-node graph
+       variants, specialised codecs, encoder/decoder pairs.
+
+  P2 — Larger workflow. SLAM / mapping bundles — bigger setup cost,
+       fewer fixtures but valuable end-to-end demonstrations.
+
+  P3 — Reference workflow. Manipulation pipelines (cuMotion, pick &
+       place, gear assembly). Heavy host-hardware dependency (Franka,
+       UR robots). Stretch goal.
+
+  P4 — Infrastructure.  NITROS, GXF, common, nitros bridge. Used by
+       every workload; not a workload itself. FISH automatically sees
+       these inside any P0–P3 capture.
+
+  P5 — Skip.            Interfaces-only packages, ROS message-only
+       packages, RViz plugins, conversion helpers.
+
+Status values
+-------------
+
+  planned         — In the queue, no work started.
+  setup-ready     — Dev image pulled, deps verified, ready to write
+                    mission YAML.
+  yaml-drafted    — examples/<workload>.yaml committed; not yet
+                    captured.
+  captured        — Trace exists in ~/fish_traces/, ingested into
+                    MongoDB + InfluxDB.
+  anchored        — tests/paper_anchors.json entry written; reference
+                    numbers locked in.
+  fixture         — Trimmed trace committed under
+                    tests/fixtures/<workload>/ (CI/CD smoke test
+                    surface).
+
+Hardware reality check
+----------------------
+
+  Local rig: RTX A1000 Laptop (sm_86 Ampere, 4 GB VRAM).
+  Useful capacity: ≤ ~3.5 GB for model + activations.
+  Implications:
+    - FoundationPose, FoundationStereo, SAM2 → may not fit in 4 GB
+      at full precision. Need FP16 / INT8 variants, or skip on this
+      machine until larger GPU is available.
+    - DOPE, AprilTag, ESS-light, Rectify → fit comfortably.
+
+  Driver-side CUDA: 13.0 (NVIDIA-SMI 580.126.09).
+  Container runtime CUDA: 12.x (whatever Isaac ROS 4.4 base ships).
+
+Coverage table
+==============
+
+Notation:
+  bench? = has script in isaac_ros_benchmark/benchmarks/<>/scripts/
+  bag?   = uses an r2b dataset rosbag
+
+Perception — Object detection
+-----------------------------
+  isaac_ros_detectnet              [P0] bench? Y  bag? Y  status: planned
+  isaac_ros_grounding_dino         [P1] bench? ?  bag? ?  status: planned
+                                   (large model, VRAM check needed)
+  isaac_ros_rtdetr                 [P0] bench? Y  bag? Y  status: planned
+  isaac_ros_yolov8                 [P0] bench? Y  bag? Y  status: planned
+
+Perception — Pose estimation
+----------------------------
+  isaac_ros_centerpose             [P0] bench? Y  bag? Y  status: planned
+  isaac_ros_dope                   [P0] bench? Y  bag? Y  status: planned
+  isaac_ros_foundationpose         [P1] bench? Y  bag? Y  status: planned
+                                   (VRAM check needed — 370 ms @ AGX Thor,
+                                    99 ms @ RTX 5090; A1000 likely OOM)
+
+Perception — Image segmentation
+-------------------------------
+  isaac_ros_segformer              [P0] bench? ?  bag? ?  status: planned
+  isaac_ros_segment_anything       [P1] bench? ?  bag? ?  status: planned
+                                   (large model, may not fit in 4 GB)
+  isaac_ros_segment_anything2      [P1] bench? ?  bag? ?  status: planned
+                                   (large model)
+  isaac_ros_segment_anything2_interfaces  [P5] msg-only — skip
+  isaac_ros_unet                   [P0] bench? Y  bag? Y  status: planned
+
+Perception — Stereo depth
+-------------------------
+  isaac_ros_ess                    [P0] bench? Y  bag? Y  status: planned
+                                   ESS-Light variant first (smaller)
+  isaac_ros_foundationstereo       [P1] bench? Y  bag? Y  status: planned
+                                   (VRAM check needed)
+
+Perception — Image pipeline
+---------------------------
+  isaac_ros_depth_image_proc       [P1] bench? ?  bag? ?  status: planned
+  isaac_ros_image_pipeline         [P4] meta-package — covered by children
+  isaac_ros_image_proc             [P0] bench? Y  bag? Y  status: planned
+                                   (rectify_node — lightest sensible
+                                    candidate after AprilTag)
+  isaac_ros_stereo_image_proc      [P0] bench? Y  bag? Y  status: planned
+
+Perception — DNN inference
+--------------------------
+  isaac_ros_dnn_image_encoder      [P0] bench? Y  bag? Y  status: planned
+  isaac_ros_tensor_proc            [P1] bench? ?  bag? ?  status: planned
+  isaac_ros_tensor_rt              [P0] bench? Y  bag? Y  status: planned
+                                   (DOPE + PeopleSemSegNet variants)
+  isaac_ros_triton                 [P0] bench? Y  bag? Y  status: planned
+                                   (DOPE + PeopleSemSegNet variants)
+
+Perception — Fiducial detection
+-------------------------------
+  isaac_ros_apriltag               [P0] bench? Y  bag? Y  status: yaml-drafted
+                                   (examples/isaac_apriltag.yaml)
+                                   FIRST TARGET — once this lands the
+                                   pattern repeats for all P0 entries.
+
+Mapping & localization — Scene reconstruction
+---------------------------------------------
+  isaac_ros_nvblox                 [P0] bench? Y  bag? Y  status: planned
+  multi_realsense_emitter_synchronizer [P4] sensor helper
+  nvblox_examples_bringup          [P4] launch glue
+  nvblox_image_padding             [P4] sub-module
+  nvblox_msgs                      [P5] msg-only — skip
+  nvblox_nav2                      [P2] navigation integration
+  nvblox_ros                       [P4] covered by isaac_ros_nvblox
+  nvblox_ros_common                [P4] sub-module
+  nvblox_rviz_plugin               [P5] viz plugin — skip
+  realsense_splitter               [P4] sensor helper
+  semantic_label_conversion        [P4] helper
+
+Mapping & localization — Visual SLAM
+------------------------------------
+  isaac_ros_visual_slam            [P2] bench? ?  bag? Y  status: planned
+                                   bigger setup, valuable end-to-end demo
+  isaac_ros_visual_slam_interfaces [P5] msg-only — skip
+
+Mapping & localization — Visual global localization
+---------------------------------------------------
+  isaac_ros_visual_global_localization [P2] bench? ?  bag? Y  status: planned
+
+Mapping & localization — Mapping
+--------------------------------
+  isaac_mapping_ros                [P2] bench? ?  bag? Y  status: planned
+  isaac_ros_visual_mapping         [P2] bench? ?  bag? Y  status: planned
+
+Mapping & localization — Other
+------------------------------
+  isaac_ros_occupancy_grid_localizer [P0] bench? Y  bag? Y  status: planned
+  isaac_ros_pointcloud_utils       [P1] bench? ?  bag? ?  status: planned
+
+Motion planning — cuMotion
+--------------------------
+  isaac_ros_cumotion               [P3] bench? Y  bag? ?  status: planned
+                                   (isaac_ros_moveit_benchmark exists)
+  isaac_ros_cumotion_moveit        [P3] integration package
+  isaac_ros_cumotion_object_attachment  [P3] helper
+  isaac_ros_cumotion_robot_segmenter   [P3] helper
+
+Teleoperation
+-------------
+  isaac_ros_teleop                 [P3] bench? ?  bag? ?  status: planned
+
+Cloud control
+-------------
+  isaac_ros_mission_client         [P3] no FISH-relevant GPU work
+  isaac_ros_scene_recorder         [P3] no FISH-relevant GPU work
+  vda5050_action_handler           [P3] no FISH-relevant GPU work
+
+Physical AI
+-----------
+  isaac_ros_unitree_g1_teleop_bringup  [P3] hardware-specific, skip for now
+
+Sensor & hardware — Compression
+-------------------------------
+  isaac_ros_h264_decoder           [P0] bench? Y  bag? Y  status: planned
+  isaac_ros_h264_encoder           [P0] bench? Y  bag? Y  status: planned
+                                   (I-frame + P-frame variants — two
+                                    fixtures from one workload)
+
+Sensor & hardware — Jetson
+--------------------------
+  isaac_ros_jetson_stats           [P5] aarch64 only — N/A on our rig
+  isaac_ros_jetson_stats_services  [P5] aarch64 only — N/A on our rig
+
+Sensor & hardware — Camera
+--------------------------
+  isaac_ros_sipl_camera            [P4] hardware-specific input layer
+
+NITROS — Hardware acceleration
+------------------------------
+  isaac_ros_gxf                    [P4] foundation library
+  isaac_ros_managed_nitros         [P4] foundation library
+  isaac_ros_nitros                 [P4] foundation library — covered
+                                   automatically when any P0 captures
+                                   a NITROS-using node
+  isaac_ros_nitros_bridge_ros2     [P4] foundation library
+  isaac_ros_nitros_topic_tools     [P4] foundation library
+  isaac_ros_nitros_type            [P4] foundation library
+  isaac_ros_pynitros               [P4] Python NITROS bindings
+
+Common utilities
+----------------
+  isaac_ros_common                 [P4] foundation library
+
+Benchmark
+---------
+  isaac_ros_benchmark              [P4] this IS our ground-truth source
+                                   (see notes/use_cases.txt)
+  isaac_ros_moveit_benchmark       [P3] motion-planning benchmark
+
+Reference workflows — Manipulation
+----------------------------------
+  isaac_ros_manipulation_asset_bringup       [P3]
+  isaac_ros_manipulation_bringup             [P3]
+  isaac_ros_manipulation_gear_assembly       [P3] specific reference run
+  isaac_ros_manipulation_orchestration       [P3]
+  isaac_ros_manipulation_pick_and_place      [P3] canonical demo
+  isaac_ros_manipulation_ros_python_utils    [P4] helper
+  isaac_ros_manipulation_servers             [P3]
+  isaac_ros_manipulation_ur_dnn_policy       [P3] DNN policy variant
+  isaac_ros_manipulation_object_following    [P3]
+  isaac_ros_manipulation_pose_to_pose        [P3]
+
+
+Roll-up
+=======
+
+  P0 (paper-required, must capture):    18 packages
+  P1 (supporting):                       8
+  P2 (larger workflow):                  6
+  P3 (reference workflow / stretch):    14
+  P4 (infrastructure — auto-covered):  16
+  P5 (skip):                             5
+  ────────────────────────────────────  ──
+  Total                                 67 unique workloads
+  (Some duplicate / msg-only packages out of the 96 total.)
+
+If we work through P0 entries one per week with the fixture
+discipline (yaml → captured → anchored → fixture), the paper Results
+section has 18 cleanly-comparable workloads to lean on.
+
+
+Tactical order for the next 10 weeks
+====================================
+
+The order minimises image-pull duplication and uses each captured
+session to derive multiple fixtures where possible.
+
+  W1: isaac_ros_apriltag           — proves the FISH-on-Isaac-ROS path,
+                                     smallest GPU footprint, simplest
+                                     mission YAML.
+  W2: isaac_ros_image_proc         — rectify_node, single-pass GPU
+                                     pipeline. Shares image input with
+                                     AprilTag.
+  W3: isaac_ros_stereo_image_proc  — adds the stereo dimension.
+  W4: isaac_ros_ess (Light)        — first DNN inference under FISH;
+                                     small-enough model for A1000.
+  W5: isaac_ros_dnn_image_encoder  — feeds W6+.
+  W6: isaac_ros_tensor_rt          — TensorRT path (covers DOPE + PS).
+  W7: isaac_ros_triton             — Triton path; A/B compare to W6.
+  W8: isaac_ros_apriltag_graph     — multi-node graph variant of W1.
+  W9: isaac_ros_h264_decoder/encoder — video codec workloads.
+  W10: isaac_ros_dope              — full pose-estimation pipeline.
+
+Each week we expect 1 new captured session + 1 fixture committed +
+1 paper_anchors.json entry. By W10 the Results section's "per-workload"
+table is filled.
+
+Workloads explicitly NOT in the 10-week plan:
+  - FoundationPose, FoundationStereo, SAM, SAM2 — VRAM check first.
+  - cuMotion + manipulation workflows — different hardware requirement.
+  - Visual SLAM / mapping — bigger separately-tracked effort.
+
+
+Note on r2b dataset
+===================
+
+Most P0 workloads above accept the same r2b dataset bags (the
+camera-only sequences: r2b_lounge, r2b_galileo, r2b_hideaway, ...).
+ros2_benchmark's DataLoaderNode replays the bag at controlled rates.
+Stereo workloads need stereo r2b bags (r2b_galileo has the HAWK
+stereo pair); pose-estimation needs r2b_hope-style scenes.
+
+One bag download covers many workloads → the NGC download is a
+one-shot prerequisite, not per-workload.

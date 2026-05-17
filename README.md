@@ -149,6 +149,19 @@ entry.
 | **demo_nodes_cpp talker / listener** (backup)                                               | Pure-CPU mini — proves FISH works without nsys                | planned |
 | **rclpy 3-node chain** (backup)                                                             | GIL-bound executor profile, different from rclcpp             | planned (blocked on rclpy scheduler tracepoints) |
 
+### Isaac ROS coverage plan
+
+The Isaac ROS package ecosystem (NVIDIA's accelerated ROS 2 stack,
+[docs index](https://nvidia-isaac-ros.github.io/index.html)) is the
+primary source of paper-grade workloads for FISH. There are ~67
+unique workloads across perception, mapping, motion planning, and
+codec packages. Rather than scatter coverage decisions across
+issues, [`notes/isaac_ros_coverage.txt`](notes/isaac_ros_coverage.txt)
+holds the master inventory: every package bucketed by FISH priority
+(P0 paper-required → P5 skip), status flag (planned → fixture), and
+a 10-week tactical capture order. Track progress there; the table
+above surfaces only the captured + first-up entries.
+
 ### Why `ros2_benchmark` matters
 
 NVIDIA's [`ros2_benchmark`](https://github.com/NVIDIA-ISAAC-ROS/ros2_benchmark)
