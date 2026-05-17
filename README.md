@@ -12,7 +12,7 @@ For everything else:
 - 📄 [Paper](#)                *(in preparation, mid-2026)*
 - 🗺️ [Roadmap](notes/immediate_work.txt)
 - 💬 [Discussions](https://github.com/FatihTasyaran/FISH_INTERFERE/discussions)
-- 🤖 [Instructions for AI agents](AGENTS.md)   *(yes, FISH ships with a `AGENTS.md` — LLMs can drive the pipeline directly)*
+- 🤖 [Instructions for artificial friends](AGENTS.md)   *(yes, FISH ships with an `AGENTS.md` — LLMs can drive the pipeline directly)*
 
 ---
 

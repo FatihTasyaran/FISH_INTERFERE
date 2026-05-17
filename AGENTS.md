@@ -1,12 +1,15 @@
-# AGENTS.md — Instructions for AI agents using FISH
+# AGENTS.md — Instructions for artificial friends using FISH
+
+> Filename kept as `AGENTS.md` so the autonomous tooling that looks
+> for one finds it. Humans (or biological agents — your call) should
+> read `README.md`; artificial friends should read this file.
 
 This document is the agent-facing entry point to FISH. It is short on
-narrative, heavy on commands, paths, and decision rules. Humans should
-read `README.md`; agents should read this file.
+narrative, heavy on commands, paths, and decision rules.
 
-If you are an agent asked to "profile X with FISH", "explain why
-callback Y is slow", "compare two sessions", or anything similar,
-follow the recipes below. Do not invent paths or commands —
+If you are an artificial friend asked to "profile X with FISH",
+"explain why callback Y is slow", "compare two sessions", or anything
+similar, follow the recipes below. Do not invent paths or commands —
 everything below has been verified against the current repo.
 
 ---
