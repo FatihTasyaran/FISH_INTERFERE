@@ -138,13 +138,23 @@ ENV PATH=/usr/local/cuda/bin:/opt/ros/humble/fish/bin:/opt/ros/humble/bin:${PATH
     CMAKE_PREFIX_PATH=/root/trace_overlay_ws/install:/opt/ros/humble \
     FISH_ENABLED=1
 
-# Auto-source ROS + overlay for interactive bash shells
+# Auto-source ROS + overlay for ALL shells:
+#  - /etc/profile.d/*.sh is sourced by login shells (bash -l, bash -lc)
+#  - /root/.bashrc additions cover interactive non-login shells
+# Having both means `docker run ... bash -lc 'ros2 ...'` Just Works.
 RUN printf '%s\n' \
-    'source /opt/ros/humble/setup.bash' \
+    '# FISH base image — auto-source ROS + tracepoint overlay' \
+    'if [ -f /opt/ros/humble/setup.bash ]; then' \
+    '    source /opt/ros/humble/setup.bash' \
+    'fi' \
     'if [ -f /root/trace_overlay_ws/install/local_setup.bash ]; then' \
     '    source /root/trace_overlay_ws/install/local_setup.bash' \
     'fi' \
     'export FISH_ENABLED=1' \
+    > /etc/profile.d/ros-fish.sh && \
+    chmod +x /etc/profile.d/ros-fish.sh && \
+    printf '%s\n' \
+    'source /etc/profile.d/ros-fish.sh' \
     >> /root/.bashrc
 
 WORKDIR /root
