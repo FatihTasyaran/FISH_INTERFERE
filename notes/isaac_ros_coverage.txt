@@ -253,30 +253,50 @@ discipline (yaml → captured → anchored → fixture), the paper Results
 section has 18 cleanly-comparable workloads to lean on.
 
 
-Tactical order for the next 10 weeks
-====================================
+Tactical order — one-sprint blitz, not a 10-week march
+======================================================
 
-The order minimises image-pull duplication and uses each captured
-session to derive multiple fixtures where possible.
+Reality check on the cost model:
 
-  W1: isaac_ros_apriltag           — proves the FISH-on-Isaac-ROS path,
-                                     smallest GPU footprint, simplest
-                                     mission YAML.
-  W2: isaac_ros_image_proc         — rectify_node, single-pass GPU
-                                     pipeline. Shares image input with
-                                     AprilTag.
-  W3: isaac_ros_stereo_image_proc  — adds the stereo dimension.
-  W4: isaac_ros_ess (Light)        — first DNN inference under FISH;
-                                     small-enough model for A1000.
-  W5: isaac_ros_dnn_image_encoder  — feeds W6+.
-  W6: isaac_ros_tensor_rt          — TensorRT path (covers DOPE + PS).
-  W7: isaac_ros_triton             — Triton path; A/B compare to W6.
-  W8: isaac_ros_apriltag_graph     — multi-node graph variant of W1.
-  W9: isaac_ros_h264_decoder/encoder — video codec workloads.
-  W10: isaac_ros_dope              — full pose-estimation pipeline.
+  one-time setup           ~ 30–60 min
+    - dev image pull       ~ 5–15 min (10–20 GB)
+    - r2b bag download     ~ 5–10 min (2.9 GB)
+    - FISH-baked image     ~ 5 min   (scripts/container_install.sh)
 
-Each week we expect 1 new captured session + 1 fixture committed +
-1 paper_anchors.json entry. By W10 the Results section's "per-workload"
+  per workload             ~ 10–20 min
+    - mission YAML tweak   ~ 2 min
+    - 30 s capture run     ~ 1 min
+    - ingest + sanity      ~ 5 min
+    - anchor + fixture     ~ 5 min
+
+So the realistic timeline for the P0 set (~18 workloads) is one
+focused session, not ten weeks. Roadblocks (CUDA mismatch, OOM on
+4 GB A1000, missing launch arg) are the only thing that stretches
+this — the order below minimises duplicate roadblocks by going
+small-to-large.
+
+Order (small → large GPU footprint, so we fail fast on each layer):
+
+  1.  isaac_ros_apriltag           proves FISH-on-Isaac-ROS works
+  2.  isaac_ros_image_proc         rectify only — fast confidence
+  3.  isaac_ros_stereo_image_proc  stereo pair
+  4.  isaac_ros_dnn_image_encoder  feeds 5/6/7
+  5.  isaac_ros_ess (Light)        first DNN
+  6.  isaac_ros_tensor_rt (PS)     TensorRT path
+  7.  isaac_ros_triton (PS)        Triton — A/B vs 6
+  8.  isaac_ros_unet               segmentation
+  9.  isaac_ros_centerpose         pose estimation
+  10. isaac_ros_dope               pose, larger
+  11. isaac_ros_detectnet          object detection
+  12. isaac_ros_rtdetr             RT-DETR
+  13. isaac_ros_yolov8             YOLO
+  14. isaac_ros_h264_decoder       codec
+  15. isaac_ros_h264_encoder       codec (I-frame + P-frame)
+  16. isaac_ros_apriltag_graph     multi-node graph variant
+  17. isaac_ros_nvblox             3D reconstruction
+  18. isaac_ros_occupancy_grid_localizer  2D localisation
+
+Each item: capture → fixture → anchor. By #18 the paper Results
 table is filled.
 
 Workloads explicitly NOT in the 10-week plan:
