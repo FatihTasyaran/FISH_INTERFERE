@@ -1,0 +1,368 @@
+Procedurally-generated synthetic FISH validation suite
+======================================================
+
+Date proposed: 2026-05-18
+Status: design only — implementation deferred until after the
+Isaac ROS coverage sweep lands (see notes/isaac_ros_coverage.txt).
+Priority: HIGH (release-readiness; provides the quantitative
+"FISH is accurate" claim the paper needs).
+
+
+1. Why this exists
+------------------
+
+Three things FISH currently CANNOT prove without it:
+
+  a. "FISH correctly recovers a known task graph."
+     Real applications (Autoware, AAS, Isaac ROS) are useful but
+     their ground truth is what we extracted FROM them; there is no
+     independent oracle. With a procedurally-generated graph, the
+     descriptor IS the oracle.
+
+  b. "FISH's accuracy degrades gracefully under load."
+     We want a curve: at what node count / callback rate / GPU
+     kernel rate does FISH start missing data points? Real
+     workloads do not cover the parameter space; synthetic
+     generation does.
+
+  c. "FISH handles adversarial graph patterns."
+     Deep callback chains, dense pub/sub fan-out, mixed
+     MutuallyExclusive + Reentrant callback groups, tight timer
+     bursts, GPU work on streams without enclosing callbacks — all
+     hand-craftable as synthetic descriptors, near-impossible to
+     find in the wild.
+
+Position in the test pyramid (notes/immediate_work.txt #15):
+
+  Tier 1 — pure-logic unit tests       (no infra)
+  Tier 2 — fixture contract tests      (mini_session fixture)
+  Tier 3 — golden-session smoke        (Isaac ROS / AAS / Autoware)
+  Tier 4 — synthetic-accuracy sweep    (THIS — quantitative correctness)
+
+
+2. Proposed architecture
+------------------------
+
+  tests/synth/
+  ├── README.md
+  ├── descriptor_schema.yaml     # JSON Schema (or pydantic model)
+  │                                describing the descriptor.yaml format
+  ├── descriptors/               # checked-in test descriptors
+  │     ├── tiny.yaml            # 2 nodes, single callback each
+  │     ├── small.yaml           # 10 nodes, pub/sub mesh
+  │     ├── medium.yaml          # 100 nodes, mixed timers
+  │     ├── large.yaml           # 1000 nodes, deep chains
+  │     └── adversarial/         # hand-crafted edge cases
+  │           ├── dense_fanout.yaml
+  │           ├── tight_timers.yaml
+  │           ├── deep_chain.yaml
+  │           └── mixed_cg.yaml
+  ├── synth_gen.py               # descriptor → emitted ROS 2 package
+  ├── callback_library/
+  │     ├── __init__.py
+  │     ├── cpu_workloads.py     # matmul(N), busy_spin(us),
+  │                                pure_io, jitter_sim
+  │     └── gpu_workloads.py     # cuda_kernel_stub(grid, block),
+  │                                torch_inference(model_size),
+  │                                memcpy_h2d_d2h(bytes),
+  │                                memset_fill(bytes)
+  ├── templates/                 # jinja2 templates
+  │     ├── package.xml.j2
+  │     ├── setup.py.j2          (Python first — fast iteration)
+  │     ├── node.py.j2
+  │     ├── launch.py.j2
+  │     └── (later) node.cpp.j2  (C++ for performance-fidelity runs)
+  ├── run_synth.sh               # gen → colcon build → ros2 launch
+  │                                + FISH → capture → stop
+  ├── verify_synth.py            # FISH-extracted graph
+  │                                ↔ descriptor → accuracy metrics
+  ├── sweep_runner.py            # batch executor: sweep over parameter
+  │                                grid, emit one row per run to a
+  │                                CSV / pandas DataFrame
+  └── plots/
+        └── accuracy_heatmap.py  # paper figure generator
+
+
+3. Descriptor format (sketch)
+-----------------------------
+
+YAML, validated against descriptor_schema.yaml. Goal: one file
+fully specifies the synthetic workload AND the expected FISH graph
+(modulo invocation counts which depend on run duration).
+
+  name: synth_medium_01
+  seed: 42                        # deterministic
+  duration_sec: 30
+  executors:
+    - id: exec_a
+      type: SingleThreaded
+      callback_groups:
+        - id: cg_a0
+          type: MutuallyExclusive
+        - id: cg_a1
+          type: Reentrant
+    - id: exec_b
+      type: MultiThreaded
+      num_threads: 4
+      callback_groups: [...]
+
+  nodes:
+    - id: node_42
+      executor: exec_a
+      entities:
+        - id: sub_42a
+          kind: subscription
+          topic: /chain_in
+          msg_type: sensor_msgs/Image
+          callback:
+            id: cb_42a
+            callback_group: cg_a0
+            workload:
+              cpu: { kind: matmul, n: 64 }
+              gpu: { kind: cuda_kernel_stub,
+                     grid: [4,1,1], block: [256,1,1],
+                     dur_us: 200 }
+            publishes:
+              - topic: /chain_out
+                msg_type: std_msgs/Int32
+                rate_factor: 1.0      # 1 input → 1 output
+        - id: timer_42a
+          kind: timer
+          period_ms: 10
+          callback: { id: cb_42t, workload: {cpu: { kind: busy_spin, us: 500 }} }
+
+  edges:
+    - from: /chain_in
+      to:   /chain_out
+
+(Edges section is redundant with pub/sub topics but lets us assert
+the expected COMPOSED graph too.)
+
+
+4. Code-generation strategy
+---------------------------
+
+Pass 1 (MVP) — rclpy / Python
+  Reason: fastest path. rclpy nodes are easy to template. GPU work
+  via pyCUDA or PyTorch tensor ops. CPU work via numpy.
+
+Pass 2 (later) — rclcpp / C++
+  Reason: real production workloads are C++; FISH's tracetools
+  patches are exercised differently. The C++ generator emits a
+  proper ament_cmake package; colcon build picks it up.
+
+In both passes the SAME descriptor produces SAME-shaped graphs.
+Comparing rclpy run vs rclcpp run for the SAME descriptor catches
+language-specific FISH bugs (oort detection, GIL effects, etc.).
+
+
+5. Callback library — what work each "block" does
+-------------------------------------------------
+
+CPU (cpu_workloads.py)
+  busy_spin(us)            tight Python loop; measurable duration
+  matmul(n)                numpy @ on two n×n matrices
+  jitter_sim(mean_us,
+             stddev_us)    busy_spin with gaussian noise; useful
+                           for variant/anomaly classifier tests
+  pure_io                  no work (timer-only baseline)
+
+GPU (gpu_workloads.py)
+  cuda_kernel_stub(grid,
+                   block,
+                   dur_us)  launches a deliberately-sized stub
+                            kernel via pyCUDA / cupy
+                            (configurable shared mem, regs)
+  memcpy_h2d_d2h(bytes,
+                 streams)   forced memcpy pattern, optionally
+                            over multiple streams
+  memset_fill(bytes)        memset on device (matches Volta+ fill
+                            kernel pattern FISH already classifies)
+  torch_inference(model)    small / large pre-loaded model — for
+                            comparing TRT vs Triton-style shapes
+
+Why a library: we want FISH's shape signatures to be
+RECOGNISABLE across runs. If every call uses busy_spin(500),
+FISH's per-callback Typed DAG signature should be stable —
+making it easy to assert "FISH grouped these 1000 invocations
+into 1 dominant shape, as expected."
+
+
+6. Sweep dimensions (the experiment grid)
+-----------------------------------------
+
+Primary axes — paper-figure-worthy:
+
+  num_nodes              [2, 10, 50, 100, 500, 1000, 5000]
+  timer_rate_hz          [1, 10, 100, 1000, 10000]
+  callback_dur_us        [1, 10, 100, 1000, 10000, 100000]
+  gpu_kernel_rate_hz     [0, 10, 100, 1000]
+  callback_chain_depth   [1, 3, 10, 20]
+  executor_type          [ST, MT-2, MT-8, Static-MT-4]
+  cg_mix                 [all-MX, all-RE, 50/50]
+  pubsub_fanout          [1to1, 1toN, NtoN]
+
+Secondary axes — sanity checks:
+
+  language               [rclpy, rclcpp]
+  ros_distro             [humble]  (jazzy when port lands)
+  trace_session_buffer   [4MB, 16MB, 64MB]  (LTTng buffer size)
+
+Sweep granularity: NOT full cartesian product (intractable).
+Instead, one-factor-at-a-time around a baseline + a small
+randomised subspace search.
+
+
+7. Accuracy metrics
+-------------------
+
+Per run, compare the FISH-extracted graph (from
+graph_store.load_graph) against the descriptor's truth:
+
+  vertex_recall_by_type:
+    EX: |V_fish_EX ∩ V_truth_EX| / |V_truth_EX|
+    N:  ...
+    E:  ...
+    F:  ...
+
+  edge_recall_by_rel:
+    contains:  ...
+    msg:       ...   (the most important — captures pub→sub edges)
+    dep:       ...
+    external:  ...
+
+  invocation_count_drift:
+    For each F, |count_fish - count_expected| / count_expected
+    Aggregate: mean, p50, p99 across all F's
+
+  duration_distribution_overlap:
+    KS-test or Wasserstein distance between FISH's per-callback
+    duration histogram and the expected (descriptor-injected)
+    duration distribution
+
+  gpu_dag_completeness:
+    For each GPU-active F, fraction of injected kernels that
+    appear in F.A_v['gpu_dags']
+
+  stream_bridge_accuracy:
+    Rule_A_frac_fish vs Rule_A_frac_expected (descriptor knows
+    which kernels were launched inside a callback window)
+    Rule_C should always be 0% for synthetic graphs (no oort)
+
+Pass criteria for "100% accuracy":
+  vertex_recall_*       >= 1.0
+  edge_recall_msg       >= 1.0
+  invocation_drift_p99  <= 0.05  (5% slack for trace-stop boundaries)
+  gpu_dag_completeness  >= 0.95
+  rule_a_accuracy       >= 0.95
+
+
+8. Output deliverables
+----------------------
+
+Per-run artefacts (under tests/synth/runs/<timestamp>/):
+  descriptor.yaml         (copy of the descriptor used)
+  ros_pkg/                (the generated package — for reproducibility)
+  trace/                  (the captured FISH trace)
+  accuracy.json           (the verify_synth output)
+
+Sweep artefacts (under tests/synth/sweeps/<sweep_name>/):
+  sweep_config.yaml
+  results.csv             (one row per run, sweep param + accuracy cols)
+  accuracy_heatmap.png    (2D heatmap: param_x vs param_y, accuracy fill)
+  failure_modes.md        (auto-generated: configurations where FISH
+                           dropped below pass threshold, with hypotheses)
+
+
+9. Paper integration
+--------------------
+
+Results section material:
+
+  Figure (one heatmap):
+    "FISH vertex recall vs (num_nodes × callback_rate)"
+    colour = recall%, log-log axes, 100% region green,
+    drop-off region amber, miss region red
+
+  Table (one row per workload class):
+    | configuration          | recall_V | recall_E | drift_p99 | gpu_complete |
+    | tiny  (10 nodes, 30Hz) |   100%   |   100%   |    1%     |    100%      |
+    | medium (100 nodes ...) |          |          |           |              |
+    | large  (1000 ...)      |          |          |           |              |
+    | adversarial: dense fan |          |          |           |              |
+
+  Discussion paragraph:
+    "FISH maintained 100% vertex and edge recall up to N nodes at
+    K Hz with M% invocation drift. Beyond that, LTTng buffer
+    saturation began dropping events..."
+
+Verification section material:
+  Paragraph on the synthetic methodology + the descriptor format +
+  reproducibility argument.
+
+
+10. Risks and unknowns
+----------------------
+
+  a. Generated workload's CUDA initialisation overhead dominates
+     small-callback runs. Mitigation: warmup phase that primes the
+     CUDA context before the timed window.
+
+  b. rclpy under GIL throttles event rate before FISH does. The
+     sweep upper bound on callback_rate may reflect rclpy limits,
+     not FISH limits. Mitigation: report both, label clearly.
+
+  c. Stub GPU kernels may not look "realistic" enough — same shape
+     signature for every callback. Mitigation: parameterise the
+     kernel signatures (grid/block) per callback so they DO differ.
+
+  d. Ground-truth invocation counts are tricky at trace boundaries
+     (start / stop instants). Mitigation: 5% slack in pass criteria;
+     drop first/last second.
+
+  e. Verifier itself can have bugs that cause false negatives.
+     Mitigation: a "known-perfect" descriptor (the smallest tiny.yaml)
+     should pass with 100% on every commit; if it ever fails, the
+     verifier broke, not FISH.
+
+
+11. Implementation roadmap (when we come back)
+----------------------------------------------
+
+  Week 1: descriptor_schema.yaml + synth_gen.py for rclpy
+          + node.py.j2 + launch.py.j2 templates
+          + tiny.yaml descriptor + manual run
+  Week 2: callback_library/ (cpu_workloads + gpu_workloads)
+          + run_synth.sh end-to-end on tiny.yaml
+          + verify_synth.py with vertex/edge recall metrics
+  Week 3: small.yaml + medium.yaml + first sweep
+          + sweep_runner.py
+          + first results.csv + accuracy_heatmap.png
+  Week 4: large.yaml + adversarial set + rclcpp generator
+          + paper figure polish
+
+Total: ~1 month of focused work.
+
+Block until Isaac ROS coverage sweep is in (notes/isaac_ros_coverage.txt
+P0 set captured), because the Isaac ROS path is what justifies the
+paper's "real workloads" claim — synthetic is the "validation"
+complement.
+
+
+12. Related work to call out in the paper
+-----------------------------------------
+
+  - rclcpp benchmark suites (just timing, no graph reconstruction)
+  - ros2_benchmark (this is the workload-side; FISH is the
+    introspection-side; complementary, not competitive)
+  - LTTng synthetic event generators (used in tracetools tests)
+  - chaos engineering / fuzzing literature (the methodology origin)
+
+The novelty: combining (a) graph descriptor as ground truth,
+(b) procedural ROS 2 code generation, (c) FISH's own typed-graph
+schema as the recall target. Nobody has done this triple yet for
+ROS 2 profiling.
+
+
+Date: 2026-05-18
+Author: Fatih Tasyaran (with Claude Opus 4.7)
