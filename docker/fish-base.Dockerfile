@@ -52,11 +52,25 @@ ENV TZ=Etc/UTC \
 # ─── 1. Base system tools ───────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl wget gnupg lsb-release software-properties-common \
-        git git-lfs patch build-essential cmake \
+        git git-lfs patch build-essential \
         python3 python3-pip python3-dev python3-venv \
         locales sudo vim less && \
     locale-gen en_US.UTF-8 && \
     rm -rf /var/lib/apt/lists/*
+
+# ─── 1b. Modern CMake (>= 3.25) from Kitware ──────────────────────────────
+# Ubuntu 22.04 ships cmake 3.22, but isaac_ros_common needs the
+# CUDA::nvtx3 IMPORTED target which only appears in CMake's
+# CUDAToolkit module from 3.25 onward. Pulling the official
+# Kitware apt repo gives us the latest stable cmake.
+RUN curl -fsSL https://apt.kitware.com/keys/kitware-archive-latest.asc \
+        | gpg --dearmor \
+        | tee /usr/share/keyrings/kitware-archive-keyring.gpg > /dev/null && \
+    echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main" \
+        > /etc/apt/sources.list.d/kitware.list && \
+    apt-get update && apt-get install -y --no-install-recommends cmake && \
+    rm -rf /var/lib/apt/lists/* && \
+    cmake --version | head -1
 
 # ─── 2. ROS 2 Humble apt repository ────────────────────────────────────────
 RUN install -d /usr/share/keyrings && \
@@ -95,9 +109,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rosdep init && \
     rosdep update --rosdistro ${ROS_DISTRO}
 
-# ─── 4. NVIDIA Nsight Systems (nsys) ───────────────────────────────────────
-# Pulls the CUDA apt repo just for nsys (the rest of CUDA is already in
-# the base image). Pinned version matches scripts/install_fish_deps.sh.
+# ─── 4. NVIDIA Nsight Systems (nsys) — CUDA apt repo ───────────────────────
 RUN curl -sSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
         -o /tmp/cuda-keyring.deb && \
     dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb && \
@@ -106,6 +118,25 @@ RUN curl -sSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu220
     rm -rf /var/lib/apt/lists/* && \
     ln -sf "$(find /opt/nvidia/nsight-systems -name nsys -type f 2>/dev/null | head -1)" \
         /usr/local/bin/nsys
+
+# ─── 4b. NVIDIA VPI 4 — from Jetson/Tegra x86_64 apt repo ──────────────────
+# VPI (Vision Programming Interface) is a hard dependency of
+# isaac_ros_common — without it, ros2_benchmark + every Isaac ROS
+# package fails CMake configure with 'find_package(vpi REQUIRED)'.
+# VPI lives on a separate apt repo from CUDA and needs its own key.
+# Package naming: libnvvpi4 / vpi4-dev / python3.10-vpi4 (NOT vpi3 —
+# old, not distributed for x86 anymore; isaac_ros_common's call to
+# VPI_BACKEND_NVENC needs a one-line patch in workspace source, see
+# scripts/setup_isaac_workspace.sh or notes/use_cases.txt).
+RUN curl -fsSL https://repo.download.nvidia.com/jetson/jetson-ota-public.asc \
+        | gpg --dearmor \
+        | tee /usr/share/keyrings/nvidia-jetson.gpg > /dev/null && \
+    echo "deb [signed-by=/usr/share/keyrings/nvidia-jetson.gpg] https://repo.download.nvidia.com/jetson/x86_64/jammy r38.4 main" \
+        > /etc/apt/sources.list.d/nvidia-tegra-x86.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libnvvpi4 vpi4-dev python3.10-vpi4 && \
+    rm -rf /var/lib/apt/lists/*
 
 # ─── 5. Copy FISH source (only what install_fish needs) ────────────────────
 # We don't COPY the whole repo on purpose — `postprocess/` is host-side
