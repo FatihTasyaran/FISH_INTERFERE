@@ -1,0 +1,344 @@
+Synthetic test suite — scenario-driven FISH validation
+========================================================
+
+Date: 2026-05-19
+Status: design (supersedes the earlier procedurally_generated_test.txt
+which proposed pure-random graphs). Implementation deferred until
+after the Isaac ROS coverage sweep.
+
+Premise
+-------
+
+  Random graph generation produces unbounded topologies that lack
+  publishable framing. Scenario-driven generation produces
+  **archetypal real-time task graphs** that map to recognisable
+  application classes (automotive, drone, manipulation, ...).
+  Each archetype exposes parametric knobs for sweeping WITHIN it;
+  topology stays realistic.
+
+Builds on but extends the open-source `ros-realtime/reference-system`
+project, the most relevant prior art.
+
+
+1. State of the art — ros-realtime/reference-system
+---------------------------------------------------
+
+Cloned & inspected at /tmp/reference-system (Apache 2.0, v1.0.0,
+2022). One paper-cited synthetic ROS 2 task graph, with these
+strengths and limitations:
+
+What they did well (we will borrow):
+
+  Six node archetypes as reusable C++ class templates, each with
+  its own Settings struct:
+
+    Sensor        — wall_timer → publish (sources)
+    Transform     — 1 sub → busy-compute → 1 pub (linear)
+    Fusion        — 2 sub → busy-compute → 1 pub (fan-in)
+    Intersection  — N sub → N pub (multiplexer)
+    Cyclic        — timer-driven node that consumes M subs
+    Command       — final sink (consumer)
+
+  number_cruncher_limit knob: a deterministic prime-search loop
+    whose iteration count maps to a measured wall-clock duration.
+    Cross-platform, repeatable, FISH-friendly.
+
+  TimingConfig as a swappable C++ template parameter; the same
+    topology can be re-instantiated with Default / Benchmark /
+    custom timing.
+
+  Five executor variants of the SAME graph live in parallel
+    /src/ros2/executor/:
+      autoware_default_singlethreaded.cpp
+      autoware_default_staticsinglethreaded.cpp
+      autoware_default_multithreaded.cpp
+      autoware_default_cbg.cpp           (callback-group)
+      autoware_default_prioritized.cpp
+    This is exactly the executor / CG mix dimension we need to
+    sweep.
+
+  Graphviz .dot file shipped as the human-readable ground truth.
+
+What they did NOT do (where we extend):
+
+  a. Single archetype only (Autoware lidar pipeline, ~20 nodes).
+  b. Pure CPU work — no GPU kernels, no NITROS, no nsys hooks.
+  c. C++ only — no rclpy generator, so no GIL / oort exercises.
+  d. Topology hard-coded in C++ — no YAML / descriptor; no
+     introspection-tool ground-truth schema.
+  e. Designed for scheduler-evaluation research, NOT for
+     validating introspection / profiling tools. There is no
+     concept of "the graph FISH should extract."
+
+
+2. Scenario library — six archetypes
+------------------------------------
+
+For each archetype we ship: a scenario template (yaml), a default
+parameter set, and a few canonical variants. Naming pattern:
+`templates/scenarios/<name>.yaml.j2`.
+
+S1.  automotive_perception (Autoware-shape)
+     Source pattern: sensors → preprocess → perception → fusion → planning → control
+     Stresses: fan-in (sensors→fusion), fan-out (fusion→planners),
+               deep pipeline (~8 stages), 100 Hz inner control loop
+     Knobs:    n_cameras ∈ {1, 4, 6}, lidar ∈ {0, 1},
+               control_rate ∈ {50, 100, 200} Hz,
+               executor ∈ {ST, SST, MT-2, MT-8, CBG, PRI}
+     GPU:      detection_model_kind ∈ {none, light, heavy}
+     Maps to:  Autoware logging_simulator → fish_20260427_165116
+
+S2.  drone_vio_slam (AAS-shape)
+     Source pattern: stereo → VIO(200 Hz) ⨁ object_det(30 Hz) → SLAM(slow oort)
+     Stresses: mixed-rate fusion, oort thread detection (SLAM in
+               its own pure-Python loop), parallel perception
+     Knobs:    imu_rate ∈ {100, 200, 400} Hz,
+               slam_model_size ∈ {none, ess_light, ess_full},
+               oort_threads ∈ {0, 1, 2}
+     GPU:      yolo-style detection density tuneable
+     Maps to:  AAS yolo_py → fish_compose_20260419_161633
+
+S3.  arm_manipulation (Isaac for Manipulation-shape)
+     Source pattern: depth_cam → pose_est → cumotion_plan → joint_ctrl(high-rate)
+     Stresses: high-rate inner control loop (1 kHz) +
+               MX vs RE callback-group split,
+               force-sensor feedback loop
+     Knobs:    joint_rate ∈ {200, 500, 1000} Hz,
+               pose_model_size, cb_group_mix ∈ {all-MX, 50/50, all-RE}
+     GPU:      cuMotion-like kernel sequence
+     Maps to:  Isaac ROS manipulation reference workflows
+
+S4.  fiducial_localisation (Isaac ROS AprilTag-shape)
+     Source pattern: cam → rectify → detect → pose_publish
+     Stresses: minimum viable Isaac-ROS pipeline (sanity-check tier)
+     Knobs:    image_resolution ∈ {VGA, HD, FHD},
+               tag_count, detection_backend ∈ {cpu, cuda}
+     GPU:      apriltag GPU kernel sequence
+     Maps to:  Isaac ROS apriltag benchmark
+
+S5.  teleop_streaming (h264-shape)
+     Source pattern: cam → h264_encode → [external boundary] → h264_decode → display
+     Stresses: cross-container pub→sub external edges, encoder/
+               decoder GPU pairs, network rate variation
+     Knobs:    bitrate, frame_rate, cross_container ∈ {true, false}
+     GPU:      h264 encode/decode kernels
+     Maps to:  Isaac ROS h264 benchmarks
+
+S6.  multi_agent_swarm
+     Source pattern: N × (autonomy stack) ⨂ cross-agent pub/sub
+     Stresses: N-container compose flow, cross-CN external edges,
+               many small graphs vs one large
+     Knobs:    n_agents ∈ {1, 4, 16}, coupling_topology ∈ {mesh, ring, star}
+     GPU:      light per-agent compute (smaller models)
+     Maps to:  multi-vehicle simulation pattern; no canonical
+               existing FISH capture yet
+
+
+3. Architecture — what we keep, what we add
+-------------------------------------------
+
+We KEEP from reference-system:
+
+  + six node archetype primitives (Sensor / Transform / Fusion /
+    Intersection / Cyclic / Command) — reused as building blocks
+  + number_cruncher CPU calibration helper
+  + executor variant proliferation (one scenario → multiple
+    executor flavours)
+  + .dot export as human-readable ground truth
+
+We ADD on top:
+
+  + Scenario template layer (S1–S6 above), each with parametric knobs
+  + YAML descriptor format — machine-readable ground truth
+    (descriptor.yaml = oracle; same shape as the graph FISH will
+    extract; vertex IDs, callback names, expected edges all in
+    one file)
+  + Code generator (jinja2) that emits rclpy OR rclcpp packages
+    from the descriptor — language-differential testing
+  + GPU workload primitives bolted onto the existing CPU-only
+    node types:
+        cuda_kernel_stub(grid, block, regs, shmem, dur_us)
+        torch_inference(model_size)
+        memcpy_h2d_d2h(bytes, streams)
+        memset_fill(bytes)
+  + FISH-side verifier that compares extracted graph against
+    descriptor (vertex/edge recall, invocation count drift,
+    shape signature stability, stream-bridge attribution
+    accuracy)
+  + Sweep runner that batches parameter grids and emits a single
+    accuracy CSV / heatmap per archetype
+
+
+4. Folder layout
+----------------
+
+  tests/synth/
+  ├── README.md
+  ├── archetypes/
+  │     ├── automotive_perception.yaml.j2
+  │     ├── drone_vio_slam.yaml.j2
+  │     ├── arm_manipulation.yaml.j2
+  │     ├── fiducial_localisation.yaml.j2
+  │     ├── teleop_streaming.yaml.j2
+  │     └── multi_agent_swarm.yaml.j2
+  ├── descriptor_schema.yaml         # JSON-Schema for descriptor.yaml
+  ├── callback_library/
+  │     ├── cpu_workloads.py         # busy_spin, matmul, jitter_sim
+  │     ├── gpu_workloads.py         # cuda_kernel_stub, torch_*, memcpy
+  │     └── number_cruncher.py       # ported from reference-system
+  ├── synth_gen.py                   # template + descriptor → emitted pkg
+  ├── extract_template.py            # NEW (see Section 6)
+  ├── templates/                     # jinja2 — package.xml, node.py,
+  │     │                              setup.py, launch.py
+  │     ├── rclpy/...
+  │     └── rclcpp/...
+  ├── run_synth.sh                   # gen → colcon build → ros2 launch
+  │                                    + FISH → capture → ingest
+  ├── verify_synth.py                # FISH-extracted graph vs descriptor
+  ├── sweep_runner.py                # parameter grid driver
+  └── plots/
+        └── accuracy_heatmap.py
+
+
+5. Accuracy metrics (recap, paper-anchored)
+-------------------------------------------
+
+Per-run, given descriptor `D` and FISH-extracted graph `G`:
+
+  vertex_recall_by_type     |V_G ∩ V_D|   /   |V_D|    per t_v in {CN,EX,N,E,F}
+  edge_recall_by_rel        |E_G ∩ E_D|   /   |E_D|    per rel in {contains,msg,dep,external}
+  invocation_drift_p99      max over F of |count_G - count_D| / count_D
+  gpu_dag_completeness      per F, fraction of expected kernels present
+  stream_bridge_accuracy    Rule_A fraction in G vs D (Rule_C should be 0)
+  shape_signature_stability per F, n_distinct_shapes_G vs expected from D
+
+Pass threshold for "100% within tolerance":
+  vertex_recall_*           ≥ 1.00
+  edge_recall_msg           ≥ 1.00
+  invocation_drift_p99      ≤ 0.05  (5% boundary slack)
+  gpu_dag_completeness      ≥ 0.95
+  rule_a_accuracy           ≥ 0.95
+
+
+6. Closing the loop — "eat our own dog food"
+--------------------------------------------
+
+The biggest novelty over reference-system: FISH itself can author
+scenario templates from real captures.
+
+Pipeline:
+
+  fish_<session>  →  postprocess.model_improved  →  graph_store
+                              ↓
+                  postprocess.extract_synth_template
+                              ↓
+                  tests/synth/archetypes/<derived>.yaml.j2
+
+Then:
+
+  tests/synth/archetypes/<derived>.yaml.j2  --scale 1.0  → reference reproduction
+                                            --scale 2.0  → 2× callbacks/node
+                                            --scale 0.1  → mini-fixture for CI
+
+This gives the paper a tight argument:
+
+> "We validate FISH against archetypal scenarios DERIVED from the
+>  real workloads it itself profiled, with controlled parameter
+>  variations exposing the boundary of correctness."
+
+extract_synth_template.py is its own ~200 LoC script — walks the
+graph_store, maps each F vertex to the closest archetype primitive
+(Sensor / Transform / Fusion / ...), records per-vertex parameters
+(period, busy time, GPU shape stats), and emits a descriptor.
+
+
+7. CI/CD integration
+--------------------
+
+Per-commit (fast tier):
+  tests/synth/archetypes/fiducial_localisation.yaml @ default knobs
+    → 10-second run, vertex_recall_* should be 1.00
+  Plus a single smallest variant of every other archetype
+  Total: ~5 minutes added to CI
+
+Nightly + release-prep (full tier):
+  Full sweep across all 6 archetypes × parameter grid
+  Emit results.csv + accuracy_heatmap.png per archetype
+  ~30 min per archetype × 6 = ~3 hours; matches GH Actions
+  free-tier nightly budget
+
+Drift detection:
+  paper_anchors.json keyed by archetype + scale.
+  Any drop below pass threshold → CI red → investigate before
+  publishing a release.
+
+
+8. Paper positioning
+--------------------
+
+Related-work paragraph:
+
+> "Existing synthetic ROS 2 graph generators target real-time
+>  scheduling research — most notably ros-realtime/reference-system
+>  which ships a single Autoware-derived archetype with five
+>  executor variants. None provide per-vertex ground-truth
+>  descriptors, GPU workload primitives, or scenario diversity
+>  suitable for validating ROS 2 introspection tools. FISH's
+>  synthetic suite extends reference-system's node-primitive
+>  library with a six-archetype scenario taxonomy
+>  (automotive_perception, drone_vio_slam, arm_manipulation,
+>  fiducial_localisation, teleop_streaming, multi_agent_swarm),
+>  YAML descriptor ground truth, and a code-generator that emits
+>  rclpy or rclcpp packages from the same descriptor. Real captures
+>  feed back into the scenario library via an extract_template
+>  pass, closing the loop between observed and synthetic
+>  behaviour."
+
+Citation hook: ros-realtime/reference-system v1.0.0 (Apex.AI,
+Bosch, others, 2022). Apache 2.0 — clean to derive from.
+
+
+9. Effort estimate (when we come back)
+--------------------------------------
+
+  Week 1: descriptor_schema.yaml + synth_gen.py for rclpy
+          + fiducial_localisation archetype (smallest)
+          + run_synth.sh tiny case → verify FISH extracts it
+  Week 2: callback_library/cpu_workloads + gpu_workloads
+          + verify_synth.py with vertex/edge recall metrics
+          + automotive_perception archetype
+  Week 3: drone_vio_slam, arm_manipulation, teleop_streaming
+          + sweep_runner.py + accuracy_heatmap.png
+  Week 4: extract_synth_template.py (real-capture → archetype)
+          + rclcpp generator + multi_agent_swarm
+          + paper figure polish
+
+Total: ~1 month focused. Block on Isaac ROS sweep so the archetype
+parameter choices are informed by real workload measurements.
+
+
+10. Open design questions (for discussion later)
+------------------------------------------------
+
+  - Workload baseline calibration: should `number_cruncher_limit`
+    be host-tuned (calibrate to N μs on this hardware)? Reference-
+    system left it manual. We could auto-calibrate at first run.
+  - Per-archetype default executor: each archetype picks ONE
+    default executor / cb_group flavour, then sweeps optionally —
+    or always sweep all five flavours? Compute budget vs coverage
+    trade-off.
+  - Real-capture → archetype mapping confidence: not every F vertex
+    in a real capture maps cleanly to one of the six primitives.
+    Need a "fallback / synthetic" tag. Plus a manual review pass
+    before committing a derived archetype.
+  - Cross-language differential: when SAME descriptor is generated
+    once as rclpy and once as rclcpp, what counts as an "expected"
+    divergence (Python GIL vs C++ multithreaded) vs a "bug"?
+    Establish the spec for this before testing.
+
+
+Date: 2026-05-19
+Author: Fatih Tasyaran (with Claude Opus 4.7)
+Supersedes: notes/procedurally_generated_test.txt (the random-graph
+            first draft — kept for context but superseded by this
+            scenario-driven design).

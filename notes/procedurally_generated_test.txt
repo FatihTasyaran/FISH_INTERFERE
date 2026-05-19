@@ -2,8 +2,13 @@ Procedurally-generated synthetic FISH validation suite
 ======================================================
 
 Date proposed: 2026-05-18
-Status: design only — implementation deferred until after the
-Isaac ROS coverage sweep lands (see notes/isaac_ros_coverage.txt).
+Status: SUPERSEDED 2026-05-19 by notes/synthetic_tests.txt.
+        Per advisor feedback, the random-graph framing in this doc
+        is too generic for a paper; the replacement document is
+        scenario-driven (six archetypal task graphs derived from
+        real-time application classes) and explicitly extends the
+        ros-realtime/reference-system project. Kept here for
+        provenance / context; do not implement from this file.
 Priority: HIGH (release-readiness; provides the quantitative
 "FISH is accurate" claim the paper needs).
 
