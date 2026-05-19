@@ -7,7 +7,7 @@ interactive task-graph visualisations.
 This README is a summary of FISH's capabilities and a quick start.
 For everything else:
 
-- 📖 [Full Documentation](#)   *(ReadTheDocs link — coming soon)*
+- 📖 [Full Documentation](https://fish-interfere.readthedocs.io/en/latest/)
 - 🎬 [Live Demo](#)            *(hosted task-graph + Grafana panels — coming soon)*
 - 📄 [Paper](#)                *(in preparation, mid-2026)*
 - 🗺️ [Roadmap](notes/immediate_work.txt)
