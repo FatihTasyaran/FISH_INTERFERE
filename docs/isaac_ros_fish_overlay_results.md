@@ -9,12 +9,23 @@
 > that sources FISH's env, plus `ENV FISH_ACTIVE=1` so the launch_wrap
 > monkey-patch can detect it.
 
-## ✅ Preliminary overhead table — clean smoke-PASS images
+## 🚨 Critical caveat — the FISH overlay images did NOT actually activate FISH
 
-⚠️ **Baseline numbers were captured under host contention** (parallel docker
-builds + colcon were running simultaneously). FISH-on numbers ran in a quieter
-host. **Negative "overhead" entries are measurement noise, NOT FISH speed-up.**
-For trustworthy overhead numbers, rerun baseline in isolation tomorrow.
+Audit after the sweep showed `/tmp/fish_traces/` is EMPTY. Reasons:
+
+1. The Dockerfile's `RUN ... fish-activate.sh` sourced `/opt/ros/humble/fish/scripts/fish_env.sh`
+   which **does not exist**. The only script in `/opt/ros/humble/fish/scripts/` is `trace_session.sh`.
+2. FISH activation is via a `ros2` wrapper at `/opt/ros/humble/fish/bin/ros2`. To use it, that
+   directory must be in `PATH` BEFORE `/opt/ros/humble/bin/`. We didn't add it.
+3. Even with the wrapper in PATH, our smoke tests call `launch_test <script>.py` which is a
+   Python entry point that bypasses the `ros2 launch` wrapper. To actually trace, we'd need
+   to source `trace_session.sh` + call `start_session` BEFORE the launch, then `stop_session`
+   after, and capture the resulting `~/fish_traces/<session>/` artifacts.
+
+**So the "FISH-on" smoke results below are really just a second baseline run, not FISH-traced.**
+The "overhead" numbers reflect normal run-to-run variance plus host contention, not FISH cost.
+
+## ⚠️ Run-to-run variance table (mislabeled "FISH overlay")
 
 | Benchmark | baseline fps | FISH-on fps | Δ (raw) | baseline lat (ms) | FISH-on lat (ms) |
 |---|---:|---:|---:|---:|---:|
@@ -26,14 +37,9 @@ For trustworthy overhead numbers, rerun baseline in isolation tomorrow.
 | `isaac_ros_visual_slam` | 33.55 | 33.21 | **+1.0%** | 1666 | 1543 |
 | `isaac_ros_nitros_bridge` | (no fps in either run; pure IPC bench) | | | | |
 
-**The only believable overhead samples** (host contention symmetric or
-overlay-only):
-- **nvblox: +0.5%** (mesh-gen GPU workload, comparable conditions)
-- **visual_slam: +1.0%** (SLAM pipeline)
-
-These suggest FISH overhead is well under 5% on representative GPU workloads —
-in line with the design goal. Other rows' "−X%" values are baseline-noise
-artifacts and should not be reported as such.
+All these numbers are noise: FISH wasn't active in either column. The +0.5%
+and +1.0% I previously claimed as "FISH overhead" are run-to-run variance,
+not FISH cost.
 
 ## ❌ Images that worked baseline but FAIL under FISH
 
@@ -76,7 +82,18 @@ After the overnight sweep, the repo has produced:
 
 ## Tomorrow's todo (from these logs)
 
-1. **Re-run baselines in isolated host** for trustworthy overhead numbers (no parallel docker work).
-2. **Investigate `nitros_bridge` FISH-on FAIL** — FISH-launch_wrap monkey-patch may be breaking the NITROS monitor node's pub/sub setup. Logs in `/tmp/smoke-fish-isaac_ros_nitros_bridge.log`.
-3. **NGC model download** for centerpose/detectnet/triton/ess/dope/dnn-based benchmarks → would unlock 13 more smoke-PASS slots. Likely requires `ros-humble-isaac-ros-<bench>-models` apt packages from NVIDIA Isaac ROS apt repo (need to enable that repo first).
-4. **occupancy_grid_localizer**: investigate the missing ament resource — likely `isaac_ros_r2b_galileo` dataset overlay.
+1. **Properly activate FISH** for actual overhead measurement:
+   - Modify the `-fishinstalled` Dockerfile to prepend `/opt/ros/humble/fish/bin` to `PATH` so the wrapped `ros2` takes priority.
+   - Replace `launch_test <script>` smoke invocation with a sequence:
+     ```bash
+     source /opt/ros/humble/fish/scripts/trace_session.sh
+     start_session
+     launch_test <script>
+     stop_session
+     ```
+   - Or write a wrapper that detects the script invocation and routes through `ros2 launch` so the FISH `ros2` wrapper intercepts.
+   - Verify by checking `~/fish_traces/<session>/` has `ros2/`, `nsys/`, `snapshot/` populated after each run.
+2. **Re-run baselines in isolated host** (no parallel docker work) — current baseline numbers are contaminated by overnight build contention.
+3. **Investigate `nitros_bridge` baseline FAIL** under the no-op "FISH overlay" — log says `No messages were observed from the monitor node monitor_node0`. Since FISH wasn't active, this is a NITROS-bridge intermittent issue (the original baseline smoke PASSED, this rerun FAILed in same image). Logs in `/tmp/smoke-fish-isaac_ros_nitros_bridge.log`.
+4. **NGC model download** for centerpose/detectnet/triton/ess/dope/dnn-based benchmarks → would unlock 13 more smoke-PASS slots. Likely requires `ros-humble-isaac-ros-<bench>-models` apt packages from NVIDIA Isaac ROS apt repo (need to enable that repo first).
+5. **occupancy_grid_localizer**: investigate the missing ament resource — likely `isaac_ros_r2b_galileo` dataset overlay.
