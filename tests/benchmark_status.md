@@ -1,6 +1,6 @@
 # Isaac ROS benchmark image build + smoke-test status
 
-Auto-rendered from `tests/benchmark_status.json` — last updated **2026-05-21T14:32:49Z**
+Auto-rendered from `tests/benchmark_status.json` — last updated **2026-05-21T22:12:58Z**
 
 
 Host: `x86_64` + RTX A1000 Laptop (4 GB) + CUDA 12.6 + ROS 2 Humble + FISH.
@@ -21,39 +21,34 @@ Status legend:
 
 | ⊕ | Benchmark | Category | Image | Duration | Notes |
 |---|-----------|----------|-------|----------|-------|
-| ❌ | `isaac_ros_apriltag` | viable | `fish-r2b-apriltag:latest` | 1182s rc=1 | ------
-_generated_isaac_ros_apriltag.Dockerfile:7
+| 🟦 | `isaac_ros_apriltag` | viable | `fish-r2b-apriltag:latest` | 0s |  |
+| 🟦 | `isaac_ros_bi3d` | viable | `fish-r2b-bi3d:latest` | 452s |  |
+| 🟦 | `isaac_ros_bi3d_freespace` | viable | `fish-r2b-bi3d_freespace:latest` | 740s |  |
+| 🟦 | `isaac_ros_centerpose` | viable | `fish-r2b-centerpose:latest` | 804s |  |
+| 🟦 | `isaac_ros_detectnet` | viable | `fish-r2b-detectnet:latest` | 957s |  |
+| 🟦 | `isaac_ros_dnn_image_encoder` | viable | `fish-r2b-dnn_image_encoder:latest` | 958s |  |
+| 🟦 | `isaac_ros_dope` | viable | `fish-r2b-dope:latest` | 2004s |  |
+| 🟦 | `isaac_ros_ess` | viable | `fish-r2b-ess:latest` | 304s |  |
+| 🟦 | `isaac_ros_foundationpose` | vram_risky | `fish-r2b-foundationpose:latest` | 762s |  |
+| ❌ | `isaac_ros_h264_decoder` | viable | `fish-r2b-h264_decoder:latest` | 75s rc=137 | #8 50.08 Starting >>> isaac_ros_nitros_flat_scan_type
+#8 50.09 Starting >>> isaa… |
+| · | `isaac_ros_h264_encoder` | viable |  | - |  |
+| 🟦 | `isaac_ros_image_proc` | viable | `fish-r2b-image_proc:latest` | 299s |  |
+| 🟦 | `isaac_ros_nitros_bridge` | viable | `fish-r2b-nitros_bridge:latest` | 461s |  |
+| ❌ | `isaac_ros_nvblox` | viable | `fish-r2b-nvblox:latest` | 646s rc=1 | ------
+_generated_isaac_ros_nvblox.Dockerfile:7
 --------------------
-   6 |   … |
-| ❌ | `isaac_ros_bi3d` | viable | `fish-r2b-bi3d:latest` | 1171s rc=1 | ------
-_generated_isaac_ros_bi3d.Dockerfile:7
---------------------
-   6 |     CO… |
-| ❌ | `isaac_ros_bi3d_freespace` | viable | `fish-r2b-bi3d_freespace:latest` | 1189s rc=1 | ------
-_generated_isaac_ros_bi3d_freespace.Dockerfile:7
---------------------
-   … |
-| · | `isaac_ros_centerpose` | viable |  |  |  |
-| · | `isaac_ros_detectnet` | viable |  |  |  |
-| · | `isaac_ros_dnn_image_encoder` | viable |  |  |  |
-| · | `isaac_ros_dope` | viable |  |  |  |
-| · | `isaac_ros_ess` | viable |  |  |  |
-| · | `isaac_ros_foundationpose` | vram_risky |  |  |  |
-| · | `isaac_ros_h264_decoder` | viable |  |  |  |
-| · | `isaac_ros_h264_encoder` | viable |  |  |  |
-| · | `isaac_ros_image_proc` | viable |  |  |  |
-| · | `isaac_ros_nitros_bridge` | viable |  |  |  |
-| · | `isaac_ros_nvblox` | viable |  |  |  |
-| · | `isaac_ros_occupancy_grid_localizer` | viable |  |  |  |
-| · | `isaac_ros_pynitros` | viable |  |  |  |
-| · | `isaac_ros_rtdetr` | viable |  |  |  |
-| · | `isaac_ros_segformer` | viable |  |  |  |
-| · | `isaac_ros_segment_anything` | vram_risky |  |  |  |
-| · | `isaac_ros_stereo_image_proc` | viable |  |  |  |
-| · | `isaac_ros_tensor_rt` | viable |  |  |  |
-| · | `isaac_ros_triton` | viable |  |  |  |
-| · | `isaac_ros_unet` | viable |  |  |  |
-| · | `isaac_ros_visual_slam` | viable |  |  |  |
+   6 |     … |
+| 🟦 | `isaac_ros_occupancy_grid_localizer` | viable | `fish-r2b-occupancy_grid_localizer:latest` | 325s |  |
+| 🟦 | `isaac_ros_pynitros` | viable | `fish-r2b-pynitros:latest` | 805s |  |
+| 🟦 | `isaac_ros_rtdetr` | viable | `fish-r2b-rtdetr:latest` | 713s |  |
+| 🟦 | `isaac_ros_segformer` | viable | `fish-r2b-segformer:latest` | 1877s |  |
+| 🟦 | `isaac_ros_segment_anything` | vram_risky | `fish-r2b-segment_anything:latest` | 1006s |  |
+| 🟦 | `isaac_ros_stereo_image_proc` | viable | `fish-r2b-stereo_image_proc:latest` | 604s |  |
+| 🟦 | `isaac_ros_tensor_rt` | viable | `fish-r2b-tensor_rt:latest` | 1950s |  |
+| 🟦 | `isaac_ros_triton` | viable | `fish-r2b-triton:latest` | 1957s |  |
+| 🟦 | `isaac_ros_unet` | viable | `fish-r2b-unet:latest` | 1924s |  |
+| 🟦 | `isaac_ros_visual_slam` | viable | `fish-r2b-visual_slam:latest` | 934s |  |
 | ⏭️  | `isaac_ros_argus_camera` | hardware_skip |  | — | Argus is the Jetson camera SDK; not available on x86 |
 | ⏭️  | `isaac_ros_data_recorder_nova` | hardware_skip |  | — | Requires Nova robot platform |
 | ⏭️  | `isaac_ros_ess_nova` | hardware_skip |  | — | Hawk stereo camera required |
@@ -63,5 +58,6 @@ _generated_isaac_ros_bi3d_freespace.Dockerfile:7
 
 ## Roll-up
 
-- ❌ `build_failed` — 3
+- 🟦 `build_only` — 21
+- ❌ `build_failed` — 2
 - ⏭️  `skipped` — 6

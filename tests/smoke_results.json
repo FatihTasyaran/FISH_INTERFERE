@@ -1,0 +1,16 @@
+{
+  "smokes": {
+    "isaac_ros_apriltag": {
+      "result": "\u2705 PASS",
+      "detail": "191s \u2014 benchmark metrics emitted (rc=0)",
+      "image": "fish-r2b-apriltag:latest",
+      "duration_s": 191
+    },
+    "isaac_ros_dnn_image_encoder": {
+      "result": "\u2705 PASS",
+      "detail": "206s \u2014 benchmark metrics emitted (rc=0)",
+      "image": "fish-r2b-dnn_image_encoder:latest",
+      "duration_s": 206
+    }
+  }
+}

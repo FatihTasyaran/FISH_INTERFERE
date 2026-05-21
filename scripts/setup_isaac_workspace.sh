@@ -245,7 +245,7 @@ log "  packages-up-to: ${PACKAGES_UP_TO[*]}"
 #  - magic_enum is a header-only C++ library; NVIDIA's apt mirror has it as
 #    ros-humble-magic-enum but the apt index didn't pick it up. Build from
 #    source — it's a single header + cmake install.
-log "  pre-flight: apt update + missing apt deps + magic_enum source install"
+log "  pre-flight: apt update + missing apt deps + TensorRT + magic_enum source install"
 apt-get update -qq 2>&1 | tail -3 || true
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ros-humble-xacro \
@@ -254,6 +254,12 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ros-humble-foxglove-msgs \
     ros-humble-camera-calibration-parsers \
     ros-humble-ament-cmake-clang-format 2>&1 | tail -3 || true
+
+# TensorRT lives in a separate derived image, `fish-r2b-tensorrt-base:latest`
+# (see docker/fish-r2b-tensorrt-base.Dockerfile), to keep the canonical
+# `fish-r2b-base` lean. Per-benchmark Dockerfiles pick the right parent
+# (fish-r2b-base for non-DNN, fish-r2b-tensorrt-base for DNN benchmarks)
+# via logic in build_benchmark_image.sh.
 
 # CV-CUDA — needed by isaac_ros_image_proc's pad_node etc. Not in any apt
 # repo we have; fetch x86_64 cuda12 debs from GitHub releases.
