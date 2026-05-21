@@ -88,7 +88,15 @@ clone https://github.com/NVIDIA-ISAAC-ROS/ros2_benchmark.git    release-3.2
 clone https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git  release-3.2
 clone https://github.com/christianrauch/apriltag_ros.git        master    || \
     clone https://github.com/christianrauch/apriltag_ros.git    main
+# vision_opencv: clone but skip cv_bridge subpkg (CMake 4 FindBoost breakage).
+# image_geometry IS required from source — image_pipeline's image_proc needs
+# its header at build time and there's no humble apt package shipping it.
+# apt's ros-humble-cv-bridge satisfies the runtime cv_bridge dep.
 clone https://github.com/ros-perception/vision_opencv.git       humble
+if [ -d "$R2B_WS_HOME/src/vision_opencv/cv_bridge" ]; then
+    touch "$R2B_WS_HOME/src/vision_opencv/cv_bridge/COLCON_IGNORE"
+    log "  marked cv_bridge/ COLCON_IGNORE (apt binary used instead)"
+fi
 clone https://github.com/ros-perception/image_pipeline.git      humble
 
 # ─── 3. Patches ────────────────────────────────────────────────────────────
@@ -169,12 +177,17 @@ else
     PACKAGES_UP_TO=(ros2_benchmark apriltag_ros image_proc)
 fi
 log "  packages-up-to: ${PACKAGES_UP_TO[*]}"
-# CMake 4.x removed FindBoost; cv_bridge still uses legacy `find_package(Boost COMPONENTS ...)`.
-# CMAKE_POLICY_VERSION_MINIMUM=3.30 lets CMake 4.x behave as 3.30 for these old projects,
-# preserving FindBoost while keeping CUDA::nvtx3 (needed by isaac_ros_common, requires >= 3.25).
+# CMake 4.x removed FindBoost; some legacy ROS packages still use
+# `find_package(Boost COMPONENTS ...)`. Two policy levers together:
+#   CMAKE_POLICY_VERSION_MINIMUM=3.30  bumps the floor cmake_minimum_required.
+#   CMAKE_POLICY_DEFAULT_CMP0167=OLD   forces every project's CMP0167 to OLD
+#                                       (use legacy FindBoost) regardless of
+#                                       their declared cmake_minimum_required.
 colcon build \
     --packages-up-to "${PACKAGES_UP_TO[@]}" \
-    --cmake-args "-DCMAKE_POLICY_VERSION_MINIMUM=3.30" 2>&1 | tail -25
+    --cmake-args \
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.30" \
+        "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD" 2>&1 | tail -25
 
 # ─── 7. Done ───────────────────────────────────────────────────────────────
 log "DONE — to use the workspace in this shell, run:"

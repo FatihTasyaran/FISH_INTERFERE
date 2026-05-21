@@ -1,0 +1,133 @@
+Sunum notları — 27 Nisan 2026
+==============================
+
+Bugün varılan nokta
+-------------------
+
+FISH boru hattı end-to-end Autoware üzerinde çalıştı:
+  - 1 GPU container (pointcloud_container, pid=1173)
+  - 14,576 GPU kernel + 4,772 type-2 SYNC + 3,700 memcpy yakalandı
+  - Stream-bridge attribution %99.9 kapsama: %37 same-tid time-window
+    (Rule A) + %62 stream-claim bridge (Rule B) + %0.1 oort residual
+
+13 GPU-aktif callback için 3 figür × 13 = 39 SVG/PNG üretildi:
+  - fig1: skeleton (LCS subseq) + collapsed branch summary
+  - fig2: subseq backbone + LCS substring overlay (gold)
+  - fig3: full conditional graph — skeleton + per-position branch
+    trie + absolute & conditional probability labels
+
+Tüm node'lara hover tooltip (nsys per-correlationId stats):
+  - CPU: api name, observation count, duration min/median/max
+  - SM: grid/block dims, registers/thread, shared memory
+  - CE: bytes, throughput, duration
+
+Index sayfası: http://localhost:8765/notes/skeleton_index.html
+N ← E formatında nicknames (parent node ← subscribed entity), per-callback
+subseq + substr length kolonları, fig1/fig2/fig3 thumbnails.
+
+
+Tartışılan terminoloji ayrımı
+-----------------------------
+
+İki farklı "period" kavramı var, karıştırılmamalı:
+
+1. Process-level period (orjinal G5 spec, notes/phase_detector.txt)
+   - Bir frame'in (örn. lidar scan) tüm GPU işi
+   - Sınır: cudaStreamSynchronize + >5ms idle gap
+   - BİRDEN ÇOK callback çağrısını içerir
+   - INIT/WARMUP/STEADY/TAIL/COALESCED/UNKNOWN sınıflandırması
+   - PROCESS başlangıcı = INIT period (cuInit, cuLibraryLoadData burst)
+
+2. Callback invocation (callback-level)
+   - Bir ros2:callback_start → ros2:callback_end aralığı
+   - Tek callback'in tek tetiklenmesi
+   - F#1696'nın 45 invocation'ı = 45 process-level period boyunca fire
+     etti (her frame'de bir kez). İnvocation ≠ period.
+
+
+Şu an figürlerde olan / olmayan
+-------------------------------
+
+Olan:
+  - Tek-callback Typed DAG (per invocation, signature ile gruplanmış)
+  - Stream-bridge attribution (callback time window dışına bile çıkan
+    GPU work bağlanabiliyor)
+  - Per-shape phase class (dominant / anomaly / variant) +
+    LCS skeleton + conditional graph
+
+Olmayan:
+  - Process-level period boundary detection
+  - Frame-bazlı end-to-end zincir görünümü
+  - Period başlangıçtaki INIT phase (cuInit, cuLibraryLoadData)
+    sınıflandırması (callback-shape level INIT-token skoru her
+    callback'te 0 — beklendiği gibi, çünkü init phase callback
+    fire etmeden önce olur)
+
+
+Process-level period extraction yapılınca ne kazanılır
+------------------------------------------------------
+
+  - End-to-end frame latency istatistikleri (jitter dahil)
+  - Bottleneck callback tespiti (zincirde en uzun süren)
+  - Concurrency analizi: aynı stream'de seri mi, farklı stream'lerde
+    paralel mi
+  - EDD-like task graph çıkarma: skeleton + period →
+    heterogeneous task model
+  - Phase classification (G5: INIT/STEADY/TAIL) — period'lar üzerinde
+
+Şu an FISH graph + skeleton index var; eksik olan ikisini birleştiren
+period extractor. notes/immediate_work.txt #0'da spec mevcut —
+yapacağımız zaman dökümanı temel olarak orada.
+
+
+Period extraction'ın mekanizması
+--------------------------------
+
+FISH graph zaten zincir topology'sini encode ediyor:
+  - L2 edges: F (callback) → E (publishes topic), E (subscribes) → F
+  - L3 propagated: callback'ler arası mesaj-akışı zinciri
+
+Period extractor:
+  1. Graph'tan callback chain'ini al (örn. F#a → F#b → F#c)
+  2. Trace'ten her F'in invocation timestamp'lerini al
+  3. Aynı mesaj akışını taşıyan zincirin start–end'ini bir period
+     olarak etiketle
+  4. O period içinde her callback'in mevcut skeleton'unu kullan
+  5. Period-level metrik: total frame latency, callback gap'leri,
+     concurrency, phase class (INIT/STEADY/TAIL)
+
+
+Paper-grade bulgular
+--------------------
+
+H1. Host-mediated stream serialization
+  Hem Autoware (TRT) hem yolo (PyTorch+ORT) workload'ında 0
+  cudaStreamWaitEvent + 100% cudaStreamSynchronize. Yani gerçek
+  GPU-side cross-stream wait yok; streamler host tarafından
+  serialize ediliyor.
+  → src→dst stream edges deterministic ÇIKARILAMIYOR; per-stream
+    sync count deterministic, edges heuristic time-proximity.
+  → Paper'da iki regime ayırt edilebilir: regime-A
+    (host-mediated, real-world ROS+CUDA workloads) ve regime-B
+    (GPU-side wait, gerçek workload'da nadir).
+
+H2. Conditional / variant DAG yapısı
+  F#1696 (45 inv, 25 sig, 23-token skeleton):
+  Tüm 39 non-trivial invocation aynı 5×memset → 2×H2D →
+  7×launch → 1×D2H çekirdeğini paylaşıyor. Variant'lar bu
+  çekirdeğe ekstra memset/launch ekliyor; anomaly'ler 7 yerine
+  20+ kernel launch ediyor (büyük voxel/pointcloud branch'leri).
+  → "Common backbone + conditional branches" hipotezi onaylandı.
+
+H3. Streams 7/13/14 dominant
+  Pointcloud TRT pipeline 9 stream kullanıyor ama sadece 3'ü ana
+  iş yükünü taşıyor (s7=3080, s14=1034, s13=650 sync). Diğer 6
+  stream toplam 1-2 sync (auxiliary). TRT'nin "one-stream-per-engine"
+  pattern'ı.
+
+H4. Anomaly detection için robust istatistik gerekli
+  Heavy-tailed dağılımlarda mean ± k·σ küçük outlier'ları
+  yakalamıyor (büyük outlier'lar σ'yu şişiriyor). İhtiyaç:
+  median + MAD (modified z-score) + trivially-small ratio test.
+  Üç testin OR'i 6 anomaly yakaladı (5 büyük + 1 trivial), pure
+  mean±σ sadece 2 büyük yakaladı.

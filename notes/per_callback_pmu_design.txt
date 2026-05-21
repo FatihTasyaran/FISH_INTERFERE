@@ -1,0 +1,267 @@
+FISH per-callback PMU integration — two-gear design
+=====================================================
+
+Goal
+----
+Add CPU-side performance attribution (per callback invocation) to FISH,
+augmenting the existing typed-DAG model with measured bytes/flops/
+bandwidth. Two granularity tiers ("gears"), shipped incrementally so
+each is independently usable + paper-track useful.
+
+
+Gear 1 — "Bytes touched per callback" (the simplest useful thing)
+=================================================================
+
+Hypothesis
+----------
+For cache scheduling reasoning, the only thing we strictly need to
+measure online is the total volume of data each callback touches.
+Cache-hierarchy capacity is static (read once from /sys/devices/...);
+classification ("does this fit in L1 / L2 / L3?") is offline.
+
+Online measurement (single counter)
+-----------------------------------
+  Δbytes_L1 = (LOADS + STORES) × access_width
+or equivalently
+  Δbytes_L1 = MEM_INST_RETIRED.ALL_LOADS  +
+              MEM_INST_RETIRED.ALL_STORES
+              (in bytes per cache-line if vectorised)
+
+  ΔT = callback_end_ts − callback_start_ts
+
+Read at callback boundaries → 2 perf_event_read calls per callback,
+overhead ~200 ns / invocation.
+
+Online counters needed: 1 (per-thread or per-core+sched_switch).
+Multiplexing: not required.
+
+Derived quantities (offline, post-process)
+------------------------------------------
+  WS_estimate ≤ Δbytes_L1   (upper bound; reuse double-counts)
+
+  fits-in-L1   if  WS_estimate < L1_size
+  fits-in-L2   if  L1 < WS_estimate < L2_size
+  fits-in-L3   if  L2 < WS_estimate < L3_size
+  DRAM-bound   if  WS_estimate > L3_size
+
+  achieved_BW_L1 = Δbytes / ΔT  (already enough to plot first-order)
+
+Cache scheduling reasoning (offline, from FISH graph + bytes)
+-------------------------------------------------------------
+  Per callback chain (frame):
+    Σ WS_estimate vs LLC_size
+      → if Σ > LLC: frame DRAM-bound regardless of ordering.
+      → if Σ < LLC: ordering matters; small-WS callbacks first
+        improves cache reuse.
+
+  Per pair (A, B) on the same core:
+    if WS_B  > L1_size  then A's L1 is evicted before A's next call.
+    if WS_B  > L2_size  then A's L2 is evicted too.
+    if Σ_A,B > LLC_size then both displace each other.
+
+  Used as:
+    - WCRT term: cold-cache penalty when WS predecessor > Lk
+    - scheduling guidance: avoid colocating high-WS callbacks
+      on the same core
+
+What FISH adds beyond standalone PMU profiling
+----------------------------------------------
+  - Per-callback attribution is "free": we already know the start/end
+    timestamps + tid.
+  - Cross-callback comparison (same tid runs several callbacks).
+  - Combination with the existing GPU-side typed DAG → joint
+    heterogeneous footprint per callback.
+
+Overhead
+--------
+  ~200 ns / callback × callback rate. On Autoware (~10 kHz callback
+  rate per process) → ~2 ms/sec total = 0.2% — comfortable.
+
+Status: designed, not implemented.
+
+
+Gear 2 — "Per-callback CARM" (full roofline placement)
+======================================================
+
+Hypothesis
+----------
+With 3 counters per callback, we can place each invocation as a point
+on the Cache-Aware Roofline Model: arithmetic intensity, achieved
+bandwidth, achieved performance — all derivable, no extra inference.
+This delivers what CARM Tool delivers application-wide, but at
+per-callback dynamic granularity.
+
+Online measurement (3 counters)
+-------------------------------
+  Δflops      = FP_ARITH_INST_RETIRED.* (scalar + SIMD, width-weighted)
+  Δbytes_L1   = MEM_INST_RETIRED.ALL_LOADS + ALL_STORES  × elem_size
+  Δbytes_DRAM = OFFCORE_REQUESTS.ALL_DATA_RD × 64
+                or UNC_M_CAS_COUNT (uncore — careful, system-wide)
+
+  ΔT = callback_end_ts − callback_start_ts
+
+Optional 4th counter:
+  LLC_MISS_RATE = LLC_MISSES / LLC_REFERENCES
+  → captures cache pressure quality even when WS estimate alone
+    is ambiguous
+
+Counter pressure
+----------------
+  Most x86 PMUs: 4–8 general counters → 3 fits without multiplex.
+  Per-thread mode adds save/restore on ctxsw (~50–100 ns); per-core
+  mode + sched_switch attribution avoids this.
+
+Derived per-callback quantities (offline)
+-----------------------------------------
+  arithmetic_intensity_L1    AI_L1   = Δflops / Δbytes_L1
+  arithmetic_intensity_DRAM  AI_DRAM = Δflops / Δbytes_DRAM
+  achieved_bandwidth         BW      = Δbytes_L1 / ΔT
+  achieved_perf      GFLOPS         = Δflops / ΔT
+                                     = AI × BW   (sanity check)
+
+CARM placement: each invocation (or each shape, after aggregation) is
+a (AI_L1, GFLOPS) point on the per-architecture roofline.
+
+  point under L1-roof but above L3-roof → L3 pressure, L1 healthy
+  point at peak ALU plateau → compute-bound
+  point on memory-bandwidth slope → memory-bound
+
+Same logic per cache level — the CARM strength.
+
+Counter taxonomy / portability fallback
+---------------------------------------
+  x86  (Intel/AMD)
+    FP:    FP_ARITH_INST_RETIRED.* (Intel), FP_RET_SSE_AVX_OPS (AMD)
+    Mem:   MEM_INST_RETIRED.ALL_LOADS / STORES
+    DRAM:  OFFCORE_REQUESTS.ALL_DATA_RD or uncore CAS counters
+  ARM
+    FP:    INST_SPEC.FP/VFP_SPEC (architecture-specific)
+    Mem:   L1D_CACHE / L1D_CACHE_REFILL
+    DRAM:  via PMU events but vendor-specific
+  RISC-V
+    Sparse PMU support; usually only INST_RETIRED + L1D events
+
+  Cross-platform abstraction layer (PAPI or libpfm) recommended.
+
+Overhead
+--------
+  ~3 perf_event_read per callback boundary × 100 ns ≈ 300 ns.
+  At 10 kHz callback rate → 0.3% — still comfortable.
+
+What FISH adds beyond CARM Tool
+-------------------------------
+  CARM Tool: whole-application static roofline placement.
+  FISH gear-2:
+    - per-callback dynamic point
+    - per shape (DAG signature) aggregated cluster on the roofline
+    - per-frame trajectory through roofline (period extractor lands)
+    - cross-callback correlation: which callbacks are
+      memory-bound vs compute-bound, on the same chain
+
+Status: designed, not implemented; depends on Gear 1 plumbing.
+
+
+Implementation roadmap
+======================
+
+Phase 1 — Plumbing (shared by both gears)
+-----------------------------------------
+  - Wrap perf_event_open in a small library
+    (postprocess/pmu_sampler.py + /opt/fish helper)
+  - Wire it into the FISH ros2 wrapper around callback_start/end
+    so that the data lands in the trace alongside ros2_trace events
+  - Add LTTng kernel tracer enable to fish trace_session.sh
+    (sched_switch first, others later) to enable per-core + sched
+    attribution as a fallback.
+
+Phase 2 — Gear 1 (bytes touched)
+--------------------------------
+  - 1 counter open per thread
+  - Per-callback Δbytes column in MongoDB ros2_trace
+  - Post-process script:
+      cache_classifier.py — read /sys cache sizes, classify each
+      callback {L1/L2/L3/DRAM}, write back into FISH F.A_v
+  - Index / viz: histogram per callback, classification bar chart
+    on skeleton index page
+
+Phase 3 — Gear 2 (CARM)
+-----------------------
+  - 2 more counters (FLOPS, DRAM bytes) opened on the same group
+    (multiplex-free)
+  - Per-shape aggregation: median AI, median BW per skeleton-position
+    branch
+  - New figure: per-callback CARM scatter; coloured by phase class
+    (dominant / anomaly / variant)
+  - Tooltip on each point: callback id, shape sig, n_invocations
+  - Overhead micro-benchmark in Verification section
+
+Phase 4 — Cache scheduling extension (paper)
+--------------------------------------------
+  - WCRT framework with WS-driven cold-cache penalty term
+  - "Cache-aware scheduling" as a derived recommendation
+  - Optional: Intel CMT (RMID per PID) for live LLC occupancy —
+    extension paragraph, not core
+
+
+Paper positioning
+=================
+
+In the related-work / contrast table:
+                        | CARM Tool        | FISH gear-2
+  granularity           | whole-application| per callback / per shape
+  trigger               | static benchmark | online from real run
+  scope                 | CPU only         | CPU + GPU joint
+  cache scheduling input| —                | yes (frame WS)
+  ROS-aware             | no               | yes
+
+In the "Algorithms" section:
+  Algorithm: Per-callback PMU sampling + post-hoc cache classification
+  Algorithm: Per-callback CARM point derivation
+
+In the "Results" section:
+  - Bytes-touched histogram per Autoware callback (gear 1)
+  - CARM scatter for pointcloud_container; clusters of dominant /
+    anomaly / variant shapes (gear 2)
+  - Overhead numbers for both gears
+  - Case study: F#1696 — anomaly shapes are DRAM-bound,
+    dominant is compute-bound (hypothesised; to verify)
+
+
+Open questions
+==============
+
+1. SIMD-width weighting for Δflops:
+   Intel FP_ARITH_INST_RETIRED has separate counters per SIMD width
+   (scalar / 128 / 256 / 512). Sum with weights (1, 2, 4, 8) for
+   double precision. AMD has equivalent. ARM more limited.
+
+2. Counter group atomicity:
+   On per-thread mode, counters in a group are read atomically.
+   Across counter groups, they're not. For 3 counters, fit in one
+   group (typically possible if hardware has ≥ 3 generic counters).
+
+3. Sched-switch attribution math:
+   Per-core mode requires interpolation between sched_switch events.
+   Some interrupts can run "between" two consecutive sched_switch
+   without their own ctxsw — handled separately by IRQ tracepoints.
+
+4. Container privileges:
+   perf_event_open + PMU access requires CAP_PERFMON or
+   perf_event_paranoid≤2. Container is already --privileged in
+   the FISH run, so this is fine; document it.
+
+5. Statistics protocol:
+   For each shape (gpu_dag signature), aggregate stats across
+   invocations. Median / IQR / outlier handling as in
+   shape_phase_classifier.
+
+6. FLOPs vs IPC:
+   Some workloads do not retire FP ops at all (control-heavy
+   callbacks). Their roofline point lies on the lower-left;
+   this is informative but the "compute ceiling" loses meaning.
+   Solution: also report "INST_RETIRED-based" intensity as a
+   secondary axis.
+
+
+Date: 2026-04-28
+Authors: Fatih Taşyaran, Claude Opus 4.7

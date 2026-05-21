@@ -1,0 +1,315 @@
+% FISH paper — outline scaffold
+% Drop into Overleaf as `paper.tex` (single-file, no extra deps).
+% Compiles with pdflatex (default Overleaf engine).
+% Double-column conference layout via IEEEtran.
+
+\documentclass[conference]{IEEEtran}
+
+% Hyphenation patterns; Overleaf has these by default
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=black,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{booktabs}
+\usepackage[normalem]{ulem}
+
+% Quick TODO marker — visible in PDF
+\newcommand{\todoit}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+\begin{document}
+
+\title{FISH: A Profiling Framework for ROS\,2 Workloads with GPU Acceleration}
+
+\author{\IEEEauthorblockN{Fatih Ta\c{s}yaran}
+\IEEEauthorblockA{Sabanc{\i} University \\
+\texttt{fatihtasyaran@sabanciuniv.edu}}}
+
+\maketitle
+
+\begin{abstract}
+\todoit{abstract — 150--200 words. State the gap: ROS\,2 task models
+ignore the GPU side; existing tracers stop at the host API. Summarise
+FISH: a four-layer extraction stack (period $\to$ shape $\to$ phase
+$\to$ stream-bridge attribution) that produces per-callback typed DAGs
+and a process-level task graph from a single trace. Headline numbers:
+13$\times$ trace volume reduction via whitelist; \textgreater 99\,\%
+attribution coverage on Autoware pointcloud; conditional GPU-DAG
+extraction with shared backbone + variant branches.}
+\end{abstract}
+
+% --- Introduction ---------------------------------------------------------
+\section{Introduction}
+\todoit{motivate: ROS\,2 + CUDA workloads in autonomous driving;
+existing trace tooling treats the GPU as opaque.}
+
+\subsection{Contributions}
+\begin{itemize}
+  \item A four-layer trace-extraction stack for ROS\,2+CUDA workloads,
+        composing period detection, shape detection, phase classification,
+        and stream-bridge attribution.
+  \item A typed DAG model (CPU/SM/CE nodes with launch / stream\_fifo /
+        cpu\_order edges) derived from CUPTI activity and ROS\,2 tracing.
+  \item Skeleton extraction via longest-common-subsequence over per-shape
+        DAGs, surfacing a common backbone plus variant branches as
+        a conditional graph.
+  \item A rule-based per-shape phase classifier
+        (\textit{dominant}, \textit{init}, \textit{shutdown}, \textit{anomaly},
+        \textit{variant}) with robust outlier detection.
+  \item An empirical study on Autoware and a custom drone stack (AAS)
+        showing host-mediated stream serialisation dominates real-world
+        workloads.
+\end{itemize}
+
+% --- Background -----------------------------------------------------------
+\section{Background}
+
+\subsection{ROS\,2}
+\todoit{node--executor--callback model, callback groups
+(MutuallyExclusive vs.\ Reentrant), composable nodes /
+component containers.}
+
+\subsection{CUDA}
+\todoit{stream model, kernel/memcpy/memset launches, runtime vs.\ driver
+API, CUPTI activity records, cudaEvent vs.\ cudaStreamSynchronize
+semantics.}
+
+% --- Related Work ---------------------------------------------------------
+\section{Related Work}
+
+\subsection{Real-time task models}
+\todoit{event-driven DAG, sporadic / periodic, EDD heterogeneous
+extensions, response-time analysis on graphs.}
+
+\subsection{Task-extraction tools}
+\todoit{ros2\_tracing, CLARA, Pipeline-aware analyses, prior work on
+inferring task structure from traces.}
+
+\subsection{Introspection tools}
+\todoit{Nsight Systems / Compute, Tracy, Perfetto, ROS-side tracers.
+Highlight the gap each one leaves.}
+
+\subsection{Cross-comparison table}
+\todoit{Table: tool $\times$ \{ROS-aware, GPU-aware, callback boundaries,
+typed DAG, period detection, anomaly detection, paper-ready figures\}.
+FISH should be the only entry with all checkmarks.}
+
+% --- Methodology ----------------------------------------------------------
+\section{Methodology}
+
+\subsection{Integrating FISH into the environment}
+\todoit{transparent \texttt{ros2} wrapper, LTTng tracepoint overlay,
+\texttt{nsys} relaunch via launch\_wrap, settings.ini knobs.}
+
+\subsection{Used and added tracepoints}
+\todoit{stock 14 events used, 17 FISH-custom events added (scheduler
+introspection, callback-link, service client, rclpy parity, action
+server). Volume + selection rationale; cite the
+\texttt{fish\_events.txt} whitelist (45$\to$31).}
+
+\subsection{FISH stable signal: reproducibility}
+\todoit{daemon dual-poll stability (component\_list +
+executor\_started); seen-non-empty / seen-non-zero guards; auto-stop
+on rosbag end. Why it matters for fair comparison runs.}
+
+% --- Observation section --------------------------------------------------
+\section{Expected vs.\ Observed Behaviour of ROS\,2 and Real Applications}
+\todoit{motivating observations: framework init dominates t=0;
+callback boundary $\neq$ task boundary; GPU side has its own
+sync regime; multi-stream serialisation is host-mediated in
+practice.}
+
+% --- FISH Model -----------------------------------------------------------
+\section{The FISH Model}
+
+\subsection{Mathematical model}
+\todoit{layers $L_{-1}$ container, $L_0$ executor, $L_1$ node,
+$L_2$ entity, $L_3$ callback. Vertex set $V$, edge set $E$, expansion
+operator $\mathcal{E}: V \to 2^V$.}
+
+\subsection{Exact chains from tracepoints}
+\todoit{per concept (process--executor, entity, callback, action,
+publish-link), the chain of LTTng events that produce each vertex / edge.
+Tabulate.}
+
+\subsection{Modelling concepts}
+\textbf{Process--executor.} \todoit{process tree, threads, executors,
+callback groups.}
+
+\textbf{Entities.} \todoit{publishers, subscriptions, services,
+clients, timers, action servers/clients.}
+
+\textbf{Actions.} \todoit{action goal/cancel/result execution.}
+
+\textbf{CPU--GPU interactions.} \todoit{callback windows on CPU side,
+typed DAG on GPU side, stream-bridge attribution joining them.}
+
+\textbf{Communication / dependency patterns.} \todoit{publish-link,
+client--server, intra-callback chains.}
+
+\subsection{Modelling CPU--GPU interaction}
+
+\subsubsection{CPU--GPU dependencies}
+\todoit{three-flag model: stream-id disambiguator, INIT non-prefix,
+oort spectrum, callback $\neq$ task. Cite
+\texttt{notes/three\_flags\_gpu\_model.txt}.}
+
+\subsubsection{Resolving multi-stream dependencies}
+\todoit{deterministic per-stream wait counts; heuristic src$\to$dst
+edges from time-proximity; finding: real workloads use
+\texttt{cudaStreamSynchronize}, not \texttt{cudaStreamWaitEvent}, so
+deterministic edge inference is unattainable for them. Reference
+\texttt{notes/host\_mediated\_stream\_sync.txt}.}
+
+\subsubsection{Conditionality on the GPU side: phase and shape detection}
+\todoit{shape signature = SHA1((pe,name) sequence $\oplus$ sorted edges).
+Phase classes: dominant / init / shutdown / anomaly / variant. Robust
+anomaly via mean+$\sigma$ OR median+MAD modified $z$ OR trivial-small
+total. Init scoring uses CUDA-init signal tokens (\texttt{cuInit},
+\texttt{cuLibraryLoadData}, \ldots).}
+
+\subsubsection{Minimising GPU task graphs}
+\todoit{LCS subseq + LCS substring across invocations $\to$
+skeleton; per-position branch trie with absolute (entry) and
+conditional (continue) probability labels.}
+
+% --- Algorithms -----------------------------------------------------------
+\section{Algorithms}
+
+\begin{algorithm}[ht]
+\caption{FISH graph generation}
+\label{alg:fish-graph}
+\begin{algorithmic}[1]
+\Require ROS\,2 LTTng trace, process snapshots
+\Ensure FISH graph $G = (V, E)$
+\todoit{vertex discovery (executor/node/entity/callback) +
+horizontal edges (entity / external / propagated /
+aggregated).}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[ht]
+\caption{GPU-DAG generation}
+\label{alg:gpu-dag}
+\begin{algorithmic}[1]
+\Require Per-pid CUPTI activity tables, callback windows
+\Ensure Per-callback typed DAG list (CPU/SM/CE)
+\todoit{stream-bridge attribution then \texttt{\_build\_invocation\_dag}
+per window; signature hash; group invocations by shape.}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[ht]
+\caption{GPU task minimisation (skeleton extraction)}
+\label{alg:skeleton}
+\begin{algorithmic}[1]
+\Require A callback's gpu\_dags
+\Ensure Skeleton sequence + per-position branch trie
+\todoit{multi-sequence LCS over CPU (or all-PE) tokens; align each
+invocation to skeleton; aggregate insertions into a trie with class
+counts.}
+\end{algorithmic}
+\end{algorithm}
+
+% --- Taskset extraction ---------------------------------------------------
+\section{Taskset Extraction from FISH}
+
+\subsection{EDD-like heterogeneous delay and dependency}
+\todoit{per task $\tau_i$: period $T_i$, CPU cost $C^{cpu}_i$,
+SM cost $C^{sm}_i$, CE cost $C^{ce}_i$, deadline $D_i$, jitter
+$J_i$, dependency edges $\rightarrow$.}
+
+\begin{algorithm}[ht]
+\caption{FISH to (modified) EDD}
+\label{alg:fish-edd}
+\begin{algorithmic}[1]
+\Require FISH graph $G$, per-callback skeletons + periods
+\Ensure Heterogeneous taskset $\Gamma$
+\todoit{walk $G$, fold callback chains into tasks, attach skeleton-
+derived costs / period statistics.}
+\end{algorithmic}
+\end{algorithm}
+
+% --- Verification ---------------------------------------------------------
+\section{Verification}
+
+\subsection{Verification of the FISH implementation}
+Two routes for ground truth:
+\begin{itemize}
+  \item Manually inspected small applications (1--3 callbacks).
+  \item Procedurally generated workloads with 10s--1000s of nodes /
+        callbacks; ground-truth taskset known by construction.
+\end{itemize}
+
+% --- Results --------------------------------------------------------------
+\section{Results}
+
+\subsection{Accuracy in component discovery}
+\todoit{expect 100\,\% on procedurally generated and on AAS / Autoware
+spot checks.}
+
+\subsection{Overhead}
+\todoit{LTTng + nsys overhead vs.\ baseline; per-callback cost in
+$\mu$s; impact on autoware response-time.}
+
+\subsection{Trace data volume}
+\todoit{whitelist effectiveness: 36.5M $\to$ 2.3M events
+(\textasciitilde 16$\times$); 1.3\,GB $\to$ 93\,MB; 17\,min $\to$
+1.5\,min ingest. Reference
+\texttt{notes/presentation\_tables\_en.html} Table~3.}
+
+\subsection{Autoware: graph and taskset properties}
+\todoit{number of executors, nodes, entities; client-server response
+turnaround; pointcloud frame latency.}
+
+\subsection{AAS and other workloads}
+\todoit{single-drone mission (takeoff/orbit/land); contrast with
+Autoware in callback density and GPU pattern.}
+
+\subsection{GPU task phases and shapes}
+\todoit{shape embeddings (UMAP), bimodal cluster of small / large
+shapes; F\#1696 case study --- 25 sigs from 45 invocations, 23-token
+skeleton common to 39/45, 6 anomalies via robust outlier rules.
+Conditional graph figure with absolute + conditional probabilities.}
+
+\subsection{Introspection: visualisations}
+\todoit{shape figure (per-callback typed DAG), process figure
+(stream-level DAG), skeleton figures (fig1/2/3), embedding scatter,
+skeleton index page. State which scientific question each answers.}
+
+% --- Conclusion -----------------------------------------------------------
+\section{Conclusion}
+\todoit{summarise: end-to-end stack, validated coverage, novel
+shape-skeleton extraction, paper-grade observations on
+host-mediated stream serialisation.}
+
+\paragraph*{Threats to validity}
+\todoit{(i) heuristic stream-edge inference for regime-A workloads;
+(ii) shape-signature granularity is sensitive (54 distinct sigs from 13
+callbacks on Autoware); (iii) period extractor not yet implemented,
+so frame-level metrics are pending; (iv) tested on x86 + NVIDIA only.}
+
+% --- Future work ----------------------------------------------------------
+\section{Future Work}
+\todoit{summary of the PhD plan: process-level period extraction
+wiring, response-time analysis on heterogeneous taskset, multi-GPU
+extension, integration with scheduling decisions.}
+
+% --- Bibliography ---------------------------------------------------------
+\bibliographystyle{IEEEtran}
+% \bibliography{refs}     % uncomment when you add refs.bib
+\begin{thebibliography}{1}
+\bibitem{ros2tracing}
+\todoit{ros2\_tracing reference}.
+\bibitem{nsys}
+\todoit{NVIDIA Nsight Systems documentation}.
+\bibitem{autoware}
+\todoit{Autoware reference}.
+\end{thebibliography}
+
+\end{document}

@@ -1,11 +1,32 @@
 {
   "rows": {
+    "isaac_ros_apriltag": {
+      "duration": "1182s rc=1",
+      "image": "fish-r2b-apriltag:latest",
+      "note": "------\n_generated_isaac_ros_apriltag.Dockerfile:7\n--------------------\n   6 |     COPY docker/_generated_isaac_ros_apriltag_setup.sh /tmp/workload_setup.sh\n   7 | >>> RUN chmod +x /tmp/workload_setup.sh && \\\n   8 | >>>     bash -lc /tmp/workload_setup.sh && \\\n   9 | >>>     rm -f /tmp/setup_isaac_workspace.sh /tmp/workload_setup.sh\n  10 |     \n--------------------\nERROR: failed to build: failed to solve: process \\\"/bin/sh -c chmod +x /tmp/workload_setup.sh &&     bash -lc /tmp/workload_setup.sh &&     rm -f /tmp/setup_isaac_workspace.sh /tmp/workload_setup.sh\\\" did not complete successfully: exit code: 1",
+      "status": "build_failed",
+      "ts": "2026-05-21T14:32:42Z"
+    },
     "isaac_ros_argus_camera": {
       "duration": "\u2014",
       "image": "",
       "note": "Argus is the Jetson camera SDK; not available on x86",
       "status": "skipped",
       "ts": "2026-05-21T13:51:30Z"
+    },
+    "isaac_ros_bi3d": {
+      "duration": "1171s rc=1",
+      "image": "fish-r2b-bi3d:latest",
+      "note": "------\n_generated_isaac_ros_bi3d.Dockerfile:7\n--------------------\n   6 |     COPY docker/_generated_isaac_ros_bi3d_setup.sh /tmp/workload_setup.sh\n   7 | >>> RUN chmod +x /tmp/workload_setup.sh && \\\n   8 | >>>     bash -lc /tmp/workload_setup.sh && \\\n   9 | >>>     rm -f /tmp/setup_isaac_workspace.sh /tmp/workload_setup.sh\n  10 |     \n--------------------\nERROR: failed to build: failed to solve: process \\\"/bin/sh -c chmod +x /tmp/workload_setup.sh &&     bash -lc /tmp/workload_setup.sh &&     rm -f /tmp/setup_isaac_workspace.sh /tmp/workload_setup.sh\\\" did not complete successfully: exit code: 1",
+      "status": "build_failed",
+      "ts": "2026-05-21T14:32:31Z"
+    },
+    "isaac_ros_bi3d_freespace": {
+      "duration": "1189s rc=1",
+      "image": "fish-r2b-bi3d_freespace:latest",
+      "note": "------\n_generated_isaac_ros_bi3d_freespace.Dockerfile:7\n--------------------\n   6 |     COPY docker/_generated_isaac_ros_bi3d_freespace_setup.sh /tmp/workload_setup.sh\n   7 | >>> RUN chmod +x /tmp/workload_setup.sh && \\\n   8 | >>>     bash -lc /tmp/workload_setup.sh && \\\n   9 | >>>     rm -f /tmp/setup_isaac_workspace.sh /tmp/workload_setup.sh\n  10 |     \n--------------------\nERROR: failed to build: failed to solve: process \\\"/bin/sh -c chmod +x /tmp/workload_setup.sh &&     bash -lc /tmp/workload_setup.sh &&     rm -f /tmp/setup_isaac_workspace.sh /tmp/workload_setup.sh\\\" did not complete successfully: exit code: 1",
+      "status": "build_failed",
+      "ts": "2026-05-21T14:32:49Z"
     },
     "isaac_ros_data_recorder_nova": {
       "duration": "\u2014",
@@ -43,5 +64,5 @@
       "ts": "2026-05-21T13:51:30Z"
     }
   },
-  "updated": "2026-05-21T13:51:30Z"
+  "updated": "2026-05-21T14:32:49Z"
 }

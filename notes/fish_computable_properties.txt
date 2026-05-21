@@ -1,0 +1,139 @@
+FISH — directly computable properties (paper-ready)
+=====================================================
+
+For the paper "Properties of Task Graph and Generated Taskset" sections.
+Each item is a property the FISH pipeline already produces (or has the
+infrastructure for, even when the aggregator script is not yet written).
+
+Markers:
+  ✓   computed end-to-end and persisted
+  ◑   tracepoints + tagging in place; per-property aggregator pending
+  ☐   pending the process-level period extractor (#0 in immediate_work)
+
+
+1. FISH graph topology (L-1 to L3)
+----------------------------------
+  ✓ Per process: executor count, executor types (ST / MT / StaticST),
+    thread counts (num_threads from fish_executor_init).
+  ✓ Per executor: callback group count + types
+    (MutuallyExclusive vs. Reentrant).
+  ✓ Per node: entity count by kind (pub / sub / cli / serv / timer),
+    callback count.
+  ✓ Per entity:
+      - QoS, message type, callback bound to it
+      - Peer counts: pub → sub fan-out, service ↔ client links
+  ✓ Cross-container external boundary edges (process A pub → process B sub).
+  ✓ Composed graph totals: |CN|, |EX|, |N|, |E|, |F|, edges grouped by
+    relation type (contains / msg / dep / external).
+  ✓ oort thread count: CUDA-active worker threads with no ROS callback
+    (TRT internals, ORT pools, ...).
+
+
+2. Callback / entity timing (CPU side)
+--------------------------------------
+  ✓ Per callback (F):
+      - Invocation count.
+      - Invocation duration distribution (start/end window length).
+  ✓ Per callback group: serialisation pattern (MX → no overlap;
+    RE → parallel allowed).
+  ✓ Inter-callback gap: time between consecutive invocations of the
+    same F → empirical period estimate.
+  ◑ Publisher → subscription latency (fish_publish_link tracepoint,
+    dedup-guarded — present in trace, aggregator pending).
+  ◑ Service round-trip latency:
+      RTT = response_received.ts − request_sent.ts
+    per client; sequence_number pairing across the request/response
+    tracepoints.
+  ◑ Action latency (per goal/cancel/result phase) — analogous formula
+    (action_execute_goal, action_execute_cancel, action_execute_result).
+  ✓ Split callback:
+      ::part1     duration (start → request_sent)
+      ::continuation duration (response_received → end)
+    Both already created as separate F vertices.
+
+
+3. GPU side (per process / per callback)
+----------------------------------------
+  ✓ Per process:
+      Total CUDA runtime calls, kernels, memcpys, memsets, syncs.
+  ✓ Per stream:
+      - Wait count (deterministic, from CUPTI SYNC table).
+      - Total kernel + memcpy time.
+      - Per-stream usage histogram (which callbacks claim it).
+  ✓ Inter-stream DAG: src → dst weighted edges
+      (heuristic time-proximity for regime-A host-mediated workloads;
+       deterministic for regime-B with cudaStreamWaitEvent).
+  ✓ Per callback:
+      - Shape signature count, distinct shape count.
+      - Streams used.
+  ✓ Per shape:
+      - Invocation count.
+      - Node mix (n_cpu / n_sm / n_ce).
+      - Streams used.
+      - Phase class — dominant / init / shutdown / anomaly / variant.
+      - Skeleton coverage % (fraction of tokens shared with backbone).
+  ✓ Per token (within a callback):
+      - Duration min / median / max.
+      - Kernel dims: grid, block, registers/thread, shared mem.
+      - Memcpy bytes, throughput.
+      - Memset bytes.
+      - CPU API name + observation count.
+  ✓ Conditional graph (per skeleton position):
+      - Branch entry probability (absolute, % of all invocations).
+      - Continue probability (conditional, % of those reaching parent).
+      - End probability (conditional, % stopping at a trie node).
+  ✓ LCS subseq + LCS substring per callback:
+      - Skeleton length, substring length.
+
+
+4. Stream-bridge attribution (process level)
+--------------------------------------------
+  ✓ callback_bound_time_frac  (Rule A): GPU calls inside callback window.
+  ✓ callback_bound_stream_frac (Rule B): bridged via stream-claim.
+  ✓ oort_frac                 (Rule C): residual not attributable.
+  ✓ oort_post_release_frac:    Rule C subset that fired after a sync.
+  ✓ Per CB attribution share: how much of each callback's GPU work
+    came from each rule.
+
+
+5. Trace-level meta
+-------------------
+  ✓ Event volume pre / post whitelist, data size.
+  ✓ Ingest throughput (docs / s).
+  ✓ Stabilisation time, run duration, detected GPU PID count,
+    launch_wrap-vs-relaunch attribution.
+
+
+6. Pending — process-level period extraction (immediate_work #0)
+----------------------------------------------------------------
+  ☐ End-to-end frame latency + jitter.
+  ☐ Per-frame phase classification (G5 spec):
+      INIT / WARMUP / STEADY / TAIL / COALESCED(N) / UNKNOWN.
+  ☐ Per-period total CPU + GPU time → EDD-like task parameters
+      (T, C_cpu, C_sm, C_ce, D, jitter).
+  ☐ Bottleneck callback per period.
+  ☐ Concurrency analysis per period:
+      same-stream serial vs. cross-stream parallel.
+  ☐ Per-period anomaly correlation:
+      "do anomaly shapes cluster in WARMUP periods?"
+
+
+Reference quantities (Autoware logging_simulator, sample-rosbag,
+fish_20260427_165116, pointcloud_container)
+-----------------------------------------------------------------
+  Graph         3,160 vertices, 5,874 edges
+                (3 CN +  9 EX + ?  N + ? E + ? F + ext)
+  Scheduler     360 exec_init, 768 cg_init, 5,276 cg_add, 520 ex_add
+  oort threads  56
+  GPU work
+    pointcloud  14,576 kernels, 49,651 runtime calls,
+                3,700 memcpys, 4,772 syncs (all type-2)
+  Attribution   Rule A 37 %, Rule B 63 %, Rule C 0.1 %
+  Callbacks     13 GPU-active (with gpu_dags), 67 GPU-touched (gpu_node)
+  Shapes        F#1696: 25 distinct from 45 invocations
+                LCS subseq=23, LCS substring=8
+  Phase classes (F#1696, σ=2.0):
+                dominant=1, anomaly=6, variant=18, shutdown=0, init=0
+
+
+Date: 2026-04-28

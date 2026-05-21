@@ -1,6 +1,6 @@
 # Isaac ROS benchmark image build + smoke-test status
 
-Auto-rendered from `tests/benchmark_status.json` — last updated **2026-05-21T13:51:30Z**
+Auto-rendered from `tests/benchmark_status.json` — last updated **2026-05-21T14:32:49Z**
 
 
 Host: `x86_64` + RTX A1000 Laptop (4 GB) + CUDA 12.6 + ROS 2 Humble + FISH.
@@ -21,9 +21,18 @@ Status legend:
 
 | ⊕ | Benchmark | Category | Image | Duration | Notes |
 |---|-----------|----------|-------|----------|-------|
-| · | `isaac_ros_apriltag` | viable |  |  |  |
-| · | `isaac_ros_bi3d` | viable |  |  |  |
-| · | `isaac_ros_bi3d_freespace` | viable |  |  |  |
+| ❌ | `isaac_ros_apriltag` | viable | `fish-r2b-apriltag:latest` | 1182s rc=1 | ------
+_generated_isaac_ros_apriltag.Dockerfile:7
+--------------------
+   6 |   … |
+| ❌ | `isaac_ros_bi3d` | viable | `fish-r2b-bi3d:latest` | 1171s rc=1 | ------
+_generated_isaac_ros_bi3d.Dockerfile:7
+--------------------
+   6 |     CO… |
+| ❌ | `isaac_ros_bi3d_freespace` | viable | `fish-r2b-bi3d_freespace:latest` | 1189s rc=1 | ------
+_generated_isaac_ros_bi3d_freespace.Dockerfile:7
+--------------------
+   … |
 | · | `isaac_ros_centerpose` | viable |  |  |  |
 | · | `isaac_ros_detectnet` | viable |  |  |  |
 | · | `isaac_ros_dnn_image_encoder` | viable |  |  |  |
@@ -54,4 +63,5 @@ Status legend:
 
 ## Roll-up
 
+- ❌ `build_failed` — 3
 - ⏭️  `skipped` — 6

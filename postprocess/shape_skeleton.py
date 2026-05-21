@@ -27,8 +27,11 @@ import sys
 from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sqlite3
+import statistics
 from shape_phase_classifier import (_extract_invocations, _per_sig_stats,
                                     _classify)
+from gpu_attribution import find_sqlite_for_pid
 
 
 CLASS_COLORS = {
@@ -38,6 +41,275 @@ CLASS_COLORS = {
     "init":     "#1976D2",   # blue
     "variant":  "#9E9E9E",   # gray
 }
+
+
+# ---------------------------------------------------------------------------
+# Rich per-correlationId stats from nsys sqlite
+# (extends gpu_attribution.load_process_cuda with the wide kernel/memcpy
+# fields we want in tooltips)
+# ---------------------------------------------------------------------------
+
+def load_rich_corr_stats(sqlite_path, pid):
+    """Return four dicts keyed by correlationId with rich CUPTI fields.
+    Used only for tooltip enrichment in shape_skeleton figures —
+    independent of the attribution pipeline."""
+    conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
+    strids = {r[0]: r[1] for r in conn.execute("SELECT id, value FROM StringIds")}
+    proc_rows = list(conn.execute(
+        "SELECT globalPid, name FROM PROCESSES WHERE pid = ?", (pid,)))
+    if not proc_rows:
+        return {}, {}, {}, {}
+    gpid_prefixes = {gp >> 24 for gp, _ in proc_rows}
+    def _owns(gtid):
+        return (gtid >> 24) in gpid_prefixes
+
+    corr_kernel, corr_memcpy, corr_memset, corr_runtime = {}, {}, {}, {}
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+
+    if "CUPTI_ACTIVITY_KIND_KERNEL" in tables:
+        for row in conn.execute(
+            "SELECT correlationId, start, end, shortName, "
+            "       gridX, gridY, gridZ, blockX, blockY, blockZ, "
+            "       registersPerThread, staticSharedMemory, "
+            "       dynamicSharedMemory, sharedMemoryExecuted, "
+            "       localMemoryPerThread, localMemoryTotal, streamId "
+            "FROM CUPTI_ACTIVITY_KIND_KERNEL"
+        ):
+            (corr, st, en, snid, gx, gy, gz, bx, by, bz,
+             regs, ssm, dsm, esm, lpt, lt, sid) = row
+            corr_kernel[corr] = {
+                "duration_ns": (en or st) - st,
+                "name": strids.get(snid, f"<{snid}>"),
+                "grid": (gx, gy, gz), "block": (bx, by, bz),
+                "registers": regs,
+                "shared_static": ssm, "shared_dyn": dsm, "shared_exec": esm,
+                "local_per_thread": lpt, "local_total": lt,
+                "stream": sid,
+            }
+
+    for row in conn.execute(
+        "SELECT correlationId, start, end, bytes, copyKind, streamId "
+        "FROM CUPTI_ACTIVITY_KIND_MEMCPY"
+    ):
+        corr, st, en, nb, kind, sid = row
+        dur = (en or st) - st
+        corr_memcpy[corr] = {
+            "duration_ns": dur,
+            "bytes": nb, "copyKind": kind,
+            "throughput_bps": (nb / (dur/1e9)) if dur > 0 and nb else None,
+            "stream": sid,
+        }
+
+    if "CUPTI_ACTIVITY_KIND_MEMSET" in tables:
+        for row in conn.execute(
+            "SELECT correlationId, start, end, bytes, value, streamId "
+            "FROM CUPTI_ACTIVITY_KIND_MEMSET"
+        ):
+            corr, st, en, nb, val, sid = row
+            corr_memset[corr] = {
+                "duration_ns": (en or st) - st,
+                "bytes": nb, "value": val, "stream": sid,
+            }
+
+    for row in conn.execute(
+        "SELECT correlationId, start, end, globalTid, nameId, returnValue "
+        "FROM CUPTI_ACTIVITY_KIND_RUNTIME"
+    ):
+        corr, st, en, gtid, nid, rv = row
+        if not _owns(gtid):
+            continue
+        corr_runtime[corr] = {
+            "duration_ns": (en or st) - st,
+            "api_name": strids.get(nid, f"<{nid}>"),
+            "return_value": rv,
+        }
+
+    conn.close()
+    return corr_kernel, corr_memcpy, corr_memset, corr_runtime
+
+
+# ---------------------------------------------------------------------------
+# Per-token aggregation of rich stats
+# ---------------------------------------------------------------------------
+
+def _human_bytes(n):
+    if n is None:
+        return "?"
+    for unit in ["B", "KB", "MB", "GB"]:
+        if abs(n) < 1024:
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n:.1f}TB"
+
+
+def _human_dur(ns):
+    if ns is None:
+        return "?"
+    if ns < 1_000:
+        return f"{ns}ns"
+    if ns < 1_000_000:
+        return f"{ns/1_000:.1f}μs"
+    if ns < 1_000_000_000:
+        return f"{ns/1_000_000:.2f}ms"
+    return f"{ns/1_000_000_000:.2f}s"
+
+
+def aggregate_token_stats(invocations, corr_kernel, corr_memcpy,
+                           corr_memset, corr_runtime):
+    """For each token (string seen in invocation sequences), aggregate
+    the rich stats of every node carrying that token across all
+    invocations. Returns {token_str: stats_dict}.
+
+    Token format follows cpu_names() output:
+      target=cpu  → "cudaLaunchKernel_v7000" (assumed CPU)
+      target=all  → "CPU:cudaLaunchKernel_v7000",
+                    "SM:memset_fill", "CE:memcpy_H2D"
+    """
+    by_token = {}
+    for inv in invocations:
+        for n in inv["dag"]["nodes"]:
+            pe = n["pe"]
+            name = n.get("name", "")
+            corr = n.get("corr_id")
+            # Reconstruct token in the same form cpu_names uses
+            if pe == "CPU":
+                token_all = "CPU:" + name
+            elif pe == "SM":
+                token_all = "SM:" + name[:20]
+            elif pe == "CE":
+                token_all = "CE:" + name
+            else:
+                continue
+            for tok in (name, token_all):
+                e = by_token.setdefault(tok, {
+                    "pe": pe, "n": 0,
+                    "durations": [], "bytes": [],
+                    "kernel_dims": [],  # (grid, block, regs, shexec)
+                    "api_count": Counter(),
+                })
+                e["n"] += 1
+                if pe == "SM" and corr in corr_kernel:
+                    k = corr_kernel[corr]
+                    e["durations"].append(k["duration_ns"])
+                    e["kernel_dims"].append(
+                        (k["grid"], k["block"], k["registers"],
+                         k["shared_exec"]))
+                elif pe == "SM" and corr in corr_memset:
+                    # memset is recorded as a SM-side fill kernel
+                    m = corr_memset[corr]
+                    e["durations"].append(m["duration_ns"])
+                    e["bytes"].append(m["bytes"])
+                elif pe == "CE":
+                    if corr in corr_memcpy:
+                        m = corr_memcpy[corr]
+                        e["durations"].append(m["duration_ns"])
+                        e["bytes"].append(m["bytes"])
+                    elif corr in corr_memset:
+                        m = corr_memset[corr]
+                        e["durations"].append(m["duration_ns"])
+                        e["bytes"].append(m["bytes"])
+                elif pe == "CPU" and corr in corr_runtime:
+                    r = corr_runtime[corr]
+                    e["durations"].append(r["duration_ns"])
+                    e["api_count"][r["api_name"]] += 1
+    return by_token
+
+
+def tooltip_for_token(token, stats):
+    """Build a multi-line tooltip string from aggregated stats."""
+    if not stats or stats["n"] == 0:
+        return ""
+    pe = stats["pe"]
+    lines = [f"{token}", f"observations: {stats['n']}"]
+    durs = stats["durations"]
+    if durs:
+        med = statistics.median(durs)
+        lines.append(
+            f"duration  min={_human_dur(min(durs))}  "
+            f"median={_human_dur(med)}  max={_human_dur(max(durs))}")
+    if pe == "SM" and stats["kernel_dims"]:
+        # All entries usually share the same dims for the same kernel name;
+        # show the most-common one.
+        dim_count = Counter(stats["kernel_dims"])
+        (grid, block, regs, shexec), n_same = dim_count.most_common(1)[0]
+        lines.append(f"grid  <<<{grid[0]},{grid[1]},{grid[2]}>>>")
+        lines.append(f"block <<<{block[0]},{block[1]},{block[2]}>>>")
+        lines.append(f"registers/thread: {regs}")
+        lines.append(f"shared mem (executed): {_human_bytes(shexec)}")
+        if len(dim_count) > 1:
+            lines.append(f"  ({n_same}/{stats['n']} share this dim profile)")
+    if pe == "SM" and stats["bytes"] and not stats["kernel_dims"]:
+        # memset_fill — bytes but no kernel dims
+        bs = [b for b in stats["bytes"] if b is not None]
+        if bs:
+            lines.append(
+                f"bytes  min={_human_bytes(min(bs))}  "
+                f"median={_human_bytes(statistics.median(bs))}  "
+                f"max={_human_bytes(max(bs))}")
+    if pe == "CE" and stats["bytes"]:
+        bs = [b for b in stats["bytes"] if b is not None]
+        if bs:
+            lines.append(
+                f"bytes  min={_human_bytes(min(bs))}  "
+                f"median={_human_bytes(statistics.median(bs))}  "
+                f"max={_human_bytes(max(bs))}")
+            if durs:
+                # throughput from medians
+                th = (statistics.median(bs) /
+                      (statistics.median(durs) / 1e9))
+                lines.append(f"throughput (median b/d): {_human_bytes(th)}/s")
+    if pe == "CPU" and stats["api_count"]:
+        top = stats["api_count"].most_common(3)
+        api_str = ", ".join(f"{a.split('_v')[0]}×{c}" for a, c in top)
+        lines.append(f"api: {api_str}")
+    return "\n".join(lines)
+
+
+def _tooltip_attr(token, token_stats):
+    """Return DOT attribute fragment ', tooltip="…"' for a single token,
+    or '' if no stats. Newlines preserved as \\n so SVG <title> shows
+    multi-line tooltip on hover."""
+    if not token_stats:
+        return ""
+    s = token_stats.get(token)
+    if s is None:
+        for prefix in ("CPU:", "SM:", "CE:"):
+            if token.startswith(prefix):
+                s = token_stats.get(token[len(prefix):])
+                break
+    if not s:
+        return ""
+    txt = tooltip_for_token(token, s)
+    if not txt:
+        return ""
+    txt = txt.replace('"', '\\"').replace('\n', '\\n')
+    return f', tooltip="{txt}"'
+
+
+def _branch_tooltip_attr(tokens, token_stats):
+    """Tooltip for a collapsed multi-token branch box (fig1/fig2). One
+    line per token with median duration so the box conveys the timing
+    profile of the whole insertion block in one hover."""
+    if not token_stats or not tokens:
+        return ""
+    lines = [f"insertion block ({len(tokens)} tokens):"]
+    for t in tokens[:12]:
+        s = token_stats.get(t)
+        if s is None:
+            for prefix in ("CPU:", "SM:", "CE:"):
+                if t.startswith(prefix):
+                    s = token_stats.get(t[len(prefix):])
+                    break
+        if s and s["durations"]:
+            med = statistics.median(s["durations"])
+            lines.append(f"  {t} — median {_human_dur(med)}")
+        else:
+            lines.append(f"  {t}")
+    if len(tokens) > 12:
+        lines.append(f"  +{len(tokens)-12} more")
+    txt = "\n".join(lines).replace('"', '\\"').replace('\n', '\\n')
+    return f', tooltip="{txt}"'
 
 
 # ---------------------------------------------------------------------------
@@ -169,25 +441,35 @@ def find_substring_in_subseq(subseq, substring):
 # ---------------------------------------------------------------------------
 
 class TrieNode:
-    __slots__ = ("token", "count", "ends_here", "children")
+    __slots__ = ("token", "count", "ends_here", "children", "class_counts")
 
     def __init__(self, token=None):
         self.token = token
         self.count = 0      # invocations passing through this node
         self.ends_here = 0  # invocations whose insertion ends exactly here
         self.children = {}
+        self.class_counts = Counter()  # phase-class breakdown of those invocations
 
 
 def build_position_trie(blocks_at_pos):
-    """blocks_at_pos: list of (tuple_of_tokens, count). Build trie."""
+    """blocks_at_pos: list of (tuple_of_tokens, class_str, count). Build trie
+    with per-node class_counts so the renderer can colour by the dominant
+    phase-class of invocations passing through each node."""
     root = TrieNode()
-    for tokens, cnt in blocks_at_pos:
+    for entry in blocks_at_pos:
+        if len(entry) == 3:
+            tokens, cls, cnt = entry
+        else:
+            # Backwards-compat: (tokens, count) → unknown class
+            tokens, cnt = entry
+            cls = "variant"
         cur = root
         for t in tokens:
             if t not in cur.children:
                 cur.children[t] = TrieNode(token=t)
             cur = cur.children[t]
             cur.count += cnt
+            cur.class_counts[cls] += cnt
         cur.ends_here += cnt
     return root
 
@@ -271,13 +553,18 @@ def _legend_dot():
     lg_pseudo [label="START / END (pseudo, not a CUDA call)",
                shape=note, fillcolor="#E1F5FE", style=filled];
 
-    // Class colours (used in fig1/fig2 collapsed boxes)
+    // Phase classes (used everywhere — fig1/fig2 collapsed boxes,
+    // fig3 trie nodes coloured by dominant class of invocations)
     lg_dom  [label="dominant", shape=box, style="filled,rounded",
              fillcolor="#2E7D32", fontcolor="white"];
     lg_anom [label="anomaly",  shape=box, style="filled,rounded",
              fillcolor="#D32F2F", fontcolor="white"];
     lg_var  [label="variant",  shape=box, style="filled,rounded",
              fillcolor="#9E9E9E", fontcolor="white"];
+    lg_init [label="init",     shape=box, style="filled,rounded",
+             fillcolor="#1976D2", fontcolor="white"];
+    lg_shut [label="shutdown", shape=box, style="filled,rounded",
+             fillcolor="#7B1FA2", fontcolor="white"];
 
     // Edge type swatches
     le_a [label="", shape=point, width=0.04];
@@ -327,6 +614,8 @@ def _legend_dot():
     lg_pseudo -> lg_dom [style=invis];
     lg_dom -> lg_anom [style=invis];
     lg_anom -> lg_var [style=invis];
+    lg_var -> lg_init [style=invis];
+    lg_init -> lg_shut [style=invis];
   }
 '''
 
@@ -336,7 +625,7 @@ def _legend_dot():
 # ---------------------------------------------------------------------------
 
 def render_skeleton_with_substring(skeleton, substring, per_inv, classes,
-                                    out_base, title):
+                                    out_base, title, token_stats=None):
     """Same backbone as figure 1 but highlight the LCS-substring portion
     of the LCS-subsequence skeleton in gold. Branches collapsed (top 15)
     as in figure 1."""
@@ -378,7 +667,7 @@ def render_skeleton_with_substring(skeleton, substring, per_inv, classes,
         in_sub = (sub_start <= idx < sub_end)
         fill = "#FFD54F" if in_sub else "#BBDEFB"
         out.append(f'    sk{idx} [label="{idx}\\n{render_label(skeleton[idx])}",'
-                   f' fillcolor="{fill}"];')
+                   f' fillcolor="{fill}"{_tooltip_attr(skeleton[idx], token_stats)}];')
 
     prev = None
     for idx in show_idxs:
@@ -411,7 +700,7 @@ def render_skeleton_with_substring(skeleton, substring, per_inv, classes,
         bid = f"br{bi}"
         out.append(f'  {bid} [label="branch ×{cnt}\\n[{len(tokens)}n]\\n{tok_str}",'
                    f' fillcolor="{col}", style="filled,rounded",'
-                   f' fontcolor="white"];')
+                   f' fontcolor="white"{_branch_tooltip_attr(list(tokens), token_stats)}];')
         out.append(f'  {anchor_from} -> {bid} [color="{col}", style=dashed];')
         out.append(f'  {bid} -> {anchor_to} [color="{col}", style=dashed];')
     out.append(_legend_dot())
@@ -438,7 +727,8 @@ def render_skeleton_with_substring(skeleton, substring, per_inv, classes,
 # ---------------------------------------------------------------------------
 
 def render_full_conditional_graph(skeleton, per_inv, classes,
-                                   total_invocations, out_base, title):
+                                   total_invocations, out_base, title,
+                                   token_stats=None):
     """For each skeleton position p, build a trie of insertion blocks
     and render it between sk_p and sk_(p+1) with probability labels.
     Edges from skeleton to trie root: absolute frequency over total
@@ -446,20 +736,22 @@ def render_full_conditional_graph(skeleton, per_inv, classes,
     flowing through that edge (also absolute, so probabilities monotone
     decrease as you go deeper)."""
 
-    # Aggregate insertions per skeleton position
-    blocks_by_pos = defaultdict(Counter)  # pos → Counter[tuple(tokens)] → count
-    direct_count_by_pos = Counter()       # invocations with NO insertion at p
+    # Aggregate insertions per skeleton position; keep class so each
+    # invocation contributes to the trie node's class_counts.
+    # blocks_by_pos[pos] → Counter[(tuple_tokens, class_str)] → count
+    blocks_by_pos = defaultdict(Counter)
+    direct_count_by_pos = Counter()  # invocations with NO insertion at p
     total_count = total_invocations
 
     for sig, inv_list in per_inv.items():
+        cls = classes.get(sig, "variant")
         for inv in inv_list:
             seq = inv["cpu_seq"]
             flags = align_to_skeleton(seq, skeleton)
             seen_positions = set()
             for skel_idx, tokens in insertions_between_skeleton(seq, flags):
-                blocks_by_pos[skel_idx][tuple(tokens)] += 1
+                blocks_by_pos[skel_idx][(tuple(tokens), cls)] += 1
                 seen_positions.add(skel_idx)
-            # For positions where this invocation had NO insertion, count direct
             for p in range(-1, len(skeleton)):
                 if p not in seen_positions:
                     direct_count_by_pos[p] += 1
@@ -475,7 +767,7 @@ def render_full_conditional_graph(skeleton, per_inv, classes,
 
     # Skeleton (full, not truncated, since user wants the entirety)
     for i, tok in enumerate(skeleton):
-        out.append(f'  sk{i} [label="{i}\\n{render_label(tok)}", fillcolor="#BBDEFB"];')
+        out.append(f'  sk{i} [label="{i}\\n{render_label(tok)}", fillcolor="#BBDEFB"{_tooltip_attr(tok, token_stats)}];')
 
     # START / END pseudo-nodes
     out.append('  sk_start [label="START\\n(pseudo, before any\\nskeleton match)", '
@@ -502,6 +794,22 @@ def render_full_conditional_graph(skeleton, per_inv, classes,
         node_counter[0] += 1
         return nid
 
+    def node_color(trie_node):
+        """Pick fill colour from the dominant phase-class of invocations
+        passing through this trie node. Falls back to neutral orange if
+        no class info available."""
+        if not trie_node.class_counts:
+            return "#FFE0B2"
+        top_class = trie_node.class_counts.most_common(1)[0][0]
+        return CLASS_COLORS.get(top_class, "#FFE0B2")
+
+    def font_color(fill):
+        """White text on dark fills (anomaly red, dominant green,
+        shutdown purple, init blue), black on light fills."""
+        return "white" if fill in ("#D32F2F", "#2E7D32",
+                                    "#7B1FA2", "#1976D2",
+                                    "#9E9E9E") else "black"
+
     def render_trie_node_children(node, dot_id, anchor_to):
         # Internal edges use CONDITIONAL probability — "given you've
         # reached `node`, what's the chance of taking this transition?".
@@ -514,18 +822,23 @@ def render_full_conditional_graph(skeleton, per_inv, classes,
                 f'({cond:.0f}%)", style=dashed, color="#666", fontcolor="#666"];')
         for tok, child in node.children.items():
             cid = new_id()
-            out.append(f'  {cid} [label="{render_label(tok)}", fillcolor="#FFE0B2"];')
+            fill = node_color(child)
+            fc = font_color(fill)
+            out.append(f'  {cid} [label="{render_label(tok)}", '
+                       f'fillcolor="{fill}", fontcolor="{fc}"{_tooltip_attr(tok, token_stats)}];')
             cond = 100.0 * child.count / node.count if node.count else 0
-            out.append(f'  {dot_id} -> {cid} [label="×{child.count} ({cond:.0f}%)"];')
+            out.append(f'  {dot_id} -> {cid} [label="×{child.count} ({cond:.0f}%)",'
+                       f' color="{fill}"];')
             render_trie_node_children(child, cid, anchor_to)
 
     for skel_idx in sorted(blocks_by_pos):
         block_list = list(blocks_by_pos[skel_idx].items())
         if not block_list:
             continue
-        # blocks_by_pos[skel_idx] is Counter[tuple] -> count
-        block_pairs = [(list(toks), cnt) for toks, cnt in block_list]
-        trie = build_position_trie(block_pairs)
+        # blocks_by_pos[skel_idx] is Counter[(tuple, class)] -> count
+        block_triples = [(list(toks), cls, cnt)
+                         for (toks, cls), cnt in block_list]
+        trie = build_position_trie(block_triples)
         if skel_idx == -1:
             anchor_from = "sk_start"
             anchor_to = "sk0" if skeleton else "sk_end"
@@ -537,16 +850,17 @@ def render_full_conditional_graph(skeleton, per_inv, classes,
             anchor_to = f"sk{skel_idx + 1}"
 
         # First-level branches from anchor_from (skeleton node).
-        # These edges report ABSOLUTE probability (% of all kept
-        # invocations entering this branch). Internal edges within the
-        # trie report CONDITIONAL probability (% of those who reached
-        # the parent node).
+        # These edges report ABSOLUTE probability. Edge + node colour
+        # match the dominant class of invocations that take this branch.
         for tok, child in trie.children.items():
             cid = new_id()
-            out.append(f'  {cid} [label="{render_label(tok)}", fillcolor="#FFE0B2"];')
+            fill = node_color(child)
+            fc = font_color(fill)
+            out.append(f'  {cid} [label="{render_label(tok)}", '
+                       f'fillcolor="{fill}", fontcolor="{fc}"{_tooltip_attr(tok, token_stats)}];')
             pct = 100.0 * child.count / total_count
             out.append(f'  {anchor_from} -> {cid} [label="×{child.count} (abs {pct:.0f}%)",'
-                       f' style=dashed, color="#888"];')
+                       f' style=dashed, color="{fill}"];')
             render_trie_node_children(child, cid, anchor_to)
 
     out.append(_legend_dot())
@@ -567,7 +881,8 @@ def render_full_conditional_graph(skeleton, per_inv, classes,
         return None, None
 
 
-def render_conditional_graph(skeleton, per_inv, classes, out_base, title):
+def render_conditional_graph(skeleton, per_inv, classes, out_base, title,
+                              token_stats=None):
     """Figure 1: skeleton backbone + top-15 branch summary boxes."""
     # Aggregate insertion blocks: key = (skeleton_idx, tuple(block_tokens))
     block_counts = Counter()
@@ -652,7 +967,7 @@ def render_conditional_graph(skeleton, per_inv, classes, out_base, title):
         bid = f"br{bi}"
         out.append(f'  {bid} [label="branch ×{cnt}\\n[{len(tokens)}n]\\n{tok_str}",'
                    f' fillcolor="{col}", style="filled,rounded",'
-                   f' fontcolor="white"];')
+                   f' fontcolor="white"{_branch_tooltip_attr(list(tokens), token_stats)}];')
         out.append(f'  {anchor_from} -> {bid} [color="{col}", style=dashed];')
         out.append(f'  {bid} -> {anchor_to} [color="{col}", style=dashed];')
 
@@ -715,6 +1030,32 @@ def main():
     invs, v = _extract_invocations(args.session, args.f_id)
     if not invs:
         raise SystemExit("No invocations.")
+
+    # Rich per-correlationId nsys stats for tooltip enrichment.
+    # Walk the graph parents to recover the EX pid, then load the matching
+    # nsys sqlite. Token-level aggregation is computed once and shared
+    # across all 3 figures.
+    import graph_store
+    _G_for_pid = graph_store.load_graph(args.session, "__main__")
+    _pid = None
+    _child_parent = {}
+    for _nid, _data in _G_for_pid.nodes(data=True):
+        for _c in _data["v"].Z_v:
+            _child_parent[_c] = _nid
+    _cur = args.f_id
+    while _cur in _child_parent:
+        _cur = _child_parent[_cur]
+        if _G_for_pid.nodes[_cur]["v"].t_v == "EX":
+            _pid = _G_for_pid.nodes[_cur]["v"].A_v.get("pid")
+            break
+    token_stats = None
+    if _pid is not None:
+        _nsys_dir = os.path.expanduser(f"~/fish_traces/{args.session}/nsys")
+        _sql = find_sqlite_for_pid(_nsys_dir, _pid)
+        if _sql:
+            _ck, _cm, _cms, _cr = load_rich_corr_stats(_sql, _pid)
+            token_stats = aggregate_token_stats(invs, _ck, _cm, _cms, _cr)
+            print(f"[skel] tooltip stats for {len(token_stats)} distinct tokens")
 
     # Augment each invocation with its cpu_seq for re-use
     seqs = []
@@ -850,7 +1191,8 @@ def main():
                   f"|skel|={len(skeleton_subseq)}")
         base = base_root + ("_fig1" if args.figure == "all" else "")
         svg, png = render_conditional_graph(
-            skeleton_subseq, per_inv, classes, base, title1)
+            skeleton_subseq, per_inv, classes, base, title1,
+            token_stats=token_stats)
         if svg: print(f"[skel] fig1 → {svg} / {png}")
 
     if args.figure in ("2", "all") and skeleton_subseq:
@@ -859,7 +1201,8 @@ def main():
                   f"|substring|={len(skeleton_substr)}")
         base = base_root + "_fig2"
         svg, png = render_skeleton_with_substring(
-            skeleton_subseq, skeleton_substr, per_inv, classes, base, title2)
+            skeleton_subseq, skeleton_substr, per_inv, classes, base, title2,
+            token_stats=token_stats)
         if svg: print(f"[skel] fig2 → {svg} / {png}")
 
     if args.figure in ("3", "all") and skeleton_subseq:
@@ -870,7 +1213,8 @@ def main():
                   f"N% of those reaching the parent node take this transition.")
         base = base_root + "_fig3"
         svg, png = render_full_conditional_graph(
-            skeleton_subseq, per_inv, classes, n_kept, base, title3)
+            skeleton_subseq, per_inv, classes, n_kept, base, title3,
+            token_stats=token_stats)
         if svg: print(f"[skel] fig3 → {svg} / {png}")
 
 

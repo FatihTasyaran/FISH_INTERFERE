@@ -85,7 +85,8 @@ def _build_invocation_dag(calls, kernels_by_corr, memcpys_by_corr,
             gpu_idx = len(nodes)
             nodes.append({"idx": gpu_idx, "pe": "SM",
                           "name": krow.get("short_name", "<anon>"),
-                          "stream": int(krow["streamId"] or 0)})
+                          "stream": int(krow["streamId"] or 0),
+                          "corr_id": corr})
             edges.append((cpu_idx, gpu_idx, "launch"))
             streams_used.add(krow["streamId"])
         elif mrow is not None:
@@ -94,14 +95,16 @@ def _build_invocation_dag(calls, kernels_by_corr, memcpys_by_corr,
             direction = {1:"H2D",2:"D2H",3:"D2D",8:"H2H"}.get(kind, f"k{kind}")
             nodes.append({"idx": gpu_idx, "pe": "CE",
                           "name": f"memcpy_{direction}",
-                          "stream": int(mrow["streamId"] or 0)})
+                          "stream": int(mrow["streamId"] or 0),
+                          "corr_id": corr})
             edges.append((cpu_idx, gpu_idx, "launch"))
             streams_used.add(mrow["streamId"])
         elif msrow is not None:
             gpu_idx = len(nodes)
             nodes.append({"idx": gpu_idx, "pe": "SM",
                           "name": "memset_fill",
-                          "stream": int(msrow["streamId"] or 0)})
+                          "stream": int(msrow["streamId"] or 0),
+                          "corr_id": corr})
             edges.append((cpu_idx, gpu_idx, "launch"))
             streams_used.add(msrow["streamId"])
 
