@@ -141,10 +141,11 @@ HAS_PATCH=0
     echo "source /opt/ros/humble/setup.bash"
     echo "rosdep install -i -r --from-paths src --rosdistro humble -y 2>&1 | tail -5 || true"
     echo ""
-    echo "# Final colcon build — base policies + patch additions cascade in"
+    echo "# Final colcon build — fish-r2b-base already supplies cmake 3.27 + base deps."
+    echo "# (Isaac ROS uses \$<INSTALL_PREFIX> in target props, banned by CMake 4.x.)"
     echo "colcon build \\"
     echo "    --packages-up-to ${BENCHMARK}_benchmark isaac_ros_benchmark \$PATCH_EXTRA_COLCON_TARGETS \\"
-    echo "    --cmake-args -DCMAKE_POLICY_VERSION_MINIMUM=3.30 -DCMAKE_POLICY_DEFAULT_CMP0167=OLD \$PATCH_EXTRA_CMAKE_ARGS"
+    echo "    --cmake-args \$PATCH_EXTRA_CMAKE_ARGS"
 } > "$WORKLOAD_SCRIPT"
 chmod +x "$WORKLOAD_SCRIPT"
 

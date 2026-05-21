@@ -71,7 +71,10 @@ clone() {
     local branch=$2
     local dst="$R2B_WS_HOME/src/$(basename "$url" .git)"
     if [ -d "$dst" ]; then
-        log "exists, skipping clone: $(basename "$dst")"
+        # Reset any prior sed modifications so patches re-apply to pristine
+        # source — keeps the patch stage idempotent across iterations.
+        log "exists, resetting + skipping clone: $(basename "$dst")"
+        git -C "$dst" checkout -- . 2>/dev/null || true
     else
         log "clone $url @ $branch"
         git -C "$R2B_WS_HOME/src" clone --depth 1 --branch "$branch" "$url"
@@ -132,6 +135,64 @@ if [ "$MODE" = "gpu" ]; then
     clone https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_apriltag.git        release-3.2
     clone https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nitros.git          release-3.2
     clone https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pipeline.git  release-3.2
+    # negotiated: NITROS depends on this for topic negotiation, not in apt
+    # and not in the public rosdistro. Clone osrf's source — it's a small
+    # pure-ROS pkg.
+    if [ ! -d "$R2B_WS_HOME/src/negotiated" ]; then
+        git -C "$R2B_WS_HOME/src" clone --depth 1 \
+            https://github.com/osrf/negotiated.git negotiated || \
+            warn "  failed to clone osrf/negotiated"
+    fi
+
+    # Patch isaac_ros_gxf — Core target's INTERFACE_LINK_LIBRARIES references
+    # magic_enum::magic_enum but the CMakeLists never runs find_package
+    # nor ament_export_dependencies for it, so downstream pkgs choke at
+    # set_target_properties because the target was never imported.
+    GXF_CMAKE="$R2B_WS_HOME/src/isaac_ros_nitros/isaac_ros_gxf/CMakeLists.txt"
+    if [ -f "$GXF_CMAKE" ] && ! grep -q "ament_export_dependencies(magic_enum)" "$GXF_CMAKE"; then
+        sed -i '/find_package(ament_cmake_auto REQUIRED)/a find_package(magic_enum REQUIRED)' "$GXF_CMAKE"
+        sed -i '/^ament_export_targets(export_/a ament_export_dependencies(magic_enum)' "$GXF_CMAKE"
+        log "  patched: isaac_ros_gxf find_package(magic_enum) + ament_export_dependencies"
+    fi
+
+    # VPI 4 renamed VPIImagePlanePitchLinear::data → ::pBase AND tightened
+    # the type to VPIByte* (unsigned char*). Isaac ROS 3.2 source still
+    # assigns templated pointer types directly. Two sed passes:
+    #   1. .planes[N].data       → .planes[N].pBase
+    #   2. .planes[N].pBase = X; → .planes[N].pBase = reinterpret_cast<VPIByte*>(X);
+    # The cast is idempotent for VPIByte* values (e.g. image_flip's case)
+    # and necessary for templated/non-byte assignments (e.g. tensorops).
+    VPI_PATCHED=0
+    for src in $(grep -rlE '\.planes\[[^]]*\]\.(data|pBase)\b' \
+                  "$R2B_WS_HOME/src/isaac_ros_image_pipeline" \
+                  "$R2B_WS_HOME/src/isaac_ros_nitros" \
+                  "$R2B_WS_HOME/src/isaac_ros_apriltag" \
+                  "$R2B_WS_HOME/src/isaac_ros_benchmark" 2>/dev/null); do
+        # Pass 1: data → pBase
+        sed -i -E 's/\.planes\[([^]]*)\]\.data\b/.planes[\1].pBase/g' "$src"
+        # Pass 2: wrap pBase assignment in reinterpret_cast. -z makes sed
+        # treat the whole file as one line so the [^;]+ in the regex can
+        # span newlines (NVIDIA often splits the assignment over 2 lines).
+        # Negative lookbehind via /reinterpret_cast<VPIByte/! for idempotency.
+        sed -i -E -z 's|(\.planes\[[^]]*\]\.pBase[[:space:]]*=[[:space:]]*)(reinterpret_cast<VPIByte[[:space:]]*\*>\([^;]+\));|\1\2;|g; s|(\.planes\[[^]]*\]\.pBase[[:space:]]*=[[:space:]]*)([^;]+);|\1reinterpret_cast<VPIByte *>(\2);|g' "$src"
+        VPI_PATCHED=$((VPI_PATCHED + 1))
+    done
+    [ "$VPI_PATCHED" -gt 0 ] && log "  patched: $VPI_PATCHED file(s) for VPI 4 .data→.pBase + reinterpret_cast<VPIByte*>"
+
+    # VPI 4 dropped VPI_BACKEND_NVENC (Jetson-only). Strip every reference in
+    # source files. Most uses are switch cases or return values — deleting
+    # the line is safe because compilers tolerate missing case labels and
+    # the impl tree has fallback paths.
+    NVENC_PATCHED=0
+    for src in $(grep -rlE '\bVPI_BACKEND_NVENC\b' \
+                  "$R2B_WS_HOME/src/isaac_ros_image_pipeline" \
+                  "$R2B_WS_HOME/src/isaac_ros_nitros" \
+                  "$R2B_WS_HOME/src/isaac_ros_apriltag" \
+                  "$R2B_WS_HOME/src/isaac_ros_benchmark" 2>/dev/null); do
+        sed -i '/\bVPI_BACKEND_NVENC\b/d' "$src"
+        NVENC_PATCHED=$((NVENC_PATCHED + 1))
+    done
+    [ "$NVENC_PATCHED" -gt 0 ] && log "  patched: $NVENC_PATCHED file(s) — removed VPI_BACKEND_NVENC refs"
 fi
 
 # ─── 5. Dataset symlinks ───────────────────────────────────────────────────
@@ -177,17 +238,89 @@ else
     PACKAGES_UP_TO=(ros2_benchmark apriltag_ros image_proc)
 fi
 log "  packages-up-to: ${PACKAGES_UP_TO[*]}"
-# CMake 4.x removed FindBoost; some legacy ROS packages still use
-# `find_package(Boost COMPONENTS ...)`. Two policy levers together:
-#   CMAKE_POLICY_VERSION_MINIMUM=3.30  bumps the floor cmake_minimum_required.
-#   CMAKE_POLICY_DEFAULT_CMP0167=OLD   forces every project's CMP0167 to OLD
-#                                       (use legacy FindBoost) regardless of
-#                                       their declared cmake_minimum_required.
+
+# Pre-flight: install build deps rosdep couldn't satisfy.
+#  - ros-humble-xacro, ros-humble-camera-info-manager: exist in OSRF humble
+#    repo but apt index needs refreshing inside this layer.
+#  - magic_enum is a header-only C++ library; NVIDIA's apt mirror has it as
+#    ros-humble-magic-enum but the apt index didn't pick it up. Build from
+#    source — it's a single header + cmake install.
+log "  pre-flight: apt update + missing apt deps + magic_enum source install"
+apt-get update -qq 2>&1 | tail -3 || true
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ros-humble-xacro \
+    ros-humble-camera-info-manager \
+    ros-humble-vision-msgs \
+    ros-humble-foxglove-msgs \
+    ros-humble-camera-calibration-parsers \
+    ros-humble-ament-cmake-clang-format 2>&1 | tail -3 || true
+
+# CV-CUDA — needed by isaac_ros_image_proc's pad_node etc. Not in any apt
+# repo we have; fetch x86_64 cuda12 debs from GitHub releases.
+if [ ! -f /usr/include/nvcv/Tensor.hpp ]; then
+    log "    downloading CV-CUDA 0.10.1 debs (lib + dev)"
+    cd /tmp
+    for pkg in cvcuda-lib-0.10.1_beta-cuda12-x86_64-linux.deb cvcuda-dev-0.10.1_beta-cuda12-x86_64-linux.deb; do
+        curl -fsSLO "https://github.com/CVCUDA/CV-CUDA/releases/download/v0.10.1-beta/$pkg" || \
+            warn "  cvcuda fetch failed: $pkg"
+    done
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ./cvcuda-*.deb 2>&1 | tail -3 || true
+    rm -f /tmp/cvcuda-*.deb
+    cd "$R2B_WS_HOME"
+fi
+
+if ! cmake --find-package -DNAME=magic_enum -DCOMPILER_ID=GNU -DLANGUAGE=CXX -DMODE=EXIST 2>/dev/null; then
+    log "    magic_enum not found — installing from source"
+    rm -rf /tmp/magic_enum_src
+    git clone --depth 1 https://github.com/Neargye/magic_enum.git /tmp/magic_enum_src 2>&1 | tail -2
+    cmake -S /tmp/magic_enum_src -B /tmp/magic_enum_build \
+        -DMAGIC_ENUM_OPT_BUILD_TESTS=OFF \
+        -DMAGIC_ENUM_OPT_BUILD_EXAMPLES=OFF \
+        -DMAGIC_ENUM_OPT_INSTALL=ON 2>&1 | tail -3
+    cmake --install /tmp/magic_enum_build 2>&1 | tail -3
+    rm -rf /tmp/magic_enum_src /tmp/magic_enum_build
+fi
+
+# isaac_ros_gxf's expected_macro.hpp does `#include "magic_enum.hpp"` without
+# the magic_enum/ subdir prefix. Neargye's install lays out headers under
+# /usr/local/include/magic_enum/. Symlink each header to the parent dir so
+# both `#include "magic_enum.hpp"` and `#include <magic_enum/magic_enum.hpp>`
+# resolve correctly.
+if [ -d /usr/local/include/magic_enum ]; then
+    for hpp in /usr/local/include/magic_enum/*.hpp; do
+        [ -f "$hpp" ] || continue
+        ln -sf "$hpp" "/usr/local/include/$(basename "$hpp")"
+    done
+    log "    symlinked magic_enum/*.hpp → /usr/local/include/ (subdir-less include)"
+fi
+
+# CMake version handling for Isaac ROS sources:
+#  - CMake 4.x bans `$<INSTALL_PREFIX>` outside install(EXPORT) — isaac_ros_gxf
+#    uses it in INTERFACE_LINK_LIBRARIES of every imported library target.
+#    No policy switch in 4.x re-enables this.
+#  - CMake 4.x removed FindBoost — many legacy ROS pkgs still use it.
+# Downgrade to CMake 3.27 via pip (puts /usr/local/bin/cmake — shadows the
+# apt-installed 4.3 because /usr/local/bin precedes /usr/bin in PATH).
+# 3.27 has CUDA::nvtx3 (added in 3.26) so fish-base's other needs are still met.
+if cmake --version | head -1 | grep -qE "version (4|[5-9])\."; then
+    log "  downgrading cmake → 3.27.9 via pip (shadows apt's 4.x)"
+    python3 -m pip install --quiet --no-cache-dir cmake==3.27.9
+    hash -r
+fi
+log "  cmake at: $(command -v cmake)  $(cmake --version | head -1)"
+
+# CMake 3.27 still wants CMP0167 = OLD for legacy FindBoost code paths.
+# --event-handlers console_cohesion+ keeps each package's output together
+# (vs interleaved like console_direct+), so per-package errors stay readable.
+# console_direct+ ALSO needed for stderr (otherwise stays in log/ inside
+# the container which dies on failure).
+# Full output goes to docker build log — DO NOT tail. We need every line.
 colcon build \
     --packages-up-to "${PACKAGES_UP_TO[@]}" \
+    --event-handlers console_cohesion+ console_direct- \
     --cmake-args \
-        "-DCMAKE_POLICY_VERSION_MINIMUM=3.30" \
-        "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD" 2>&1 | tail -25
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.27" \
+        "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD" 2>&1
 
 # ─── 7. Done ───────────────────────────────────────────────────────────────
 log "DONE — to use the workspace in this shell, run:"
