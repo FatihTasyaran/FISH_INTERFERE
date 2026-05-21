@@ -146,8 +146,21 @@ fi
 # ─── 6. rosdep + colcon build ──────────────────────────────────────────────
 log "stage E — rosdep install"
 cd "$R2B_WS_HOME"
-rosdep update --rosdistro humble 2>&1 | tail -3
-rosdep install -i -r --from-paths src --rosdistro humble -y 2>&1 | tail -5
+rosdep update --rosdistro humble 2>&1 | tail -3 || warn "  rosdep update returned non-zero, continuing"
+
+# rosdep often fails partially because Isaac ROS / camera_ros / NITROS
+# packages are not in the public rosdistro index. We accept the partial
+# install — anything apt-resolvable gets installed; colcon will tell us
+# what's actually missing during the build stage.
+set +e
+rosdep install -i -r --from-paths src --rosdistro humble -y 2>&1 | tee /tmp/rosdep.log | tail -15
+ROSDEP_RC=${PIPESTATUS[0]}
+set -e
+if [ "$ROSDEP_RC" -ne 0 ]; then
+    warn "  rosdep returned exit $ROSDEP_RC (some keys unresolvable — usually Isaac ROS sister packages)"
+    warn "  unresolved keys (if any):"
+    grep -E "Cannot locate rosdep definition|ERROR:" /tmp/rosdep.log 2>/dev/null | head -10 | sed "s/^/    /"
+fi
 
 log "stage F — colcon build"
 if [ "$MODE" = "gpu" ]; then
