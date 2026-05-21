@@ -42,19 +42,20 @@ done
 
 # Build the list of benchmarks to process
 mapfile -t QUEUE < <(python3 -c "
-import json, os
+import json
 inv = json.load(open('$INV'))
 include_vram = $INCLUDE_VRAM == 1
-skip = set('$SKIP_LIST'.split(','))
-only = set('$ONLY_LIST'.split(','))
+# Filter out empty strings when the CLI args weren't given
+skip = {s for s in '$SKIP_LIST'.split(',') if s}
+only = {s for s in '$ONLY_LIST'.split(',') if s}
 for b in inv['benchmarks']:
     name = b['name']
     cat = b['category']
-    if only and name not in only:           # explicit only-list filter
+    if only and name not in only:
         continue
-    if name in skip:                        # explicit skip-list filter
+    if name in skip:
         continue
-    if cat == 'hardware_skip':              # never try these
+    if cat == 'hardware_skip':
         continue
     if cat == 'vram_risky' and not include_vram:
         continue
