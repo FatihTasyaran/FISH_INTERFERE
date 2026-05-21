@@ -74,3 +74,31 @@
 - **Smoke fail = ❌** for 14/22 is recoverable in a follow-up sweep: 12 of them just need a single additional apt package (`libnvinfer-bin`) and/or pre-downloaded DNN weights mounted in. Not architectural.
 
 For FISH framework testing: the 8 PASSing benchmarks (apriltag, dnn_image_encoder, image_proc, nitros_bridge, nvblox, stereo_image_proc, visual_slam — covering AprilTag detection, DNN image encoding, image rectification, NITROS IPC, volumetric mapping, stereo disparity, and visual SLAM) span enough different GPU workload shapes to give FISH a real ground-truth test set.
+
+---
+
+## Runtime-patched images (`-runtimepatched:latest`)
+
+For each smoke-failing benchmark above, we add the minimum missing runtime
+piece on top of the original image (creating a NEW image, leaving the original
+unchanged). Mostly `apt install libnvinfer-bin` (provides `trtexec`).
+DNN-model-needing benchmarks get a placeholder; if still fail, the model
+weights have to be NGC-downloaded in a follow-up.
+
+| Image | Smoke result | Detail |
+|---|---|---|
+| `fish-r2b-tensor_rt-runtimepatched:latest` | ❌ FAIL | 2s rc=2 — launch_test: error: trt-converter failed to convert with status: 1. |
+| `fish-r2b-bi3d_freespace-runtimepatched:latest` | ❌ FAIL | 2s rc=2 — launch_test: error: trt-converter failed to convert with status: 1. |
+| `fish-r2b-segformer-runtimepatched:latest` | ❌ FAIL | 1s rc=2 — launch_test: error: trt-converter failed to convert with status: 1. |
+| `fish-r2b-pynitros-runtimepatched:latest` | ❌ FAIL | 1s rc=2 — launch_test: error: trt-converter failed to convert with status: 1. |
+| `fish-r2b-rtdetr-runtimepatched:latest` | ❌ FAIL | 2s rc=2 — launch_test: error: trt-converter failed to convert with status: 1. |
+| `fish-r2b-segment_anything-runtimepatched:latest` | ❌ FAIL | 1s rc=1 — rc=1, no metric |
+| `fish-r2b-unet-runtimepatched:latest` | ❌ FAIL | 2s rc=2 — launch_test: error: trt-converter failed to convert with status: 1. |
+| `fish-r2b-bi3d-runtimepatched:latest` | ❌ FAIL | 1s rc=2 — launch_test: error: trt-converter failed to convert with status: 1. |
+| `fish-r2b-dope-runtimepatched:latest` | ❌ FAIL | 2s rc=2 — launch_test: error: trt-converter failed to convert with status: 1. |
+| `fish-r2b-foundationpose-runtimepatched:latest` | ❌ FAIL | 1s rc=2 — launch_test: error: trt-converter failed to convert with status: 1. |
+| `fish-r2b-centerpose-runtimepatched:latest` | ❌ FAIL | 1s rc=2 — launch_test: error: [Errno 2] No such file or directory: '/root/ros_ws/src/ros2_benchmark/assets/models/centerpose_shoe/config.pbtxt' |
+| `fish-r2b-occupancy_grid_localizer-runtimepatched:latest` | ❌ FAIL | 55s rc=1 — [component_container_mt-1] [ERROR] [1779404555.445401380] [r2b.container]: Could not find requested resource in ament index |
+| `fish-r2b-ess-runtimepatched:latest` | ❌ FAIL | 18s rc=1 — [component_container_mt-1] terminate called after throwing an instance of 'std::error_code' |
+| `fish-r2b-detectnet-runtimepatched:latest` | ❌ FAIL | 1s rc=2 — launch_test: error: [Errno 2] No such file or directory: '/root/ros_ws/src/ros2_benchmark/assets/models/peoplenet/config.pbtxt' |
+| `fish-r2b-triton-runtimepatched:latest` | ❌ FAIL | 1s rc=2 — launch_test: error: [Errno 2] No such file or directory: '/root/ros_ws/src/ros2_benchmark/assets/models/ketchup/config.pbtxt' |
