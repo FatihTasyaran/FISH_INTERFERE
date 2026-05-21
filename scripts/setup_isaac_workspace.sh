@@ -169,7 +169,12 @@ else
     PACKAGES_UP_TO=(ros2_benchmark apriltag_ros image_proc)
 fi
 log "  packages-up-to: ${PACKAGES_UP_TO[*]}"
-colcon build --packages-up-to "${PACKAGES_UP_TO[@]}" 2>&1 | tail -25
+# CMake 4.x removed FindBoost; cv_bridge still uses legacy `find_package(Boost COMPONENTS ...)`.
+# CMAKE_POLICY_VERSION_MINIMUM=3.30 lets CMake 4.x behave as 3.30 for these old projects,
+# preserving FindBoost while keeping CUDA::nvtx3 (needed by isaac_ros_common, requires >= 3.25).
+colcon build \
+    --packages-up-to "${PACKAGES_UP_TO[@]}" \
+    --cmake-args "-DCMAKE_POLICY_VERSION_MINIMUM=3.30" 2>&1 | tail -25
 
 # ─── 7. Done ───────────────────────────────────────────────────────────────
 log "DONE — to use the workspace in this shell, run:"

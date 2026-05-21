@@ -7,6 +7,7 @@ Usage:
 `status` is one of: building / build_failed / build_only / running / run_failed
                     / passed / skipped
 """
+import fcntl
 import json
 import os
 import sys
@@ -16,6 +17,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATUS_FILE = REPO_ROOT / "tests" / "benchmark_status.json"
 STATUS_MD = REPO_ROOT / "tests" / "benchmark_status.md"
+LOCK_FILE = REPO_ROOT / "tests" / ".status.lock"
 
 
 def load_status():
@@ -100,16 +102,24 @@ def main():
         print("Usage: _status_record.py <bench> <status> <duration> <image> <tail>", file=sys.stderr)
         sys.exit(1)
     name, status, dur, image, tail = sys.argv[1:6]
-    data = load_status()
-    data.setdefault("rows", {})[name] = {
-        "status": status,
-        "duration": dur,
-        "image": image,
-        "note": tail.strip(),
-        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    save_status(data)
-    render_md(data)
+
+    # Serialize concurrent writers with a file lock — parallel build workers
+    # all call this script when they finish; without flock the JSON race-
+    # conditions and rows get lost.
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOCK_FILE, "w") as lk:
+        fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
+        data = load_status()
+        data.setdefault("rows", {})[name] = {
+            "status": status,
+            "duration": dur,
+            "image": image,
+            "note": tail.strip(),
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        save_status(data)
+        render_md(data)
+        fcntl.flock(lk.fileno(), fcntl.LOCK_UN)
     print(f"[status] {name} -> {status}")
 
 

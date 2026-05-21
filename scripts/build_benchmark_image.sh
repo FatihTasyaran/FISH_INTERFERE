@@ -110,7 +110,8 @@ log "generating $DOCKERFILE + $(basename "$WORKLOAD_SCRIPT")"
     echo "rosdep install -i -r --from-paths src --rosdistro humble -y 2>&1 | tail -5 || true"
     echo ""
     echo "# Real colcon build — target the benchmark package; deps cascade in."
-    echo "colcon build --packages-up-to ${BENCHMARK}_benchmark isaac_ros_benchmark"
+    echo "# CMAKE_POLICY_VERSION_MINIMUM=3.30 makes CMake 4.x compatible with cv_bridge's legacy FindBoost."
+    echo "colcon build --packages-up-to ${BENCHMARK}_benchmark isaac_ros_benchmark --cmake-args -DCMAKE_POLICY_VERSION_MINIMUM=3.30"
 } > "$WORKLOAD_SCRIPT"
 chmod +x "$WORKLOAD_SCRIPT"
 
@@ -137,8 +138,10 @@ EOF
 
 # ─── Build ─────────────────────────────────────────────────────────────────
 log "docker build → $IMAGE_TAG"
-BUILD_LOG=$(mktemp)
-trap 'rm -f "$BUILD_LOG" "$DOCKERFILE" "$WORKLOAD_SCRIPT"' EXIT
+# Use a stable path so external monitors can tail it.
+BUILD_LOG="/tmp/fish-r2b-build-${BENCHMARK}.log"
+: > "$BUILD_LOG"
+trap 'rm -f "$DOCKERFILE" "$WORKLOAD_SCRIPT"' EXIT
 
 BUILD_START=$(date +%s)
 if docker build --progress=plain -t "$IMAGE_TAG" -f "$DOCKERFILE" "$REPO_ROOT" > "$BUILD_LOG" 2>&1; then
