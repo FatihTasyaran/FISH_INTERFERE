@@ -1,0 +1,47 @@
+{
+  "rows": {
+    "isaac_ros_argus_camera": {
+      "duration": "\u2014",
+      "image": "",
+      "note": "Argus is the Jetson camera SDK; not available on x86",
+      "status": "skipped",
+      "ts": "2026-05-21T13:51:30Z"
+    },
+    "isaac_ros_data_recorder_nova": {
+      "duration": "\u2014",
+      "image": "",
+      "note": "Requires Nova robot platform",
+      "status": "skipped",
+      "ts": "2026-05-21T13:51:30Z"
+    },
+    "isaac_ros_ess_nova": {
+      "duration": "\u2014",
+      "image": "",
+      "note": "Hawk stereo camera required",
+      "status": "skipped",
+      "ts": "2026-05-21T13:51:30Z"
+    },
+    "isaac_ros_hawk_nova": {
+      "duration": "\u2014",
+      "image": "",
+      "note": "Hawk camera + Nova platform",
+      "status": "skipped",
+      "ts": "2026-05-21T13:51:30Z"
+    },
+    "isaac_ros_moveit": {
+      "duration": "\u2014",
+      "image": "",
+      "note": "Requires Franka/UR robot arm + MoveIt setup",
+      "status": "skipped",
+      "ts": "2026-05-21T13:51:30Z"
+    },
+    "isaac_ros_perceptor_nova": {
+      "duration": "\u2014",
+      "image": "",
+      "note": "Full Nova autonomy stack on Jetson",
+      "status": "skipped",
+      "ts": "2026-05-21T13:51:30Z"
+    }
+  },
+  "updated": "2026-05-21T13:51:30Z"
+}

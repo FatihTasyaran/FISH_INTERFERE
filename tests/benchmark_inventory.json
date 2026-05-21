@@ -1,0 +1,50 @@
+{
+  "_meta": {
+    "source_repo": "https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_benchmark",
+    "source_branch": "release-3.2",
+    "host_arch": "x86_64",
+    "host_gpu": "NVIDIA RTX A1000 Laptop (4 GB VRAM, sm_86 Ampere)",
+    "generated": "2026-05-19",
+    "categories": {
+      "viable": "Should build and run on our host",
+      "vram_risky": "Large model — may OOM at 4 GB",
+      "hardware_skip": "Requires Jetson Nova / Hawk camera / robot arm — skip on x86 dev box"
+    }
+  },
+  "benchmarks": [
+    {"name": "isaac_ros_apriltag",        "scripts": ["isaac_ros_apriltag_node",        "isaac_ros_apriltag_graph"],   "workload_repo": "isaac_ros_apriltag",        "category": "viable"},
+    {"name": "isaac_ros_bi3d",            "scripts": ["isaac_ros_bi3d_node"],                                          "workload_repo": "isaac_ros_depth_segmentation","category": "viable"},
+    {"name": "isaac_ros_bi3d_freespace",  "scripts": ["isaac_ros_bi3d_fs_node",         "isaac_ros_bi3d_fs_graph"],    "workload_repo": "isaac_ros_freespace_segmentation","category": "viable"},
+    {"name": "isaac_ros_centerpose",      "scripts": ["isaac_ros_centerpose_graph"],                                   "workload_repo": "isaac_ros_pose_estimation", "category": "viable"},
+    {"name": "isaac_ros_detectnet",       "scripts": ["isaac_ros_detectnet_graph"],                                    "workload_repo": "isaac_ros_object_detection","category": "viable"},
+    {"name": "isaac_ros_dnn_image_encoder","scripts": ["isaac_ros_dnn_image_encoder_node"],                            "workload_repo": "isaac_ros_dnn_inference",   "category": "viable"},
+    {"name": "isaac_ros_dope",            "scripts": ["isaac_ros_dope_graph"],                                         "workload_repo": "isaac_ros_pose_estimation", "category": "viable"},
+    {"name": "isaac_ros_ess",             "scripts": ["isaac_ros_ess_node",             "isaac_ros_light_ess_node",
+                                                       "isaac_ros_ess_graph",            "isaac_ros_light_ess_graph"], "workload_repo": "isaac_ros_dnn_stereo_depth","category": "viable"},
+    {"name": "isaac_ros_foundationpose",  "scripts": ["isaac_ros_foundationpose_node",  "isaac_ros_foundationpose_tracking_node"], "workload_repo": "isaac_ros_pose_estimation", "category": "vram_risky"},
+    {"name": "isaac_ros_h264_decoder",    "scripts": ["isaac_ros_h264_decoder_node"],                                  "workload_repo": "isaac_ros_compression",     "category": "viable"},
+    {"name": "isaac_ros_h264_encoder",    "scripts": ["isaac_ros_h264_encoder_iframe_node","isaac_ros_h264_encoder_pframe_node"], "workload_repo": "isaac_ros_compression",     "category": "viable"},
+    {"name": "isaac_ros_image_proc",      "scripts": ["isaac_ros_rectify_node",
+                                                       "isaac_ros_resize_nv12_1920x1200_to_960x576_node",
+                                                       "isaac_ros_resize_rgb8_1920x1200_to_960x576_node"],             "workload_repo": "isaac_ros_image_pipeline",  "category": "viable"},
+    {"name": "isaac_ros_nitros_bridge",   "scripts": ["isaac_ros_nitros_bridge",        "isaac_ros_nitros_bridge_reference"], "workload_repo": "isaac_ros_nitros_bridge",   "category": "viable"},
+    {"name": "isaac_ros_nvblox",          "scripts": ["isaac_ros_nvblox_node"],                                        "workload_repo": "isaac_ros_nvblox",          "category": "viable"},
+    {"name": "isaac_ros_occupancy_grid_localizer","scripts": ["isaac_ros_grid_localizer_node"],                        "workload_repo": "isaac_ros_mapping_and_localization", "category": "viable"},
+    {"name": "isaac_ros_pynitros",        "scripts": ["isaac_ros_pynitros_unet_graph",  "isaac_ros_unet_graph_reference"], "workload_repo": "isaac_ros_nitros",          "category": "viable"},
+    {"name": "isaac_ros_rtdetr",          "scripts": ["isaac_ros_rtdetr_graph"],                                       "workload_repo": "isaac_ros_object_detection","category": "viable"},
+    {"name": "isaac_ros_segformer",       "scripts": ["isaac_ros_segformer_graph"],                                    "workload_repo": "isaac_ros_image_segmentation","category": "viable"},
+    {"name": "isaac_ros_segment_anything","scripts": ["isaac_ros_segment_anything_graph","isaac_ros_mobile_segment_anything_graph"], "workload_repo": "isaac_ros_image_segmentation","category": "vram_risky"},
+    {"name": "isaac_ros_stereo_image_proc","scripts": ["isaac_ros_disparity_node",      "isaac_ros_disparity_graph"],  "workload_repo": "isaac_ros_image_pipeline",  "category": "viable"},
+    {"name": "isaac_ros_tensor_rt",       "scripts": ["isaac_ros_tensor_rt_dope_node",  "isaac_ros_tensor_rt_ps_node"], "workload_repo": "isaac_ros_dnn_inference",   "category": "viable"},
+    {"name": "isaac_ros_triton",          "scripts": ["isaac_ros_triton_dope_node",     "isaac_ros_triton_ps_node"],   "workload_repo": "isaac_ros_dnn_inference",   "category": "viable"},
+    {"name": "isaac_ros_unet",            "scripts": ["isaac_ros_unet_graph"],                                         "workload_repo": "isaac_ros_image_segmentation","category": "viable"},
+    {"name": "isaac_ros_visual_slam",     "scripts": ["isaac_ros_visual_slam_node"],                                   "workload_repo": "isaac_ros_visual_slam",     "category": "viable"},
+
+    {"name": "isaac_ros_argus_camera",    "scripts": ["isaac_ros_argus_stereo_node"],   "workload_repo": "isaac_ros_argus_camera",    "category": "hardware_skip", "reason": "Argus is the Jetson camera SDK; not available on x86"},
+    {"name": "isaac_ros_data_recorder_nova","scripts": ["isaac_ros_data_recorder_4_hawk"], "workload_repo": "isaac_ros_data_recorder", "category": "hardware_skip", "reason": "Requires Nova robot platform"},
+    {"name": "isaac_ros_ess_nova",        "scripts": ["isaac_ros_hawk_ess_graph"],      "workload_repo": "isaac_ros_dnn_stereo_depth","category": "hardware_skip", "reason": "Hawk stereo camera required"},
+    {"name": "isaac_ros_hawk_nova",       "scripts": ["isaac_ros_hawk_node"],           "workload_repo": "isaac_ros_argus_camera",    "category": "hardware_skip", "reason": "Hawk camera + Nova platform"},
+    {"name": "isaac_ros_perceptor_nova",  "scripts": ["isaac_ros_perceptor_graph"],     "workload_repo": "isaac_ros_perceptor",       "category": "hardware_skip", "reason": "Full Nova autonomy stack on Jetson"},
+    {"name": "isaac_ros_moveit",          "scripts": [],                                "workload_repo": "isaac_ros_cumotion",        "category": "hardware_skip", "reason": "Requires Franka/UR robot arm + MoveIt setup"}
+  ]
+}
