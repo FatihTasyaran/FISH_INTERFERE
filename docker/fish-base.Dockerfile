@@ -189,4 +189,12 @@ RUN printf '%s\n' \
     >> /root/.bashrc
 
 WORKDIR /root
+
+# Clear the nvidia/cuda base image's ENTRYPOINT (= /opt/nvidia/nvidia_entrypoint.sh).
+# That wrapper exec's whatever you pass as CMD, which works for naive `docker run`
+# invocations but interacts badly with later docker commit / --entrypoint
+# overrides — committed images end up with ENTRYPOINT=["/bin/bash"] and CMD=["bash"]
+# which collides as `bash bash` ("cannot execute binary file"). Keeping ENTRYPOINT
+# empty makes the image robust to derivation by docker commit.
+ENTRYPOINT []
 CMD ["bash"]
