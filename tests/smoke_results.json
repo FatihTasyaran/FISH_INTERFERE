@@ -11,6 +11,42 @@
       "detail": "206s \u2014 benchmark metrics emitted (rc=0)",
       "image": "fish-r2b-dnn_image_encoder:latest",
       "duration_s": 206
+    },
+    "isaac_ros_image_proc": {
+      "result": "\u2705 PASS",
+      "detail": "237s \u2014 benchmark metrics emitted (rc=0)",
+      "image": "fish-r2b-image_proc:latest",
+      "duration_s": 237
+    },
+    "isaac_ros_nitros_bridge": {
+      "result": "\u2705 PASS",
+      "detail": "45s \u2014 benchmark metrics emitted (rc=1)",
+      "image": "fish-r2b-nitros_bridge:latest",
+      "duration_s": 45
+    },
+    "isaac_ros_occupancy_grid_localizer": {
+      "result": "\u274c FAIL",
+      "detail": "55s rc=1 \u2014 [component_container_mt-1] [ERROR] [1779401941.545873704] [r2b.container]: Could not find requested resource in ament index",
+      "image": "fish-r2b-occupancy_grid_localizer:latest",
+      "duration_s": 55
+    },
+    "isaac_ros_segment_anything": {
+      "result": "\u274c FAIL",
+      "detail": "1s rc=1 \u2014 rc=1, no metric emitted",
+      "image": "fish-r2b-segment_anything:latest",
+      "duration_s": 1
+    },
+    "isaac_ros_stereo_image_proc": {
+      "result": "\u2705 PASS",
+      "detail": "209s \u2014 benchmark metrics emitted (rc=0)",
+      "image": "fish-r2b-stereo_image_proc:latest",
+      "duration_s": 209
+    },
+    "isaac_ros_visual_slam": {
+      "result": "\u2705 PASS",
+      "detail": "57s \u2014 benchmark metrics emitted (rc=0)",
+      "image": "fish-r2b-visual_slam:latest",
+      "duration_s": 57
     }
   }
 }

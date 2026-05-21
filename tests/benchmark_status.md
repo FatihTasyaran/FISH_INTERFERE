@@ -1,6 +1,6 @@
 # Isaac ROS benchmark image build + smoke-test status
 
-Auto-rendered from `tests/benchmark_status.json` — last updated **2026-05-21T22:12:58Z**
+Auto-rendered from `tests/benchmark_status.json` — last updated **2026-05-21T22:48:28Z**
 
 
 Host: `x86_64` + RTX A1000 Laptop (4 GB) + CUDA 12.6 + ROS 2 Humble + FISH.
@@ -30,15 +30,11 @@ Status legend:
 | 🟦 | `isaac_ros_dope` | viable | `fish-r2b-dope:latest` | 2004s |  |
 | 🟦 | `isaac_ros_ess` | viable | `fish-r2b-ess:latest` | 304s |  |
 | 🟦 | `isaac_ros_foundationpose` | vram_risky | `fish-r2b-foundationpose:latest` | 762s |  |
-| ❌ | `isaac_ros_h264_decoder` | viable | `fish-r2b-h264_decoder:latest` | 75s rc=137 | #8 50.08 Starting >>> isaac_ros_nitros_flat_scan_type
-#8 50.09 Starting >>> isaa… |
+| · | `isaac_ros_h264_decoder` | viable |  | - |  |
 | · | `isaac_ros_h264_encoder` | viable |  | - |  |
 | 🟦 | `isaac_ros_image_proc` | viable | `fish-r2b-image_proc:latest` | 299s |  |
 | 🟦 | `isaac_ros_nitros_bridge` | viable | `fish-r2b-nitros_bridge:latest` | 461s |  |
-| ❌ | `isaac_ros_nvblox` | viable | `fish-r2b-nvblox:latest` | 646s rc=1 | ------
-_generated_isaac_ros_nvblox.Dockerfile:7
---------------------
-   6 |     … |
+| 🟦 | `isaac_ros_nvblox` | viable | `fish-r2b-nvblox:latest` | 1040s |  |
 | 🟦 | `isaac_ros_occupancy_grid_localizer` | viable | `fish-r2b-occupancy_grid_localizer:latest` | 325s |  |
 | 🟦 | `isaac_ros_pynitros` | viable | `fish-r2b-pynitros:latest` | 805s |  |
 | 🟦 | `isaac_ros_rtdetr` | viable | `fish-r2b-rtdetr:latest` | 713s |  |
@@ -58,6 +54,5 @@ _generated_isaac_ros_nvblox.Dockerfile:7
 
 ## Roll-up
 
-- 🟦 `build_only` — 21
-- ❌ `build_failed` — 2
+- 🟦 `build_only` — 22
 - ⏭️  `skipped` — 6

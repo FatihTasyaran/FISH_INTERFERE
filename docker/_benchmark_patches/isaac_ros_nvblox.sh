@@ -38,6 +38,37 @@ patch_pre_build() {
     # Simplest fix: drop the `EXPORT ${PROJECT_NAME}Targets` line from the
     # offending install commands so nothing gets exported, sidestepping the
     # strict check entirely. Library files still install to lib/.
+    # stdgpu declares FIVE FILE_SETs on its target (stdgpu_headers,
+    # stdgpu_header_implementations, stdgpu_config_header, stdgpu_backend_headers,
+    # stdgpu_backend_header_implementations). The parent's install(TARGETS ...
+    # stdgpu EXPORT ...) must explicitly include EACH OF THEM with a DESTINATION,
+    # otherwise CMake errors with "all of its interface file sets are installed".
+    # Inject all five before the closing ')'.
+    for f in /root/ros_ws/src/isaac_ros_nvblox/nvblox_ros/CMakeLists.txt \
+             /root/ros_ws/src/isaac_ros_nvblox/nvblox_ros/nvblox_core/nvblox/CMakeLists.txt; do
+        [ -f "$f" ] || continue
+        if grep -q "stdgpu" "$f" && ! grep -q "FILE_SET stdgpu_headers DESTINATION" "$f"; then
+            python3 -c "
+import re
+with open('$f') as fin: text = fin.read()
+INSERT = '''    FILE_SET stdgpu_headers DESTINATION include
+    FILE_SET stdgpu_header_implementations DESTINATION include
+    FILE_SET stdgpu_config_header DESTINATION include
+    FILE_SET stdgpu_backend_headers DESTINATION include
+    FILE_SET stdgpu_backend_header_implementations DESTINATION include
+'''
+def add_filesets(m):
+    inner = m.group(0)
+    return inner.replace(')', INSERT + ')', 1) if inner.rstrip().endswith(')') else inner
+text2 = re.sub(r'install\([^)]*\bstdgpu\b[^)]*\)', add_filesets, text, flags=re.DOTALL)
+with open('$f', 'w') as fout: fout.write(text2)
+"
+            echo '[patch:nvblox] added 5 stdgpu FILE_SETs to install in '"$(basename "$f")"
+        fi
+    done
+    # Skip the legacy nuclear removal branch — the FILE_SET HEADERS addition is the canonical fix
+    return 0
+    # OLD UNUSED CODE BELOW (kept for journal trail)
     if [ "${USE_NUCLEAR_INSTALL_REMOVAL:-1}" = "0" ]; then
         echo "[patch:nvblox] CMake 3.25 in use — skipping nuclear install(TARGETS) removal"
         return 0

@@ -85,10 +85,10 @@
       "ts": "2026-05-21T22:11:11Z"
     },
     "isaac_ros_h264_decoder": {
-      "status": "arm_only",
       "duration": "-",
       "image": "",
-      "notes": "Hard-codes Jetson L4T multimedia libs (libcuvidv4l2, libnvv4l2, libnvbufsurface, libnvbuf_fdmap, libnvbufsurftransform) \u2014 defer to ARM/Jetson host run. Stub-libs patch in docker/_benchmark_patches/isaac_ros_h264_decoder.sh would build but not run on x86."
+      "notes": "Hard-codes Jetson L4T multimedia libs (libcuvidv4l2, libnvv4l2, libnvbufsurface, libnvbuf_fdmap, libnvbufsurftransform) \u2014 defer to ARM/Jetson host run. Stub-libs patch in docker/_benchmark_patches/isaac_ros_h264_decoder.sh would build but not run on x86.",
+      "status": "arm_only"
     },
     "isaac_ros_h264_encoder": {
       "duration": "-",
@@ -125,10 +125,11 @@
       "ts": "2026-05-21T20:04:22Z"
     },
     "isaac_ros_nvblox": {
-      "status": "deferred",
-      "duration": "18 retries; cmake 3.27 + 3.25 both fail at nvblox_ros",
-      "image": "",
-      "notes": "stdgpu CMake FILE_SET HEADERS strict install(EXPORT) \u2014 affects both 3.25 and 3.27 (orig 3.27 strict check; cmake 3.25 fails differently but same package). True architectural blocker for this host. Patch covers all known prep (boost-thread/system + rviz + gflags + glog + benchmark + sqlite + submodule init + cmake pin). Re-attempt with NVIDIA isaac_ros_dev container OR release-3.3 source when available."
+      "duration": "1040s",
+      "image": "fish-r2b-nvblox:latest",
+      "note": "",
+      "status": "build_only",
+      "ts": "2026-05-21T22:48:28Z"
     },
     "isaac_ros_occupancy_grid_localizer": {
       "duration": "325s",
@@ -208,5 +209,5 @@
       "ts": "2026-05-21T19:01:00Z"
     }
   },
-  "updated": "2026-05-21T22:12:58Z"
+  "updated": "2026-05-21T22:48:28Z"
 }
