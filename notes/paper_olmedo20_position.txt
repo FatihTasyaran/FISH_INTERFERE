@@ -1,0 +1,141 @@
+Paper write-up cue: positioning vs Olmedo et al., RTAS 2020
+============================================================
+
+"Dissecting the CUDA Scheduling Hierarchy: a Performance and Predictability
+Perspective" — Sañudo Olmedo, Capodieci, Martinez, Marongiu, Bertogna —
+RTAS 2020. DOI 10.1109/RTAS48715.2020.00022.
+
+This note is the citation-ready hand-off for the related-work / methodology
+section of the FISH paper.  Companion technical detail lives in
+notes/modeling_memset.txt; this file is just the surface arguments.
+
+
+What Olmedo'20 actually delivers (verified by reading the paper)
+----------------------------------------------------------------
+
+  • Three-level GPU scheduling hierarchy (Section III, Fig. 4):
+      1. Application scheduler — driver-level "channels" in a runlist,
+         TDMA arbitration, timeslice + priority (low/medium/high).
+      2. Stream scheduler — per-application; 2 discrete CUDA-stream
+         priority levels since Maxwell.
+      3. Thread-block scheduler + LRR warp scheduler.
+
+  • Corrects the round-robin block-to-SM assumption that prior work
+    used [4][18][19]:
+      "we have shown that the policy adopted by the CUDA thread block
+       scheduler to assign blocks to SMs may be different from the
+       round-robin policy assumed in [4], [18], [19]"
+    They derive the actual allocation rule.
+
+      Eq. 2 (Maxwell/Pascal/Volta, mw=64): when an SM holds x warps,
+      a y-warp block from a *different stream* lands on the same SM iff
+          mw − x ≥ (⌊(mw−y)/y⌋ + 1) · y
+      Eq. 3: generalization with z warps already on the SM (Turing).
+      Eq. 4: load-balancing branch — drives SMs toward balance before
+      reverting to RR.
+
+  • Misprediction of an RR-only model reaches 96 % once multiple streams
+    are used (Fig. 3, 7000 launch configs).
+
+  • Reveals *hidden* inter-stream synchronisation: streams with different
+    shared-memory configurations (cudaFuncSetCacheConfig) are forced to
+    run sequentially even when streams would otherwise overlap.
+
+  • Volta-and-later have separate FP32 + INT32 pipelines: WCET of a warp
+    under a lockstep assumption is wrong; 16 FP vs 8 FP + 8 INT halves
+    Volta total time, Pascal sees no benefit (Fig. 6).
+
+  • Outside-the-SM contention (Section V):
+      – memcpy interferes with kernel runtime up to ~3× (TX2);
+      – memset interferes up to ~8× (TX2);
+      – intra-GPC interference up to ~10× compared to inter-GPC.
+
+
+Where Olmedo'20 stops, and FISH continues
+-----------------------------------------
+
+1. **GPU-only.**  The paper is strictly inside the device.  There is no
+   ROS / middleware / OS-scheduler context anywhere in the analysis.
+   Application-side callbacks are not mentioned because they are
+   out-of-scope by design.  This is the largest single gap, and the one
+   our table makes visible (rows: ROS 2 callbacks, callback↔kernel
+   attribution, hierarchical OS→Exec→GPU).
+
+2. **No callback-anchored task graph extraction.**  The paper measures
+   on benchmark kernels written for the experiment (Mandelbrot, tiny
+   vector adds).  There is no extraction from a real running
+   application stack; the work is *characterisation*, not modelling-
+   from-trace.  FISH provides the extraction layer.
+
+3. **memset's hardware path is not characterised.**  Section V-A
+   *quantifies* memset interference (Fig. 7 → ~8× on Pascal, similar on
+   Volta) — but the paper does NOT decide whether memset runs on the
+   Copy Engine or on the SMs.  In their task-set characterisation memset
+   is bundled with "compute" without an explicit hardware-path
+   commitment.
+
+   This matters because in a Typed DAG task model the placement of
+   memset (CE vs SM node) directly changes which scheduler bears the
+   load in the RTA.  Treating memset as CE — the implicit assumption in
+   many follow-up RT-GPU papers that cite Olmedo'20 — systematically
+   underestimates SM contention.
+
+   FISH commits to **memset = SM node** on Volta+, with empirical
+   support in notes/modeling_memset.txt (yolo session: 11,195 memset
+   rows on the same streams as kernel launches, stream-ordered, size
+   regime where the driver routes through the SM fill kernel).  The
+   paper write-up should:
+      (a) cite Olmedo'20 for the interference *quantification*;
+      (b) flag the *mechanism* as a gap they did not close;
+      (c) point to FISH's commitment + supporting evidence as the
+          closing contribution.
+
+
+Citation-ready sentence (drop into Related Work)
+------------------------------------------------
+
+> "Olmedo et al. dissected the internal CUDA scheduling hierarchy on
+>  NVIDIA platforms — runlist, stream FIFO, block-to-SM mapping, LRR
+>  warp scheduler — and quantified up-to-10× inter-stream memory
+>  interference [Olmedo'20].  FISH treats the hierarchy they derived as
+>  its innermost layer and connects it upward to ROS 2 callbacks and
+>  the OS executor.  In doing so we also close a residual gap in their
+>  task-set characterisation: where Olmedo'20 leaves memset bundled
+>  with "compute" without committing on its hardware path, FISH models
+>  memset as an SM-side node (see Section ⟨X⟩), consistent with NVIDIA's
+>  current driver behaviour on Volta and later."
+
+Sub-sentence variant for the comparison table caption:
+
+> "GPU scheduler ✓: Olmedo'20 dissects the on-device hierarchy.
+>  FISH places that hierarchy as one layer inside a unified
+>  ROS 2 + OS + GPU model."
+
+
+Limitations Olmedo'20 themselves admit (useful for our defence)
+---------------------------------------------------------------
+
+  • "the complete block scheduling algorithm is not yet fully
+     comprehended" — Eq. 4 holds for constant initial-warp count z′ only.
+  • Register-pressure-dominated regime: "next to impossible" to evaluate
+     experimentally.
+  • Empirical tables are architecture-dependent; Turing changed mw from
+     64 to 32 and required Eq. 3.  Future architectures will need
+     re-verification.
+
+These are honest, technical limitations.  Citing them — non-pejoratively
+— supports our "we build on these foundations" framing.
+
+
+Cross-refs
+----------
+
+  • notes/modeling_memset.txt           — full technical note on memset
+                                          hardware path + our measurements
+  • notes/paper_to_do.txt               — open items for memset section
+                                          (literature pass, dev-forum
+                                           archive, SM-counter experiment)
+  • notes/paper_important_points.txt    — main FISH contributions
+  • Downloads/related_work_with_links.md — Cluster B placement of
+                                            Olmedo'20 inside the broader
+                                            GPU-side cluster.

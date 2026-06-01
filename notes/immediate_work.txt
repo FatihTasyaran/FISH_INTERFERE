@@ -1,6 +1,36 @@
 Immediate Work Items
 ====================
 
+*** TOP PRIORITY (talk-driven, added 2026-05-28) ***
+GPU plugin keyword list -> fish_settings.ini (configurable, like tracepoints)
+-----------------------------------------------------------------------------
+Move the GPU-node detection keyword list out of source into settings, the
+same way the LTTng tracepoint whitelist is user-selectable.
+
+Today: GPU_PLUGIN_KEYWORDS is hardcoded in python/fish/launch_inspect.py
+(lines ~359-383); _is_gpu_plugin(plugin, package) (line ~384) substring-
+matches plugin.lower()+" "+package.lower() against it; results feed
+__gpu_containers__ (line ~491) and __gpu_nodes__ (line ~522) in
+launch_components.json, which launch_wrap.py reads to nsys-wrap nodes.
+
+Problem: list is baked to Autoware/Isaac names (cuda, tensorrt, yolo,
+nvblox, centerpoint, lidar_transfusion, shape_estimation, ...). The
+Volkanovich demo (perception_node / volkanovich) matched NONE, so we had to
+flag perception gpu_node=True by hand. A settings-driven list lets any user
+mark their own GPU nodes WITHOUT editing FISH source -> directly serves the
+"no source modification / one-size-fits-all / single-command install" design
+goals we pitch in the talk.
+
+Do:
+  - config/fish_settings.ini : new key, e.g. under a [launch] or [gpu] section
+        gpu_plugin_keywords = cuda, tensorrt, trt, yolo, nvblox, centerpoint,
+            lidar_transfusion, shape_estimation, ...   (current list = default)
+  - settings.py : add a comma-split list getter (mirror tracepoint-list parsing)
+  - launch_inspect.py : _is_gpu_plugin reads settings list, falls back to the
+        current constant as default if the key is absent
+  - reinstall/copy to /opt/ros/humble/fish/python/fish/ after change
+  - (stretch) expose the match mode (exact vs substring) too
+
 0. Process-level period extraction + G5 phase classifier wiring
 ---------------------------------------------------------------
 Status: spec exists (notes/phase_detector.txt §G5, also written up in
