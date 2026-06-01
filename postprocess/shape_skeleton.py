@@ -815,11 +815,18 @@ def render_full_conditional_graph(skeleton, per_inv, classes,
         # reached `node`, what's the chance of taking this transition?".
         # Edges OUT of `node` partition node.count into:
         #   ends_here + sum(child.count for child in children)
+        #
+        # We mark every conditional edge with a small empty diamond at the
+        # SOURCE side (graphviz arrowtail=odiamond). This is the standard
+        # decision/branching notation in probabilistic graphical models —
+        # without it the graph reads as a deterministic DAG, with it the
+        # reader sees "this is a stochastic transition" at a glance.
         if node.ends_here > 0:
             cond = 100.0 * node.ends_here / node.count if node.count else 0
             out.append(
                 f'  {dot_id} -> {anchor_to} [label="end ×{node.ends_here} '
-                f'({cond:.0f}%)", style=dashed, color="#666", fontcolor="#666"];')
+                f'({cond:.0f}%)", style=dashed, color="#666", fontcolor="#666",'
+                f' dir=both, arrowtail=odiamond, arrowsize=0.6];')
         for tok, child in node.children.items():
             cid = new_id()
             fill = node_color(child)
@@ -828,7 +835,7 @@ def render_full_conditional_graph(skeleton, per_inv, classes,
                        f'fillcolor="{fill}", fontcolor="{fc}"{_tooltip_attr(tok, token_stats)}];')
             cond = 100.0 * child.count / node.count if node.count else 0
             out.append(f'  {dot_id} -> {cid} [label="×{child.count} ({cond:.0f}%)",'
-                       f' color="{fill}"];')
+                       f' color="{fill}", dir=both, arrowtail=odiamond, arrowsize=0.7];')
             render_trie_node_children(child, cid, anchor_to)
 
     for skel_idx in sorted(blocks_by_pos):
@@ -852,6 +859,9 @@ def render_full_conditional_graph(skeleton, per_inv, classes,
         # First-level branches from anchor_from (skeleton node).
         # These edges report ABSOLUTE probability. Edge + node colour
         # match the dominant class of invocations that take this branch.
+        # Same diamond marker as interior edges (these are conditional too —
+        # "given we reached this skeleton position, what fraction took this
+        # branch out").
         for tok, child in trie.children.items():
             cid = new_id()
             fill = node_color(child)
@@ -860,7 +870,8 @@ def render_full_conditional_graph(skeleton, per_inv, classes,
                        f'fillcolor="{fill}", fontcolor="{fc}"{_tooltip_attr(tok, token_stats)}];')
             pct = 100.0 * child.count / total_count
             out.append(f'  {anchor_from} -> {cid} [label="×{child.count} (abs {pct:.0f}%)",'
-                       f' style=dashed, color="{fill}"];')
+                       f' style=dashed, color="{fill}", dir=both, arrowtail=odiamond,'
+                       f' arrowsize=0.7];')
             render_trie_node_children(child, cid, anchor_to)
 
     out.append(_legend_dot())

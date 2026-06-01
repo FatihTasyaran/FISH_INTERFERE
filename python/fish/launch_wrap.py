@@ -400,15 +400,18 @@ def _patch_standalone_node(gpu_nodes: set) -> None:
     Node.execute = patched_execute
 
 
-def main() -> int:
-    if len(sys.argv) < 2:
-        print(
-            "Usage: python3 -m fish.launch_wrap <package> <launch_file> [arg:=val ...]",
-            file=sys.stderr,
-        )
-        return 2
+def install_patches() -> None:
+    """Install the Node.execute / ComposableNodeContainer.execute monkey-patches.
 
-    # Install patches before importing any ros2 launch machinery
+    Reads `__gpu_containers__` and `__gpu_nodes__` from launch_components.json
+    (written by `fish.launch_inspect` or `fish.launch_test_inspect`) and patches
+    the launch_ros action classes so every wrapped process gets prefixed with
+    `nsys profile ...` at execute-time.
+
+    Idempotent and side-effect-only: call once BEFORE any LaunchService is
+    instantiated. Safe to use from any launch flow — `ros2 launch`, `launch_test`,
+    or a custom embedder.
+    """
     gpu_containers = _load_gpu_containers()
     gpu_nodes = _load_gpu_nodes()
 
@@ -436,6 +439,17 @@ def main() -> int:
             "[FISH launch_wrap] no standalone GPU nodes to wrap",
             file=sys.stderr,
         )
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print(
+            "Usage: python3 -m fish.launch_wrap <package> <launch_file> [arg:=val ...]",
+            file=sys.stderr,
+        )
+        return 2
+
+    install_patches()
 
     # Hand off to the real `ros2 launch` entry point with the user's args.
     # We use ros2cli.cli.main() which dispatches the 'launch' verb.

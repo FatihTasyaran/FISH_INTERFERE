@@ -378,6 +378,31 @@ GPU_PLUGIN_KEYWORDS = [
     # Standalone GPU node executables/packages
     "shape_estimation",
     "detection_by_tracker",
+    # Isaac ROS — NITROS-based packages are GPU-accelerated by design
+    "isaac_ros_",
+    "nitros",
+    "apriltag",
+    "dnn_image_encoder",
+    "dnn_stereo_disparity",
+    "ess",
+    "image_proc",
+    "stereo_image_proc",
+    "detectnet",
+    "centerpose",
+    "dope",
+    "rtdetr",
+    "segformer",
+    "segment_anything",
+    "bi3d",
+    "foundationpose",
+    "occupancy_grid",
+    "visual_slam",
+    "h264_decoder",
+    "h264_encoder",
+    "pynitros",
+    "unet",
+    "triton",
+    "tensor_rt",
 ]
 
 
@@ -391,30 +416,19 @@ def _is_gpu_plugin(plugin: Any, package: Any) -> bool:
     return any(kw in haystack for kw in GPU_PLUGIN_KEYWORDS)
 
 
-def inspect_launch(package: str, launch_file: str, launch_args: list) -> dict:
-    """Main entry point — returns {container_full_name: [component_spec, ...]}."""
-    _patch_captures()
+def inspect_launch_description(ld, context) -> dict:
+    """Inspect an already-loaded LaunchDescription.
 
-    # Import AFTER patching
-    from launch import LaunchService
-    from launch.launch_description_sources import AnyLaunchDescriptionSource
+    Shared core used by both `inspect_launch` (ros2 launch flow — finds the
+    launch file under a package share dir) and `fish.launch_test_inspect`
+    (launch_test flow — calls `generate_test_description()` on a test script
+    and feeds the resulting LaunchDescription here).
 
-    launch_path = _find_launch_file(package, launch_file)
-    if not launch_path:
-        raise FileNotFoundError(f"Launch file {launch_file} not found in package {package}")
-
-    service = LaunchService()
-    context = service.context
-
-    # Seed launch configurations from CLI arguments (key:=value form)
-    for arg in launch_args:
-        if ":=" in arg:
-            k, _, v = arg.partition(":=")
-            context.launch_configurations[k] = v
-
-    source = AnyLaunchDescriptionSource(launch_path)
-    ld = source.get_launch_description(context)
-
+    The caller is responsible for:
+      - Calling `_patch_captures()` BEFORE creating the LaunchDescription.
+      - Building the `context` (typically `LaunchService().context`).
+      - Seeding launch configurations from CLI arguments.
+    """
     # Walk the top-level description, letting conditions/includes expand.
     # This triggers nested generate_launch_description() calls which in turn
     # instantiate more ComposableNode / ComposableNodeContainer objects.
@@ -528,6 +542,37 @@ def inspect_launch(package: str, launch_file: str, launch_args: list) -> dict:
     result["__gpu_nodes__"] = gpu_nodes
 
     return result
+
+
+def inspect_launch(package: str, launch_file: str, launch_args: list) -> dict:
+    """Inspect a `ros2 launch <package> <launch_file>` invocation.
+
+    Locates the launch file under the package's share dir, loads it via
+    AnyLaunchDescriptionSource, then delegates to `inspect_launch_description`.
+    """
+    _patch_captures()
+
+    from launch import LaunchService
+    from launch.launch_description_sources import AnyLaunchDescriptionSource
+
+    launch_path = _find_launch_file(package, launch_file)
+    if not launch_path:
+        raise FileNotFoundError(
+            f"Launch file {launch_file} not found in package {package}"
+        )
+
+    service = LaunchService()
+    context = service.context
+
+    for arg in launch_args:
+        if ":=" in arg:
+            k, _, v = arg.partition(":=")
+            context.launch_configurations[k] = v
+
+    source = AnyLaunchDescriptionSource(launch_path)
+    ld = source.get_launch_description(context)
+
+    return inspect_launch_description(ld, context)
 
 
 def main() -> int:
