@@ -28,9 +28,9 @@ MONGO_URI = "mongodb://localhost:27017"
 INFLUX_HOST = "http://127.0.0.1:8181"
 INFLUX_TOKEN_FILE = os.path.expanduser("~/inf.tok")
 
-SKIP_DEBUG = True
-SKIP_RVIZ = True
-SKIP_PARAMSERVICE = True
+SKIP_DEBUG = False
+SKIP_RVIZ = False
+SKIP_PARAMSERVICE = False
 INCLUDE_EXTERNAL_ACTIONS = True
 
 _PARAM_TOPICS = {"/parameter_events"}
@@ -211,12 +211,32 @@ def identify_entities(mongo, nodes):
         full_name = node.A_v['full_name']
         node_handle = node.A_v['node_handle']
 
-        # Get entity info (node_info first, trace fallback for timers)
+        # Union of trace-based (fallback) + ros2-cli (node_info). Trace is the
+        # authoritative entity list (every rcl_*_init event); node_info only
+        # adds msg_type strings ros2 cli could enumerate. Either source alone
+        # silently drops data — ComponentManager exposes 3 services via
+        # rcl_service_init but ros2 node info returns Service_Servers=[]; the
+        # opposite happens when tracing starts after entity creation.
         fallback = entity_fallback_from_trace(mongo, node_handle)
-        info = mongo["node_info"].find_one({"node": full_name})
-        if info is None:
-            info = fallback
-        info["Timers"] = fallback["Timers"]
+        ni = mongo["node_info"].find_one({"node": full_name}) or {}
+
+        def _union(field):
+            merged = dict(fallback.get(field, {}))
+            for k, v in (ni.get(field, {}) or {}).items():
+                # node_info wins when it has a concrete type ("?" means unknown)
+                if k not in merged or (v and v != "?"):
+                    merged[k] = v
+            return merged
+
+        info = {
+            "Subscribers":     _union("Subscribers"),
+            "Publishers":      _union("Publishers"),
+            "Service_Servers": _union("Service_Servers"),
+            "Service_Clients": _union("Service_Clients"),
+            "Action_Servers":  _union("Action_Servers"),
+            "Action_Clients":  _union("Action_Clients"),
+            "Timers":          fallback.get("Timers", {}),  # only trace has timer periods
+        }
 
         # Store publisher info on node (for later aspect attribution)
         pubs = info.get("Publishers", {})

@@ -31,9 +31,9 @@ INFLUX_TOKEN_FILE = os.path.expanduser("~/inf.tok")
 
 TRACE_SESSION = "fish_20260412_195042"
 vertex_counter = count(1)
-SKIP_DEBUG = True
-SKIP_RVIZ = True
-SKIP_PARAMSERVICE = True  # Filter /parameter_events topic and parameter service entities
+SKIP_DEBUG = False
+SKIP_RVIZ = False
+SKIP_PARAMSERVICE = False  # Filter /parameter_events topic and parameter service entities
 INCLUDE_EXTERNAL_ACTIONS = True  # Include short-lived action clients from trace (ros2cli send_goal etc.)
 
 # ROS 2 parameter service infrastructure: auto-created topics and services
