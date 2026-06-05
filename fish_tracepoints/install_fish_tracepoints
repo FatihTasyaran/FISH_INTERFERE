@@ -176,6 +176,18 @@ copy_sources() {
         cp -r "$CLONE_DIR/rcl/rcl" "$OVERLAY_WS/src/rcl"
         log "  Copied rcl into workspace (for publish/client fire points)"
     fi
+
+    # rclcpp source — wipe+copy so any previous-patched source (with old
+    # tracepoint names) is discarded. Required after the fish_<layer>_<name>
+    # rename: image build may have patched rclcpp with the old names.
+    if $DO_CLIENT || $DO_SCHEDULER; then
+        if [ -d "$OVERLAY_WS/src/rclcpp" ]; then
+            warn "  $OVERLAY_WS/src/rclcpp exists, removing for clean state"
+            rm -rf "$OVERLAY_WS/src/rclcpp"
+        fi
+        cp -r "$CLONE_DIR/rclcpp/rclcpp" "$OVERLAY_WS/src/rclcpp"
+        log "  Copied rclcpp into workspace (for client + scheduler patches)"
+    fi
 }
 
 # ─── Tracetools C patches ───────────────────────────────────────────────────
@@ -1635,7 +1647,7 @@ build_tracetools() {
     # Verify symbols
     local so="$OVERLAY_WS/install/tracetools/lib/libtracetools.so"
     if $DO_ACTION; then
-        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_rclcpp_action_server_init"; then
+        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_fish_rclcpp_action_server_init"; then
             log "  Action symbols: OK"
         else
             err "  Action symbols: FAILED"
@@ -1643,7 +1655,7 @@ build_tracetools() {
         fi
     fi
     if $DO_RCLPY; then
-        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_rclpy_subscription_callback_added"; then
+        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_fish_rclpy_subscription_callback_added"; then
             log "  rclpy symbols: OK"
         else
             err "  rclpy symbols: FAILED"
@@ -1651,7 +1663,7 @@ build_tracetools() {
         fi
     fi
     if $DO_LINK; then
-        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_fish_publish_link"; then
+        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_fish_rclcpp_publish_link"; then
             log "  Link symbols: OK"
         else
             err "  Link symbols: FAILED"
@@ -1659,7 +1671,7 @@ build_tracetools() {
         fi
     fi
     if $DO_SCHEDULER; then
-        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_fish_executor_init"; then
+        if nm -D "$so" 2>/dev/null | grep -q "ros_trace_fish_rclcpp_executor_init"; then
             log "  Scheduler symbols: OK"
         else
             err "  Scheduler symbols: FAILED"
@@ -1812,18 +1824,18 @@ def _init():
             return
 
         for name in [
-            "ros_trace_rclpy_subscription_callback_added",
-            "ros_trace_rclpy_service_callback_added",
-            "ros_trace_rclpy_timer_callback_added",
-            "ros_trace_rclpy_timer_link_node",
+            "ros_trace_fish_rclpy_subscription_callback_added",
+            "ros_trace_fish_rclpy_service_callback_added",
+            "ros_trace_fish_rclpy_timer_callback_added",
+            "ros_trace_fish_rclpy_timer_link_node",
         ]:
             fn = getattr(_lib, name)
             fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
             fn.restype = None
 
-        _lib.ros_trace_rclpy_callback_register.argtypes = [
+        _lib.ros_trace_fish_rclpy_callback_register.argtypes = [
             ctypes.c_void_p, ctypes.c_char_p]
-        _lib.ros_trace_rclpy_callback_register.restype = None
+        _lib.ros_trace_fish_rclpy_callback_register.restype = None
 
         _lib.ros_trace_callback_start.argtypes = [
             ctypes.c_void_p, ctypes.c_bool]
@@ -1833,39 +1845,39 @@ def _init():
         _lib.ros_trace_callback_end.restype = None
 
         # Client tracepoints
-        _lib.ros_trace_rclcpp_client_request_sent.argtypes = [
+        _lib.ros_trace_fish_rclcpp_client_request_sent.argtypes = [
             ctypes.c_void_p, ctypes.c_int64]
-        _lib.ros_trace_rclcpp_client_request_sent.restype = None
+        _lib.ros_trace_fish_rclcpp_client_request_sent.restype = None
 
-        _lib.ros_trace_rclcpp_client_response_received.argtypes = [
+        _lib.ros_trace_fish_rclcpp_client_response_received.argtypes = [
             ctypes.c_void_p, ctypes.c_int64, ctypes.c_int]
-        _lib.ros_trace_rclcpp_client_response_received.restype = None
+        _lib.ros_trace_fish_rclcpp_client_response_received.restype = None
 
         # Link tracepoints (v2)
         try:
-            _lib.ros_trace_fish_publish_link.argtypes = [
+            _lib.ros_trace_fish_rclcpp_publish_link.argtypes = [
                 ctypes.c_void_p, ctypes.c_void_p]
-            _lib.ros_trace_fish_publish_link.restype = None
-            _lib.ros_trace_fish_client_link.argtypes = [
+            _lib.ros_trace_fish_rclcpp_publish_link.restype = None
+            _lib.ros_trace_fish_rclcpp_client_link.argtypes = [
                 ctypes.c_void_p, ctypes.c_void_p]
-            _lib.ros_trace_fish_client_link.restype = None
+            _lib.ros_trace_fish_rclcpp_client_link.restype = None
         except AttributeError:
             pass  # link tracepoints not installed yet
 
         # Scheduler introspection tracepoints (optional — only if --scheduler installed)
         try:
-            _lib.ros_trace_fish_executor_init.argtypes = [
+            _lib.ros_trace_fish_rclcpp_executor_init.argtypes = [
                 ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
-            _lib.ros_trace_fish_executor_init.restype = None
-            _lib.ros_trace_fish_callback_group_init.argtypes = [
+            _lib.ros_trace_fish_rclcpp_executor_init.restype = None
+            _lib.ros_trace_fish_rclcpp_callback_group_init.argtypes = [
                 ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint8]
-            _lib.ros_trace_fish_callback_group_init.restype = None
-            _lib.ros_trace_fish_cbgroup_add.argtypes = [
+            _lib.ros_trace_fish_rclcpp_callback_group_init.restype = None
+            _lib.ros_trace_fish_rclcpp_cbgroup_add.argtypes = [
                 ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p]
-            _lib.ros_trace_fish_cbgroup_add.restype = None
-            _lib.ros_trace_fish_executor_add_cbgroup.argtypes = [
+            _lib.ros_trace_fish_rclcpp_cbgroup_add.restype = None
+            _lib.ros_trace_fish_rclcpp_executor_add_cbgroup.argtypes = [
                 ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-            _lib.ros_trace_fish_executor_add_cbgroup.restype = None
+            _lib.ros_trace_fish_rclcpp_executor_add_cbgroup.restype = None
         except AttributeError:
             pass  # scheduler tracepoints not installed
 
@@ -1891,7 +1903,7 @@ def _register(callback):
         return
     cb_id = id(callback)
     symbol = _get_symbol(callback)
-    _lib.ros_trace_rclpy_callback_register(
+    _lib.ros_trace_fish_rclpy_callback_register(
         ctypes.c_void_p(cb_id), symbol.encode('utf-8'))
 
 
@@ -1899,7 +1911,7 @@ def trace_sub_cb(sub_handle_ptr, callback):
     if not _enabled:
         return
     cb_id = ctypes.c_void_p(id(callback))
-    _lib.ros_trace_rclpy_subscription_callback_added(
+    _lib.ros_trace_fish_rclpy_subscription_callback_added(
         ctypes.c_void_p(sub_handle_ptr), cb_id)
     _register(callback)
 
@@ -1908,7 +1920,7 @@ def trace_srv_cb(srv_handle_ptr, callback):
     if not _enabled:
         return
     cb_id = ctypes.c_void_p(id(callback))
-    _lib.ros_trace_rclpy_service_callback_added(
+    _lib.ros_trace_fish_rclpy_service_callback_added(
         ctypes.c_void_p(srv_handle_ptr), cb_id)
     _register(callback)
 
@@ -1917,7 +1929,7 @@ def trace_tmr_cb(tmr_handle_ptr, callback):
     if not _enabled:
         return
     cb_id = ctypes.c_void_p(id(callback))
-    _lib.ros_trace_rclpy_timer_callback_added(
+    _lib.ros_trace_fish_rclpy_timer_callback_added(
         ctypes.c_void_p(tmr_handle_ptr), cb_id)
     _register(callback)
 
@@ -1925,7 +1937,7 @@ def trace_tmr_cb(tmr_handle_ptr, callback):
 def trace_tmr_node(tmr_handle_ptr, node_handle_ptr):
     if not _enabled:
         return
-    _lib.ros_trace_rclpy_timer_link_node(
+    _lib.ros_trace_fish_rclpy_timer_link_node(
         ctypes.c_void_p(tmr_handle_ptr),
         ctypes.c_void_p(node_handle_ptr))
 
@@ -1947,7 +1959,7 @@ def trace_cb_end(callback):
 def trace_client_request_sent(client_handle_ptr, sequence_number):
     if not _enabled:
         return
-    _lib.ros_trace_rclcpp_client_request_sent(
+    _lib.ros_trace_fish_rclcpp_client_request_sent(
         ctypes.c_void_p(client_handle_ptr),
         ctypes.c_int64(sequence_number))
 
@@ -1955,7 +1967,7 @@ def trace_client_request_sent(client_handle_ptr, sequence_number):
 def trace_client_response_received(client_handle_ptr, sequence_number, response_type):
     if not _enabled:
         return
-    _lib.ros_trace_rclcpp_client_response_received(
+    _lib.ros_trace_fish_rclcpp_client_response_received(
         ctypes.c_void_p(client_handle_ptr),
         ctypes.c_int64(sequence_number),
         ctypes.c_int(response_type))
@@ -1973,7 +1985,7 @@ def trace_client_link(client_handle_ptr):
     cb = getattr(_active_cb, 'value', None)
     if cb is not None:
         try:
-            _lib.ros_trace_fish_client_link(
+            _lib.ros_trace_fish_rclcpp_client_link(
                 ctypes.c_void_p(client_handle_ptr), ctypes.c_void_p(cb))
         except (OSError, AttributeError):
             pass
@@ -1986,7 +1998,7 @@ def trace_publish_link(publisher_handle_ptr):
     cb = getattr(_active_cb, 'value', None)
     if cb is not None:
         try:
-            _lib.ros_trace_fish_publish_link(
+            _lib.ros_trace_fish_rclcpp_publish_link(
                 ctypes.c_void_p(publisher_handle_ptr), ctypes.c_void_p(cb))
         except (OSError, AttributeError):
             pass
@@ -2023,7 +2035,7 @@ def trace_executor_init(executor, executor_type, num_threads):
     if not _enabled:
         return
     try:
-        _lib.ros_trace_fish_executor_init(
+        _lib.ros_trace_fish_rclcpp_executor_init(
             ctypes.c_void_p(id(executor)),
             executor_type.encode('utf-8'),
             ctypes.c_uint32(num_threads))
@@ -2040,7 +2052,7 @@ def trace_cbgroup_init(group, group_type, automatic_add=True):
     if not _enabled:
         return
     try:
-        _lib.ros_trace_fish_callback_group_init(
+        _lib.ros_trace_fish_rclcpp_callback_group_init(
             ctypes.c_void_p(id(group)),
             group_type.encode('utf-8'),
             ctypes.c_uint8(1 if automatic_add else 0))
@@ -2059,7 +2071,7 @@ def trace_cbgroup_add(group, entity):
     try:
         handle_ptr = _entity_rcl_handle(entity)
         kind = _ENTITY_KIND.get(type(entity).__name__, 'wait')
-        _lib.ros_trace_fish_cbgroup_add(
+        _lib.ros_trace_fish_rclcpp_cbgroup_add(
             ctypes.c_void_p(id(group)),
             ctypes.c_void_p(handle_ptr),
             kind.encode('utf-8'))
@@ -2088,7 +2100,7 @@ def trace_executor_add_cbgroup(executor, group, node):
     _SEEN_EXEC_CG.add(key)
     try:
         node_ptr = _entity_rcl_handle(node)
-        _lib.ros_trace_fish_executor_add_cbgroup(
+        _lib.ros_trace_fish_rclcpp_executor_add_cbgroup(
             ctypes.c_void_p(id(executor)),
             ctypes.c_void_p(id(group)),
             ctypes.c_void_p(node_ptr))
@@ -2708,7 +2720,7 @@ verify() {
 
     if $DO_LINK; then
         local link_syms
-        link_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_fish_publish_link\|ros_trace_fish_client_link" || true)
+        link_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_fish_rclcpp_publish_link\|ros_trace_fish_rclcpp_client_link" || true)
         log "Link symbols in libtracetools.so: $link_syms (expected: 2)"
 
         if nm -D "$so" 2>/dev/null | grep -q "__fish_active_callback"; then
@@ -2720,7 +2732,7 @@ verify() {
 
     if $DO_SCHEDULER; then
         local sched_syms
-        sched_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_fish_executor_init\|ros_trace_fish_callback_group_init\|ros_trace_fish_cbgroup_add\|ros_trace_fish_executor_add_cbgroup" || true)
+        sched_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_fish_rclcpp_executor_init\|ros_trace_fish_rclcpp_callback_group_init\|ros_trace_fish_rclcpp_cbgroup_add\|ros_trace_fish_rclcpp_executor_add_cbgroup" || true)
         log "Scheduler symbols in libtracetools.so: $sched_syms (expected: 4)"
 
         local rclcpp_so="$OVERLAY_WS/install/rclcpp/lib/librclcpp.so"

@@ -217,19 +217,20 @@ run_one() {
             # fish-r2b-* images ship libnvinfer-dev but not libnvinfer-bin.
             # Isaac ROS benchmark scripts hardcode /usr/src/tensorrt/bin/trtexec
             # for ONNX→engine conversion. Quick fix: apt install (~10 s).
-            # NOTE: most images' apt lists are stale → `apt-get update` first.
+            # NOTE: most images' apt lists are stale, so apt-get update runs first.
             # Pin version to installed libnvinfer-dev (10.16.1.11-1+cuda13.2) to
             # avoid pulling 11.x which depends on libnvinfer11 (not installed).
+            # Only install libnvinfer-bin if libnvinfer-dev is already present.
+            # apriltag/image_proc/nvblox images don't have libnvinfer-dev — they
+            # don't use TensorRT — so installing trtexec would pull in a new
+            # 11.x TensorRT stack (~10 min, several hundred MB) for nothing.
+            # || true on dpkg-query so its rc=1 doesn't trip set -e.
             if [ ! -x /usr/src/tensorrt/bin/trtexec ]; then
-                NVINFER_VER=\$(dpkg-query -W -f='\${Version}' libnvinfer-dev 2>/dev/null)
-                apt-get update >/tmp/apt_update.log 2>&1 || true
+                NVINFER_VER=\$(dpkg-query -W -f='\${Version}' libnvinfer-dev 2>/dev/null || true)
                 if [ -n \"\$NVINFER_VER\" ]; then
+                    apt-get update >/tmp/apt_update.log 2>&1 || true
                     apt-get install -y \"libnvinfer-bin=\$NVINFER_VER\" >/tmp/trtexec_install.log 2>&1 || {
                         echo \"[v3] libnvinfer-bin=\$NVINFER_VER install FAILED\"; tail -20 /tmp/trtexec_install.log
-                    }
-                else
-                    apt-get install -y libnvinfer-bin >/tmp/trtexec_install.log 2>&1 || {
-                        echo '[v3] libnvinfer-bin install FAILED'; tail -20 /tmp/trtexec_install.log
                     }
                 fi
             fi

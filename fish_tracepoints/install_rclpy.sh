@@ -310,7 +310,7 @@ colcon build \
 log "  tracetools rebuilt"
 
 # Verify rclpy symbols exported
-if nm -D "$OVERLAY_WS/install/tracetools/lib/libtracetools.so" 2>/dev/null | grep -q "ros_trace_rclpy_subscription_callback_added"; then
+if nm -D "$OVERLAY_WS/install/tracetools/lib/libtracetools.so" 2>/dev/null | grep -q "ros_trace_fish_rclpy_subscription_callback_added"; then
     log "  Symbol check: OK"
 else
     err "  Symbol check: FAILED — rclpy tracepoint functions not exported"
@@ -359,27 +359,27 @@ def _init():
 
         # New rclpy tracepoints
         for name in [
-            "ros_trace_rclpy_subscription_callback_added",
-            "ros_trace_rclpy_service_callback_added",
-            "ros_trace_rclpy_timer_callback_added",
-            "ros_trace_rclpy_timer_link_node",
+            "ros_trace_fish_rclpy_subscription_callback_added",
+            "ros_trace_fish_rclpy_service_callback_added",
+            "ros_trace_fish_rclpy_timer_callback_added",
+            "ros_trace_fish_rclpy_timer_link_node",
         ]:
             fn = getattr(_lib, name)
             fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
             fn.restype = None
 
-        _lib.ros_trace_rclpy_callback_register.argtypes = [
+        _lib.ros_trace_fish_rclpy_callback_register.argtypes = [
             ctypes.c_void_p, ctypes.c_char_p]
-        _lib.ros_trace_rclpy_callback_register.restype = None
+        _lib.ros_trace_fish_rclpy_callback_register.restype = None
 
         # FISH link tracepoints (v2)
-        _lib.ros_trace_fish_client_link.argtypes = [
+        _lib.ros_trace_fish_rclcpp_client_link.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p]
-        _lib.ros_trace_fish_client_link.restype = None
+        _lib.ros_trace_fish_rclcpp_client_link.restype = None
 
-        _lib.ros_trace_fish_publish_link.argtypes = [
+        _lib.ros_trace_fish_rclcpp_publish_link.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p]
-        _lib.ros_trace_fish_publish_link.restype = None
+        _lib.ros_trace_fish_rclcpp_publish_link.restype = None
 
         # Existing tracepoints (reused for runtime)
         _lib.ros_trace_callback_start.argtypes = [
@@ -419,7 +419,7 @@ def _register(callback):
         return
     cb_id = id(callback)
     symbol = _get_symbol(callback)
-    _lib.ros_trace_rclpy_callback_register(
+    _lib.ros_trace_fish_rclpy_callback_register(
         ctypes.c_void_p(cb_id),
         symbol.encode('utf-8'))
 
@@ -429,7 +429,7 @@ def trace_sub_cb(sub_handle_ptr, callback):
     if not _enabled:
         return
     cb_id = ctypes.c_void_p(id(callback))
-    _lib.ros_trace_rclpy_subscription_callback_added(
+    _lib.ros_trace_fish_rclpy_subscription_callback_added(
         ctypes.c_void_p(sub_handle_ptr), cb_id)
     _register(callback)
 
@@ -439,7 +439,7 @@ def trace_srv_cb(srv_handle_ptr, callback):
     if not _enabled:
         return
     cb_id = ctypes.c_void_p(id(callback))
-    _lib.ros_trace_rclpy_service_callback_added(
+    _lib.ros_trace_fish_rclpy_service_callback_added(
         ctypes.c_void_p(srv_handle_ptr), cb_id)
     _register(callback)
 
@@ -449,7 +449,7 @@ def trace_tmr_cb(tmr_handle_ptr, callback):
     if not _enabled:
         return
     cb_id = ctypes.c_void_p(id(callback))
-    _lib.ros_trace_rclpy_timer_callback_added(
+    _lib.ros_trace_fish_rclpy_timer_callback_added(
         ctypes.c_void_p(tmr_handle_ptr), cb_id)
     _register(callback)
 
@@ -458,7 +458,7 @@ def trace_tmr_node(tmr_handle_ptr, node_handle_ptr):
     """Fire fish_rclpy_timer_link_node."""
     if not _enabled:
         return
-    _lib.ros_trace_rclpy_timer_link_node(
+    _lib.ros_trace_fish_rclpy_timer_link_node(
         ctypes.c_void_p(tmr_handle_ptr),
         ctypes.c_void_p(node_handle_ptr))
 
@@ -485,7 +485,7 @@ def trace_client_link(client_handle_ptr):
         return
     cb = getattr(_active_cb, 'value', None)
     if cb is not None:
-        _lib.ros_trace_fish_client_link(
+        _lib.ros_trace_fish_rclcpp_client_link(
             ctypes.c_void_p(client_handle_ptr), ctypes.c_void_p(cb))
 
 
@@ -495,7 +495,7 @@ def trace_publish_link(publisher_handle_ptr):
         return
     cb = getattr(_active_cb, 'value', None)
     if cb is not None:
-        _lib.ros_trace_fish_publish_link(
+        _lib.ros_trace_fish_rclcpp_publish_link(
             ctypes.c_void_p(publisher_handle_ptr), ctypes.c_void_p(cb))
 PYBRIDGE
 

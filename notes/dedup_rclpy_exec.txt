@@ -63,7 +63,7 @@ Lives in `/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/fish_rclpy_tr
         _SEEN_EXEC_CG.add(key)
         try:
             node_ptr = _entity_rcl_handle(node)
-            _lib.ros_trace_fish_executor_add_cbgroup(
+            _lib.ros_trace_fish_rclcpp_executor_add_cbgroup(
                 ctypes.c_void_p(id(executor)),
                 ctypes.c_void_p(id(group)),
                 ctypes.c_void_p(node_ptr))

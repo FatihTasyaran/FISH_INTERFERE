@@ -145,25 +145,25 @@ C functions in libtracetools.so via ctypes.
     _tracetools = ctypes.CDLL("libtracetools.so")
 
     # New rclpy tracepoints
-    _tracetools.ros_trace_rclpy_subscription_callback_added.argtypes = [
+    _tracetools.ros_trace_fish_rclpy_subscription_callback_added.argtypes = [
         ctypes.c_void_p, ctypes.c_void_p]
-    _tracetools.ros_trace_rclpy_subscription_callback_added.restype = None
+    _tracetools.ros_trace_fish_rclpy_subscription_callback_added.restype = None
 
-    _tracetools.ros_trace_rclpy_service_callback_added.argtypes = [
+    _tracetools.ros_trace_fish_rclpy_service_callback_added.argtypes = [
         ctypes.c_void_p, ctypes.c_void_p]
-    _tracetools.ros_trace_rclpy_service_callback_added.restype = None
+    _tracetools.ros_trace_fish_rclpy_service_callback_added.restype = None
 
-    _tracetools.ros_trace_rclpy_timer_callback_added.argtypes = [
+    _tracetools.ros_trace_fish_rclpy_timer_callback_added.argtypes = [
         ctypes.c_void_p, ctypes.c_void_p]
-    _tracetools.ros_trace_rclpy_timer_callback_added.restype = None
+    _tracetools.ros_trace_fish_rclpy_timer_callback_added.restype = None
 
-    _tracetools.ros_trace_rclpy_timer_link_node.argtypes = [
+    _tracetools.ros_trace_fish_rclpy_timer_link_node.argtypes = [
         ctypes.c_void_p, ctypes.c_void_p]
-    _tracetools.ros_trace_rclpy_timer_link_node.restype = None
+    _tracetools.ros_trace_fish_rclpy_timer_link_node.restype = None
 
-    _tracetools.ros_trace_rclpy_callback_register.argtypes = [
+    _tracetools.ros_trace_fish_rclpy_callback_register.argtypes = [
         ctypes.c_void_p, ctypes.c_char_p]
-    _tracetools.ros_trace_rclpy_callback_register.restype = None
+    _tracetools.ros_trace_fish_rclpy_callback_register.restype = None
 
     # Existing tracepoints (reused)
     _tracetools.ros_trace_callback_start.argtypes = [
@@ -176,24 +176,24 @@ C functions in libtracetools.so via ctypes.
     # Convenience wrappers
     def trace_callback_added_sub(sub_handle_ptr, callback):
         cb_id = ctypes.c_void_p(id(callback))
-        _tracetools.ros_trace_rclpy_subscription_callback_added(
+        _tracetools.ros_trace_fish_rclpy_subscription_callback_added(
             ctypes.c_void_p(sub_handle_ptr), cb_id)
         _register(callback, cb_id)
 
     def trace_callback_added_srv(srv_handle_ptr, callback):
         cb_id = ctypes.c_void_p(id(callback))
-        _tracetools.ros_trace_rclpy_service_callback_added(
+        _tracetools.ros_trace_fish_rclpy_service_callback_added(
             ctypes.c_void_p(srv_handle_ptr), cb_id)
         _register(callback, cb_id)
 
     def trace_callback_added_tmr(tmr_handle_ptr, callback):
         cb_id = ctypes.c_void_p(id(callback))
-        _tracetools.ros_trace_rclpy_timer_callback_added(
+        _tracetools.ros_trace_fish_rclpy_timer_callback_added(
             ctypes.c_void_p(tmr_handle_ptr), cb_id)
         _register(callback, cb_id)
 
     def trace_timer_link_node(tmr_handle_ptr, node_handle_ptr):
-        _tracetools.ros_trace_rclpy_timer_link_node(
+        _tracetools.ros_trace_fish_rclpy_timer_link_node(
             ctypes.c_void_p(tmr_handle_ptr),
             ctypes.c_void_p(node_handle_ptr))
 
@@ -214,7 +214,7 @@ C functions in libtracetools.so via ctypes.
             symbol = sym
         else:
             symbol = repr(callback)
-        _tracetools.ros_trace_rclpy_callback_register(
+        _tracetools.ros_trace_fish_rclpy_callback_register(
             cb_id, symbol.encode('utf-8'))
 
 

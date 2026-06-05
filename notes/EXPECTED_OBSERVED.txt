@@ -335,7 +335,7 @@ FISH already has a ctypes bridge pattern (see
 tracetools' C functions. The rclpy scheduler integration is a
 mechanically straightforward extension of that bridge: patch
 `rclpy/executors.py` __init__ methods to call
-`ros_trace_fish_executor_init(...)` etc.
+`ros_trace_fish_rclcpp_executor_init(...)` etc.
 
 IMPLICATION
 -----------

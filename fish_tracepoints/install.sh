@@ -1194,7 +1194,7 @@ else
 fi
 
 # Verify rcl symbols
-if nm -D "$OVERLAY_WS/install/rcl/lib/librcl.so" 2>/dev/null | grep -q "ros_trace_fish_publish_link\|fish_rclcpp_publish_link"; then
+if nm -D "$OVERLAY_WS/install/rcl/lib/librcl.so" 2>/dev/null | grep -q "ros_trace_fish_rclcpp_publish_link\|fish_rclcpp_publish_link"; then
     log "rcl fish_rclcpp_publish_link reference: OK"
 else
     # The fire point calls the tracetools function, so the symbol is in tracetools, not rcl

@@ -36,12 +36,12 @@ different mechanisms (direct call vs ctypes bridge).
   C. rclpy/client.py → call_async()
      After: self.handle.send_request(request)
      Fires: trace_client_request_sent(self.handle.pointer, sequence_number)
-            → ctypes → _lib.ros_trace_rclcpp_client_request_sent()
+            → ctypes → _lib.ros_trace_fish_rclcpp_client_request_sent()
 
   D. rclpy/executors.py → _execute_client()
      After: client.get_pending_request(sequence)
      Fires: trace_client_response_received(client.handle.pointer, sequence, 0)
-            → ctypes → _lib.ros_trace_rclcpp_client_response_received()
+            → ctypes → _lib.ros_trace_fish_rclcpp_client_response_received()
      response_type always 0 (rclpy has no callback variant, future-only)
 
   Used by: any rclpy node that calls create_client() + call_async()
@@ -53,12 +53,12 @@ different mechanisms (direct call vs ctypes bridge).
   E. rclpy/action/client.py → send_goal_async()
      After: self._client_handle.send_goal_request(request)
      Fires: trace_client_request_sent(id(self._client_handle), sequence_number)
-            → ctypes → _lib.ros_trace_rclcpp_client_request_sent()
+            → ctypes → _lib.ros_trace_fish_rclcpp_client_request_sent()
 
   F. rclpy/action/client.py → execute()
      In goal response handling, result response handling, cancel response handling
      Fires: trace_client_response_received(id(self._client_handle), sequence_number, 0)
-            → ctypes → _lib.ros_trace_rclcpp_client_response_received()
+            → ctypes → _lib.ros_trace_fish_rclcpp_client_response_received()
      response_type always 0
 
   Used by: ros2 action send_goal CLI, any rclpy node using ActionClient
