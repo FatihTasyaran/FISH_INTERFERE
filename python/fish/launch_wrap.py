@@ -400,6 +400,44 @@ def _patch_standalone_node(gpu_nodes: set) -> None:
     Node.execute = patched_execute
 
 
+def _patch_execute_process_shutdown_timeout() -> None:
+    """Bump the SIGINT->SIGTERM grace on every ExecuteProcess.
+
+    The default `sigterm_timeout` on launch.actions.ExecuteProcess is 5
+    seconds (and `sigkill_timeout` another 5). When an nsys-wrapped
+    composable container receives SIGINT at shutdown, nsys needs to flush
+    its qdstrm and export the .nsys-rep file — 5 seconds is far too short
+    on heavier workloads (bi3d, dope, foundationpose, etc.). nsys gets
+    SIGTERM'd mid-finalize and the report file is never written.
+
+    Override the default at construction time: any ExecuteProcess that
+    doesn't explicitly set sigterm_timeout will now get FISH_SIGTERM_TIMEOUT
+    seconds (default 180). During this window no new tracing data is
+    collected — only flush/export — so there's no downside other than a
+    longer wait at clean shutdown.
+
+    Configurable via env var FISH_SIGTERM_TIMEOUT (seconds).
+    """
+    from launch.actions import ExecuteProcess
+    import os
+    timeout_s = os.environ.get("FISH_SIGTERM_TIMEOUT", "180")
+    orig_init = ExecuteProcess.__init__
+
+    def patched_init(self, *args, **kwargs):
+        if "sigterm_timeout" not in kwargs:
+            kwargs["sigterm_timeout"] = timeout_s
+        if "sigkill_timeout" not in kwargs:
+            kwargs["sigkill_timeout"] = "10"
+        return orig_init(self, *args, **kwargs)
+
+    ExecuteProcess.__init__ = patched_init
+    print(
+        f"[FISH launch_wrap] ExecuteProcess.sigterm_timeout default set to "
+        f"{timeout_s}s (was 5s) — gives nsys time to flush .nsys-rep",
+        file=sys.stderr,
+    )
+
+
 def install_patches() -> None:
     """Install the Node.execute / ComposableNodeContainer.execute monkey-patches.
 
@@ -408,10 +446,16 @@ def install_patches() -> None:
     the launch_ros action classes so every wrapped process gets prefixed with
     `nsys profile ...` at execute-time.
 
+    Also bumps the default ExecuteProcess.sigterm_timeout so nsys has enough
+    time to finalize its report file when the benchmark process receives
+    SIGINT at shutdown.
+
     Idempotent and side-effect-only: call once BEFORE any LaunchService is
     instantiated. Safe to use from any launch flow — `ros2 launch`, `launch_test`,
     or a custom embedder.
     """
+    _patch_execute_process_shutdown_timeout()
+
     gpu_containers = _load_gpu_containers()
     gpu_nodes = _load_gpu_nodes()
 

@@ -1,0 +1,140 @@
+# FISH graph filter — boilerplate entities to hide
+# ==================================================
+#
+# Every rclcpp::Node, regardless of user code, automatically registers a
+# fixed set of publishers and services for framework infrastructure
+# (logging, parameter introspection, etc.). These appear in FISH graph
+# as E (entity) vertices and F (callback) vertices, cluttering the view
+# without representing user-meaningful work.
+#
+# This file lists patterns that the postprocess pipeline should treat as
+# "framework boilerplate" — hide by default in fish_viz, exclude from
+# coverage/throughput statistics, etc. Override per-benchmark if needed.
+#
+# Pattern format: each line is either a literal topic/service name OR
+# a glob with * as wildcard. Lines starting with # are comments.
+# Sections marked with [name] group patterns by what creates them.
+#
+# Update history:
+#   2026-06-02 — initial; sourced from inspection of rclcpp humble +
+#                rcl humble (Node ctor implicit init chain).
+
+
+# ─────────────────────────────────────────────────────────────────────
+# [rclcpp_node_implicit_publishers]
+#   Every rclcpp::Node creates these unless explicitly disabled via
+#   NodeOptions.enable_rosout(false) / start_parameter_event_publisher(false).
+#   Default for all Isaac ROS plugins: enabled.
+# ─────────────────────────────────────────────────────────────────────
+
+# /rosout — logging output.
+# Created at: rcl/rcl/src/rcl/logging_rosout.c:144
+#             (called from rcl_node_init via rcl_logging_rosout_init_publisher_for_node)
+/rosout
+
+# /parameter_events — broadcast of parameter changes for monitoring tools.
+# Created at: rclcpp/rclcpp/src/rclcpp/node_interfaces/node_parameters.cpp:74
+/parameter_events
+
+
+# ─────────────────────────────────────────────────────────────────────
+# [rclcpp_node_implicit_services]
+#   Every rclcpp::Node with start_parameter_services=true (default)
+#   exposes a fixed set of parameter introspection services scoped to
+#   the node's own name. Match the suffix with * for the node name.
+#   Created at: rclcpp/rclcpp/src/rclcpp/parameter_service.cpp lines 36..145
+# ─────────────────────────────────────────────────────────────────────
+
+*/get_parameters
+*/get_parameter_types
+*/set_parameters
+*/set_parameters_atomically
+*/describe_parameters
+*/list_parameters
+
+
+# ─────────────────────────────────────────────────────────────────────
+# [rclcpp_node_implicit_callbacks]
+#   The 6 service callbacks bound to the introspection services above.
+#   These appear as F vertices with bound function pointers into
+#   rclcpp/src/rclcpp/parameter_service.cpp.
+#
+#   Filter matches against the bound symbol (post-addr2line resolution)
+#   or, as a fallback, against the parent service name pattern above.
+# ─────────────────────────────────────────────────────────────────────
+
+rclcpp::ParameterService::*           # all 6 lambdas in parameter_service.cpp
+
+
+# ─────────────────────────────────────────────────────────────────────
+# [rclcpp_node_implicit_subscriptions]
+#   NodeTimeSource (only when use_clock_thread=true OR ROS time enabled)
+#   creates a /clock subscription. Most benchmarks have ROS time off,
+#   but list it as a candidate for filtering when present.
+# ─────────────────────────────────────────────────────────────────────
+
+/clock
+
+
+# ─────────────────────────────────────────────────────────────────────
+# [rclcpp_lifecycle_node_implicit]
+#   LifecycleNode adds change_state, get_state, get_available_states,
+#   get_available_transitions, get_transition_graph services AND
+#   a /transition_event publisher.
+#   None of the current Isaac benchmarks use LifecycleNode, but listed
+#   here for completeness.
+# ─────────────────────────────────────────────────────────────────────
+
+*/change_state
+*/get_state
+*/get_available_states
+*/get_available_transitions
+*/get_transition_graph
+*/transition_event
+
+
+# ─────────────────────────────────────────────────────────────────────
+# [ros2_benchmark_framework]
+#   ros2_benchmark and isaac_ros_benchmark inject these nodes into
+#   every benchmark via ROS2BenchmarkTest base class. They are not
+#   "the system under test" but the harness. Filter them when
+#   reporting benchmark-internal callbacks.
+#
+#   These match against NODE NAME (not topic). The pattern is applied
+#   to the node's rcl_node_init name field.
+# ─────────────────────────────────────────────────────────────────────
+
+[node:DataLoaderNode]
+[node:PlaybackNode]
+[node:NitrosPlaybackNode]
+[node:MonitorNode]
+[node:NitrosMonitorNode]
+[node:ControllerNode]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# [intentional_user_topics]
+#   Topics that are clearly user-meaningful and should NEVER be
+#   filtered, even if they fall under a wildcard above. Listed for
+#   safety / future-proofing.
+# ─────────────────────────────────────────────────────────────────────
+
+# (none — user topics are matched by absence from the filter list)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Notes for filter implementation
+# ─────────────────────────────────────────────────────────────────────
+#
+# Filtering happens at the postprocess stage, after FISH graph
+# extraction but before fish_graph.json export. The unfiltered graph
+# is still preserved in MongoDB; this is purely a visualization /
+# reporting convenience.
+#
+# Two modes are intended:
+#   - hide:    set vertex.hidden=True (still in graph, fish_viz collapses)
+#   - exclude: drop vertex from graph entirely (changes counts)
+#
+# Default mode: hide. Use exclude only when computing user-meaningful
+# coverage metrics in paper tables (so framework overhead doesn't
+# inflate the numbers).

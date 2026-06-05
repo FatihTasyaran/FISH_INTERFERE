@@ -112,6 +112,34 @@ stop_session() {
     # 2. Stop daemon (stops live collectors + flushes nsys reports)
     PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.cli gpu daemon stop 2>/dev/null
 
+    # 2b. Belt-and-suspenders: poll fish_events.log for nsys_report_complete
+    # entries. Daemon stop already waits for nsys reports, but if it returns
+    # early (timeout, race) we don't want to KILL the process group while
+    # nsys is still flushing its .nsys-rep file. Wait up to FISH_NSYS_DRAIN
+    # seconds (default 60) for the report counter to stabilise.
+    if [[ -n "\$SESSION_DIR" ]]; then
+        EVT_LOG=\$(ls -t "\$SESSION_DIR/fishlog"/fish_events_*.log 2>/dev/null | head -1)
+        if [[ -n "\$EVT_LOG" ]]; then
+            DRAIN=\${FISH_NSYS_DRAIN:-60}
+            T0=\$(date +%s)
+            LAST_N=\$(grep -c "nsys_report_complete" "\$EVT_LOG" 2>/dev/null || echo 0)
+            STABLE_FOR=0
+            while [[ \$(( \$(date +%s) - T0 )) -lt \$DRAIN ]]; do
+                sleep 1
+                N=\$(grep -c "nsys_report_complete" "\$EVT_LOG" 2>/dev/null || echo 0)
+                if [[ "\$N" == "\$LAST_N" ]]; then
+                    STABLE_FOR=\$(( STABLE_FOR + 1 ))
+                    # Two consecutive seconds with no new report → done.
+                    [[ \$STABLE_FOR -ge 2 ]] && break
+                else
+                    STABLE_FOR=0
+                    LAST_N=\$N
+                fi
+            done
+            echo "[FISH] nsys reports observed: \$LAST_N (waited \$(( \$(date +%s) - T0 ))s)"
+        fi
+    fi
+
     # 3. Stop LTTng trace session
     echo "[FISH] Stopping trace session..."
     SESSION=\$(cat \$FISH_SESSION_NAME_FILE 2>/dev/null)

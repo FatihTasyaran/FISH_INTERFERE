@@ -1,0 +1,376 @@
+Isaac ROS benchmark image patches required for FISH integration
+================================================================
+
+When shipping the FISH-bundled fish-r2b-<bench> images, the following
+modifications MUST be baked in (currently applied at sweep runtime by
+overnight_sweep_v3.sh — works for measurement but not portable).
+
+Last updated: 2026-06-02 — adds patches [1a]+[10..16] discovered during the
+second overnight retry sweep (foundationpose / detectnet / centerpose /
+ess / segformer / unet family).
+
+History:
+  2026-06-01 19:46 — initial 9 entries (apriltag/bi3d/dope working)
+  2026-06-02 morning — entries below added after the install_script,
+    libdcgm, plugins, peoplesemsegformer, robotarm bag fixes.
+
+
+[1] Install TensorRT binary (libnvinfer-bin)
+---------------------------------------------
+
+  Symptom (before fix):
+    launch_test: error: [Errno 2] No such file or directory:
+      '/usr/src/tensorrt/bin/trtexec'
+
+  Affected benchmarks: bi3d, bi3d_freespace, foundationpose, centerpose,
+                       rtdetr, dope, segment_anything (7 of 23).
+
+  Root cause: fish-r2b-* images ship libnvinfer-dev (headers + dev libs)
+  but not libnvinfer-bin (which provides the trtexec compiler binary at
+  /usr/src/tensorrt/bin/trtexec). Isaac ROS benchmark Python scripts
+  invoke trtexec directly to convert ONNX models to TensorRT engine
+  plans at launch-time.
+
+  Fix (one-line apt):
+    RUN apt-get install -y libnvinfer-bin
+  Verified: matches existing libnvinfer-dev 10.16.1.11-1+cuda13.2.
+
+  Currently applied: sweep_v3 runs the apt-install inside each
+  container's bash -lc preamble.
+
+
+[2] Symlink /workspaces/isaac_ros-dev -> /root/ros_ws
+-----------------------------------------------------
+
+  Symptom (before fix):
+    Input file cannot be found: /workspaces/isaac_ros-dev/src/
+      ros2_benchmark/assets/models/bi3d/featnet.onnx
+
+  Affected: every benchmark that calls TRTConverter — same 7 as [1]
+  plus any benchmark using assets/models/.
+
+  Root cause: NVIDIA's isaac_ros-dev container template uses
+  /workspaces/isaac_ros-dev as the workspace root. Our fish-r2b-*
+  images put it at /root/ros_ws. Some Isaac ROS Python scripts have
+  the workspaces/ path hardcoded (not parameterised via env).
+
+  Fix (Dockerfile):
+    RUN mkdir -p /workspaces && ln -sfn /root/ros_ws /workspaces/isaac_ros-dev
+
+  Currently applied: sweep_v3 creates the symlink at container start.
+
+
+[3] Set ISAAC_ROS_WS env var
+----------------------------
+
+  Symptom (before fix):
+    CMake Error at isaac_ros_common-extras-assets.cmake:34 (message):
+      ERROR: ISAAC_ROS_WS is not set.
+    1 package failed: isaac_ros_peoplenet_models_install
+
+  Affected: detectnet (and any other benchmark whose models_install
+  package uses isaac_ros_common-extras-assets.cmake — only detectnet
+  reported it but the test set is small).
+
+  Root cause: isaac_ros_common assets CMake macro requires
+  ISAAC_ROS_WS to point at the workspace root.
+
+  Fix (Dockerfile):
+    ENV ISAAC_ROS_WS=/root/ros_ws
+
+  Currently applied: sweep_v3 docker run sets -e ISAAC_ROS_WS=/root/ros_ws.
+
+
+[4] FISH install from host source at container start
+-----------------------------------------------------
+
+  Currently each sweep_v3 run does:
+    - rm -rf /root/fish_interfere    (drops stale baked-in copy)
+    - cp -rT /host/fish_src /root/fish_interfere
+    - bash setup_fish.sh --yes
+
+  This ~30 s install happens per container so the FISH wrapper +
+  Python modules always match the host's current code (helpful during
+  development).
+
+  For SHIPPED images: bake FISH into the image instead via the existing
+  container_install.sh flow. Once stable, run install_fish.sh once and
+  docker commit. Then the runtime cp+install steps can be skipped.
+
+
+[5] r2bdataset symlink convention
+---------------------------------
+
+  Path: /host/r2bdataset (mount) → individual bag dirs symlinked into
+        /root/ros_ws/src/ros2_benchmark/assets/datasets/r2b_dataset/
+
+  Source: /home/tue037807/r2bdataset2023_v3/  on the host.
+
+  Currently applied: sweep_v3 runtime symlinks each bag at container
+  start. For shipped image: this is per-session data, NOT image content
+  — keep at runtime mount.
+
+
+[6] Pre-acquired models layout
+------------------------------
+
+  Mount: /host/isaac_assets/manual_models/<dir>/  →  copied at runtime into
+         /root/ros_ws/src/ros2_benchmark/assets/models/<dir>/
+
+  Provided dirs (manually collected from NGC + DOPE Drive + MobileSAM):
+    ketchup/ketchup.onnx              (DOPE)
+    segment_anything/mobile_sam.onnx  (MobileSAM ONNX-exported)
+    segment_anything/config.pbtxt     (hand-written from MobileSAM I/O)
+    bi3d/{bi3d,featnet,segnet}.onnx   (nvidia/isaac/bi3d_proximity_segmentation)
+    foundationpose/{refine,score}_model.onnx
+    centerpose_shoe/{centerpose_shoe.onnx,config.pbtxt}
+    sdetr/sdetr_grasp.onnx            (nvidia/isaac/synthetica_detr:1.0.0_onnx)
+
+  For shipped image: bake these into the image at the canonical path.
+
+
+[7] Symlink ros2 trace pipeline must use setsid (DONE in install_fish.sh)
+-------------------------------------------------------------------------
+
+  Already integrated into the host install_fish.sh. When baked in, the
+  trace_session.sh script generated inside the image uses setsid for the
+  pipeline and process-group kill at stop, preventing orphan sleep
+  infinity after auto_stop. Verified working on apriltag + bi3d.
+
+
+[8] Daemon stability gate works under launch_test (DONE)
+--------------------------------------------------------
+
+  fish_settings.ini's executor_started_stability fallback eventually
+  triggers `system_stable` even when stdout lacks "process started with
+  pid [N]" markers (which launch_test does NOT emit — only ros2 launch
+  does). Confirmed working: daemon proceeds to gpu_handler_complete
+  and replay_complete on Isaac sessions. Time-to-stable: ~60-90 s
+  due to the fallback path. For tighter pacing during sweeps, consider
+  detecting launch_test mode and bypassing the executor_started gate.
+
+
+[9] Pending — DEFER (not blocking sweep)
+----------------------------------------
+
+  GPU plugin keyword list in launch_inspect.py is hardcoded:
+    python/fish/launch_inspect.py:359  GPU_PLUGIN_KEYWORDS = [...]
+
+  Should move to fish_settings.ini [launch_inspect] section so users
+  can add new GPU plugins without editing source. See
+  notes/immediate_work.txt #0 (this was the original ask). Not blocking
+  the current sweep because the fallback "wrap all containers" path
+  still produces correct nsys captures — just slightly less surgical.
+
+  Tracked in: notes/immediate_work.txt
+
+
+================================================================
+2026-06-02 ADDITIONS — second overnight retry sweep findings
+================================================================
+
+
+[1a] libnvinfer-bin install needs `apt-get update` + version pin
+----------------------------------------------------------------
+
+  Refines [1]. Most fish-r2b-* images ship with stale apt cache.
+
+  Symptom (before fix):
+    bi3d_freespace, foundationpose, centerpose, rtdetr, dope,
+    segment_anything ALL failed with:
+      E: Unable to locate package libnvinfer-bin
+    (even though [1] said "just apt install libnvinfer-bin").
+
+  Root cause:
+    1. apt cache is stale — libnvinfer-bin not listed without `apt-get update`.
+    2. Unversioned install resolves to latest (11.x), but images carry
+       libnvinfer-dev 10.16.1.11 → dep mismatch (needs libnvinfer11).
+
+  Fix (in sweep_v3.sh preamble — see lines ~221-233):
+    if [ ! -x /usr/src/tensorrt/bin/trtexec ]; then
+        NVINFER_VER=$(dpkg-query -W -f='${Version}' libnvinfer-dev 2>/dev/null)
+        apt-get update >/tmp/apt_update.log 2>&1 || true
+        apt-get install -y "libnvinfer-bin=$NVINFER_VER"
+    fi
+
+  Currently applied: sweep_v3 runtime.
+  For shipped image: bake libnvinfer-bin into the image at build time.
+
+
+[10] libdcgm.so.3 install (datacenter-gpu-manager)
+---------------------------------------------------
+
+  Symptom (before fix):
+    [ERROR] Failed to load extension libgxf_isaac_triton.so
+            Error: libdcgm.so.3: cannot open shared object file:
+                   No such file or directory
+    → component constructor throws
+    → TritonNode loadExtensions Error: GXF_EXTENSION_FILE_NOT_FOUND
+    → test FAILS with no GPU work captured.
+
+  Affected benchmarks: detectnet, centerpose, triton (anything using
+                       TritonNode / gxf_isaac_triton extension).
+
+  Root cause: Isaac ROS images include gxf_isaac_triton but NOT the
+  datacenter-gpu-manager package that provides libdcgm.so.3.
+
+  Fix:
+    Download once on host (911 MB):
+      wget https://developer.download.nvidia.com/compute/cuda/repos/\
+        ubuntu2204/x86_64/datacenter-gpu-manager_3.3.9_amd64.deb \
+        -O /home/tue037807/isaac_ros_assets/apt_cache/datacenter-gpu-manager_3.3.9_amd64.deb
+
+    In sweep_v3.sh preamble (lines ~237-247):
+      if [ ! -f /usr/lib/x86_64-linux-gnu/libdcgm.so.3 ]; then
+          dpkg -i /host/apt_cache/datacenter-gpu-manager_3.3.9_amd64.deb
+      fi
+
+  .deb cache lives at:
+    /home/tue037807/isaac_ros_assets/apt_cache/
+
+  For shipped image: bake the dcgm package into the image at build time
+  (otherwise every fresh container re-installs 1.8 GB).
+
+
+[11] install_script benchmarks need manual ONNX (NGC catalog)
+--------------------------------------------------------------
+
+  Replaces [3]'s implicit assumption that ros2 run isaac_ros_*_models_install
+  works inside the image. It does NOT, because:
+    - The image carries `isaac_ros_*_models_install` packages with
+      COLCON_IGNORE files (excluded from default build).
+    - Even when built, the ROS install path differs from where the
+      benchmark expects the ONNX/config.pbtxt.
+    - Some benchmarks expect a DIFFERENT model than the install_script
+      provides (e.g., detectnet expects resnet34_peoplenet (TAO) but
+      install_peoplenet_amr_rs.sh installs rsu_rs_480_640_mask (Isaac AMR)).
+
+  Solution: pre-download all needed ONNX from NGC into manual_models/,
+  copy them into the benchmark's expected path at sweep runtime.
+
+  Models acquired (2026-06-02):
+    peoplenet/resnet34_peoplenet.onnx     nvidia/tao/peoplenet:deployable_quantized_onnx_v2.6.3
+    peoplenet/resnet34_peoplenet_int8.txt (same)
+    peoplenet/labels.txt                  (same)
+    peoplenet/config.pbtxt                (hand-written from isaac_ros_benchmark template)
+
+    peoplesemsegformer/peoplesemsegformer.onnx
+      nvidia/tao/peoplesemsegformer:deployable_v1.0  (204 MB)
+
+    peoplesemsegnet_shuffleseg/peoplesemsegnet_shuffleseg.onnx
+      nvidia/isaac/optimized-peoplesemseg-amr:v1.0  (3.8 MB)
+    peoplesemsegnet_shuffleseg/config.pbtxt        (hand-written)
+
+    ess/{ess,light_ess}.onnx + ess/plugins/{aarch64,x86_64}/ess_plugins.so
+      nvidia/isaac/dnn_stereo_disparity:4.1.0_onnx  (124 MB tarball)
+
+  All sit under:
+    /home/tue037807/isaac_ros_assets/manual_models/<dir>/
+
+  MODEL_WIRE recipes in sweep_v3.sh now `cp` these to:
+    /root/ros_ws/src/ros2_benchmark/assets/models/<dir>/
+
+  For shipped image: bake these into the image at canonical asset path
+  (size impact: ~600 MB total across all models).
+
+
+[12] r2bdataset2024 — r2b_robotarm bag
+---------------------------------------
+
+  Symptom: foundationpose, rtdetr, segment_anything all fail with
+    RuntimeError: Bag path .../r2b_dataset/r2b_robotarm does not exist.
+
+  Root cause: r2b_robotarm is in r2bdataset2024 (released later), not
+  the r2bdataset2023_v3 we were mounting.
+
+  Fix:
+    1. User downloads: ngc registry resource download-version
+                       "nvidia/isaac/r2bdataset2024:1" → ~/r2bdataset2024_v1/
+    2. sweep_v3.sh mounts BOTH datasets and symlinks all bags:
+         -v "$R2B_DATASET":/host/r2bdataset:ro              (2023)
+         -v "$R2B_DATASET_2024":/host/r2bdataset_2024:ro    (2024)
+       Then inside the container preamble:
+         for bag in /host/r2bdataset/* /host/r2bdataset_2024/*; do
+             ln -sf "$bag" "$DEST_DS/$(basename "$bag")"
+         done
+
+  For shipped image: this is per-session data — keep at runtime mount.
+
+
+[13] heredoc variable escaping in docker bash -lc
+-------------------------------------------------
+
+  Bug class — not strictly an image patch, but breaks runs.
+
+  Symptom:
+    scripts/overnight_sweep_v3.sh: line 184: NVINFER_VER: unbound variable
+    → sweep dies before any benchmark runs.
+
+  Root cause: docker bash -lc heredoc uses double-quotes — outer shell
+  with `set -u` expands `$NVINFER_VER` and aborts because the variable
+  isn't defined in the OUTER scope.
+
+  Fix: escape every shell variable that must resolve INSIDE the container:
+    \$NVINFER_VER, \${Version}, \"\$NVINFER_VER\"
+  Apply to ALL new lines added to the docker heredoc.
+
+
+[14] FISH watchdog must use container-side clock
+-------------------------------------------------
+
+  Symptom:
+    [watchdog 01:00:28] killing stuck container peaceful_hawking
+       (nsys done, 2899 s idle)
+    → freshly-started detectnet container killed within 15 seconds
+      because the watchdog thought its events log was "idle for 48 min".
+
+  Root cause: /tmp/sweep_watchdog.sh compared `stat -c %Y` (container
+  filesystem) with host's `date +%s`. Isaac ROS containers boot with a
+  clock offset (often ~10 h skewed from host).
+
+  Fix (already applied to /tmp/sweep_watchdog.sh):
+    AGE=$(docker exec "$c" stat -c %Y "$EVT")
+    NOW=$(docker exec "$c" date +%s)        # ← container-side clock
+    DELTA=$((NOW - AGE))
+
+
+[15] sweep_postprocess.sh session selector
+-------------------------------------------
+
+  Bug class — postprocess pipeline.
+
+  Symptom: every newly-working benchmark produced fish_graph.json
+  with V=1 E=0 (empty model) even though raw trace data was OK.
+
+  Root cause: `ls -d .../fish_* | head -1` returns alphabetically-first
+  match (the OLDEST session) AND, after first postprocess run, also
+  matches the `fish_viz.html` and `fish_graph.json` siblings.
+
+  Fix (in /tmp/sweep_postprocess.sh):
+    SD=$(ls -td -- /tmp/fish_traces_v3/$BENCH/measure/fish_*/ \
+         | head -1 | sed 's:/$::')
+
+  `-t` → newest first; trailing `/` filters to dirs only; sed strips slash.
+
+
+[16] Pending — service-handshake failure (foundationpose smoke test)
+---------------------------------------------------------------------
+
+  Status: investigated 2026-06-02 morning, NOT yet root-caused.
+
+  Symptom: with all upstream fixes applied (libdcgm + bag + model),
+  foundationpose smoke run completes pipeline init, NITROS contexts
+  ready, but ros2_benchmark's prepare_buffer() service call gets:
+    AssertionError: A service returned with an unsuccess response
+
+  Suspicion: handshake races with first-frame propagation through the
+  multi-node pipeline. Engine compile (trtexec internal) may be slow
+  on first run, and the benchmark probe service times out before the
+  pipeline is "ready".
+
+  Next step: increase the wait timeout in ros2_benchmark probe service,
+  or pre-warm the engines so they're cached for the measure pass.
+
+  Likely also affects: rtdetr, segment_anything, centerpose (all use
+  the same prepare_buffer probe). detectnet and segformer may have
+  different probes and could be unaffected.
