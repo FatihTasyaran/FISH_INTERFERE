@@ -93,7 +93,7 @@ ULog path in sim container:
   - CLI → ROS 2 action → px4_interface → PX4 SITL (goes through action servers)
 
   Only the ROS 2 action path triggers our custom tracepoints
-  (rclcpp_action_execute_goal/cancel/result). For FISH tracing,
+  (fish_rclcpp_action_execute_goal/cancel/result). For FISH tracing,
   actions must be sent via ROS 2 CLI or programmatic action client.
 
   vehicle_command (fmu/in) ROS 2 topic shows 0 messages during QGC

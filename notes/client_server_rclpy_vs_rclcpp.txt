@@ -2,8 +2,8 @@ Client/Server Tracepoint Coverage: rclcpp vs rclpy
 ====================================================
 
 Two custom LTTng tracepoints defined in tracetools C:
-  ros2:rclcpp_client_request_sent(client_handle, sequence_number)
-  ros2:rclcpp_client_response_received(client_handle, sequence_number, response_type)
+  ros2:fish_rclcpp_client_request_sent(client_handle, sequence_number)
+  ros2:fish_rclcpp_client_response_received(client_handle, sequence_number, response_type)
 
 These are fired from 6 code paths across rclcpp and rclpy.
 All paths call the same C functions in libtracetools.so via
@@ -15,11 +15,11 @@ different mechanisms (direct call vs ctypes bridge).
 
   A. client.hpp → async_send_request_impl()
      After: rcl_send_request() succeeds
-     Fires: TRACEPOINT(rclcpp_client_request_sent, client_handle, sequence_number)
+     Fires: TRACEPOINT(fish_rclcpp_client_request_sent, client_handle, sequence_number)
 
   B. client.hpp → handle_response()
      At entry, before variant dispatch
-     Fires: TRACEPOINT(rclcpp_client_response_received, client_handle, sequence_number, response_type)
+     Fires: TRACEPOINT(fish_rclcpp_client_response_received, client_handle, sequence_number, response_type)
      response_type: 0=future_only, 1=callback, 2=callback_with_request
 
      When callback variant (type 1 or 2):
@@ -77,12 +77,12 @@ different mechanisms (direct call vs ctypes bridge).
 
   rclpy service server:
     - FISH patches executors.py _execute_service with callback_start/end
-    - rclpy_service_callback_added links service_handle → callback (FISH custom)
-    - rclpy_callback_register provides symbol (FISH custom)
+    - fish_rclpy_service_callback_added links service_handle → callback (FISH custom)
+    - fish_rclpy_callback_register provides symbol (FISH custom)
 
   Action server (rclcpp only, uses Waitable):
-    - rclcpp_action_server_init links handle to service handles (FISH custom)
-    - rclcpp_action_execute_goal/cancel/result (FISH custom)
+    - fish_rclcpp_action_server_init links handle to service handles (FISH custom)
+    - fish_rclcpp_action_execute_goal/cancel/result (FISH custom)
     - NO callback_start/end (bypasses ServiceBase)
 
 
@@ -91,13 +91,13 @@ different mechanisms (direct call vs ctypes bridge).
 
   Code Path                      | Lang   | Tracepoint                    | Mechanism
   -------------------------------|--------|-------------------------------|----------
-  client.hpp send_request        | C++    | rclcpp_client_request_sent    | TRACEPOINT macro
-  client.hpp handle_response     | C++    | rclcpp_client_response_received | TRACEPOINT macro
+  client.hpp send_request        | C++    | fish_rclcpp_client_request_sent    | TRACEPOINT macro
+  client.hpp handle_response     | C++    | fish_rclcpp_client_response_received | TRACEPOINT macro
   client.hpp handle_response cb  | C++    | callback_start/end            | TRACEPOINT macro
-  client.py call_async           | Python | rclcpp_client_request_sent    | ctypes bridge
-  executors.py _execute_client   | Python | rclcpp_client_response_received | ctypes bridge
-  action/client.py send_goal     | Python | rclcpp_client_request_sent    | ctypes bridge
-  action/client.py execute       | Python | rclcpp_client_response_received | ctypes bridge
+  client.py call_async           | Python | fish_rclcpp_client_request_sent    | ctypes bridge
+  executors.py _execute_client   | Python | fish_rclcpp_client_response_received | ctypes bridge
+  action/client.py send_goal     | Python | fish_rclcpp_client_request_sent    | ctypes bridge
+  action/client.py execute       | Python | fish_rclcpp_client_response_received | ctypes bridge
   any_service_callback.hpp       | C++    | callback_start/end            | TRACEPOINT macro (stock)
   executors.py _execute_service  | Python | callback_start/end            | ctypes bridge (FISH)
 

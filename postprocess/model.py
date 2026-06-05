@@ -286,8 +286,8 @@ def identify_entities(mongo, nodes):
         for action_name, action_info in action_servers.items():
             action_type = action_info if isinstance(action_info, str) else action_info.get("type", "")
             short_name = action_name.rsplit('/', 1)[-1]
-            print(f"    [DEBUG] querying rclcpp_action_server_init for '{short_name}'...", end=" ", flush=True)
-            act_init = coll.find_one({"event": "ros2:rclcpp_action_server_init",
+            print(f"    [DEBUG] querying fish_rclcpp_action_server_init for '{short_name}'...", end=" ", flush=True)
+            act_init = coll.find_one({"event": "ros2:fish_rclcpp_action_server_init",
                                       "payload.action_name": short_name})
             print(f"{'found' if act_init else 'not found'}", flush=True)
 
@@ -353,10 +353,10 @@ def identify_callbacks(mongo, nodes, entities, executors):
     rclcpp_srv_cb_added = _bulk("ros2:rclcpp_service_callback_added")
     rclcpp_tmr_cb_added = _bulk("ros2:rclcpp_timer_callback_added")
     # rclpy fallbacks
-    rclpy_sub_cb_added = _bulk("ros2:rclpy_subscription_callback_added")
-    rclpy_srv_cb_added = _bulk("ros2:rclpy_service_callback_added")
-    rclpy_tmr_cb_added = _bulk("ros2:rclpy_timer_callback_added")
-    rclpy_cb_register = _bulk("ros2:rclpy_callback_register")
+    rclpy_sub_cb_added = _bulk("ros2:fish_rclpy_subscription_callback_added")
+    rclpy_srv_cb_added = _bulk("ros2:fish_rclpy_service_callback_added")
+    rclpy_tmr_cb_added = _bulk("ros2:fish_rclpy_timer_callback_added")
+    rclpy_cb_register = _bulk("ros2:fish_rclpy_callback_register")
 
     print(f"  Bulk load done in {_time.time()-_t0:.1f}s", flush=True)
 
@@ -610,7 +610,7 @@ def attribute_aspects(mongo, executors, nodes, entities):
         ("ros2:callback_start", "cb_start", "callback"),
         ("ros2:callback_end", "cb_end", "callback"),
         ("ros2:rcl_publish", "publish", "publisher_handle"),
-        ("ros2:rclcpp_client_request_sent", "cli_req", "client_handle"),
+        ("ros2:fish_rclcpp_client_request_sent", "cli_req", "client_handle"),
     ]:
         t_evt = _time.time()
         for doc in coll.find({"event": evt_name}):

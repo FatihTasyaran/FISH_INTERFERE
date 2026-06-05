@@ -105,20 +105,20 @@ Builds custom LTTng tracepoints in an overlay workspace and patches rclpy.
 
 | Event | Description |
 |-------|-------------|
-| `ros2:rclcpp_action_server_init` | Links action handle to name + goal/cancel/result service handles |
-| `ros2:rclcpp_action_execute_goal` | Goal request dispatch entry |
-| `ros2:rclcpp_action_execute_cancel` | Cancel request dispatch entry |
-| `ros2:rclcpp_action_execute_result` | Result request dispatch entry |
+| `ros2:fish_rclcpp_action_server_init` | Links action handle to name + goal/cancel/result service handles |
+| `ros2:fish_rclcpp_action_execute_goal` | Goal request dispatch entry |
+| `ros2:fish_rclcpp_action_execute_cancel` | Cancel request dispatch entry |
+| `ros2:fish_rclcpp_action_execute_result` | Result request dispatch entry |
 
 **rclpy callback chain tracepoints** (5 events, ctypes bridge + Python patches):
 
 | Event | Description |
 |-------|-------------|
-| `ros2:rclpy_subscription_callback_added` | Links subscription handle to Python callback ID |
-| `ros2:rclpy_service_callback_added` | Links service handle to Python callback ID |
-| `ros2:rclpy_timer_callback_added` | Links timer handle to Python callback ID |
-| `ros2:rclpy_timer_link_node` | Links timer handle to parent node handle |
-| `ros2:rclpy_callback_register` | Maps callback ID to Python symbol (module.qualname) |
+| `ros2:fish_rclpy_subscription_callback_added` | Links subscription handle to Python callback ID |
+| `ros2:fish_rclpy_service_callback_added` | Links service handle to Python callback ID |
+| `ros2:fish_rclpy_timer_callback_added` | Links timer handle to Python callback ID |
+| `ros2:fish_rclpy_timer_link_node` | Links timer handle to parent node handle |
+| `ros2:fish_rclpy_callback_register` | Maps callback ID to Python symbol (module.qualname) |
 
 Existing `ros2:callback_start` and `ros2:callback_end` events are reused for
 rclpy runtime callback boundaries (injected into rclpy executors.py).
@@ -127,8 +127,8 @@ rclpy runtime callback boundaries (injected into rclpy executors.py).
 
 | Event | Description |
 |-------|-------------|
-| `ros2:rclcpp_client_request_sent` | Client sends request (client_handle + sequence_number) |
-| `ros2:rclcpp_client_response_received` | Client receives response (client_handle + sequence_number + response_type) |
+| `ros2:fish_rclcpp_client_request_sent` | Client sends request (client_handle + sequence_number) |
+| `ros2:fish_rclcpp_client_response_received` | Client receives response (client_handle + sequence_number + response_type) |
 
 `response_type`: 0 = future-only, 1 = callback, 2 = callback with request.
 When a callback is present (type 1 or 2), existing `ros2:callback_start` and

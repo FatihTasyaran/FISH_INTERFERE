@@ -55,7 +55,7 @@ to be called from Python via ctypes into libtracetools.so.
   Reason: rclpy callback "pointers" are Python id() values, not C++
   object addresses. Separate events prevent confusion in analysis.
 
-  A. rclpy_subscription_callback_added
+  A. fish_rclpy_subscription_callback_added
      ──────────────────────────────────
      When:    Subscription.__init__() in subscription.py
      Args:    (subscription_handle, callback)
@@ -69,11 +69,11 @@ to be called from Python via ctypes into libtracetools.so.
 
      Chain:
        rcl_subscription_init.subscription_handle       (already in trace)
-         → rclpy_subscription_callback_added.subscription_handle  (same ptr)
-         → rclpy_subscription_callback_added.callback
-         → rclpy_callback_register.callback → symbol
+         → fish_rclpy_subscription_callback_added.subscription_handle  (same ptr)
+         → fish_rclpy_subscription_callback_added.callback
+         → fish_rclpy_callback_register.callback → symbol
 
-  B. rclpy_service_callback_added
+  B. fish_rclpy_service_callback_added
      ─────────────────────────────
      When:    Service.__init__() in service.py
      Args:    (service_handle, callback)
@@ -81,7 +81,7 @@ to be called from Python via ctypes into libtracetools.so.
               callback = id(python_callback)
      Purpose: Links rcl service handle to callback ID.
 
-  C. rclpy_timer_callback_added
+  C. fish_rclpy_timer_callback_added
      ───────────────────────────
      When:    Timer.__init__() in timer.py
      Args:    (timer_handle, callback)
@@ -89,7 +89,7 @@ to be called from Python via ctypes into libtracetools.so.
               callback = id(python_callback)
      Purpose: Links rcl timer handle to callback ID.
 
-  D. rclpy_timer_link_node
+  D. fish_rclpy_timer_link_node
      ──────────────────────
      When:    Node.create_timer() in node.py, after Timer() construction
      Args:    (timer_handle, node_handle)
@@ -99,7 +99,7 @@ to be called from Python via ctypes into libtracetools.so.
               rclcpp::Node::create_wall_timer. In rclpy, timers are created
               without an explicit node link — we add it in Node.create_timer().
 
-  E. rclpy_callback_register
+  E. fish_rclpy_callback_register
      ────────────────────────
      When:    Alongside each _callback_added call
      Args:    (callback, symbol)
@@ -280,13 +280,13 @@ After (with new tracepoints):
 
   identify_callbacks() new rclpy path:
     rcl_subscription_init(sub_handle for /clock)
-      → rclpy_subscription_callback_added(sub_handle → callback_id)
-      → rclpy_callback_register(callback_id → "yolo_node.YoloNode.on_clock")
+      → fish_rclpy_subscription_callback_added(sub_handle → callback_id)
+      → fish_rclpy_callback_register(callback_id → "yolo_node.YoloNode.on_clock")
   Chain complete.
 
   At runtime:
     callback_start(callback_id) fires with timestamp, vpid, vtid
-    FISH maps callback_id → entity via rclpy_subscription_callback_added
+    FISH maps callback_id → entity via fish_rclpy_subscription_callback_added
     Result: each Python callback is timed and attributed.
 
 

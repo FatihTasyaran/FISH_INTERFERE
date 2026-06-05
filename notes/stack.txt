@@ -31,7 +31,7 @@ respective files.
         search postprocess/ for `event`:`ros2:*` queries and list
         unique event names. Current inventory (from memory):
           ros2:callback_start, ros2:callback_end, ros2:rcl_publish,
-          ros2:rclcpp_client_request_sent,
+          ros2:fish_rclcpp_client_request_sent,
           ros2:rcl_node_init, ros2:rcl_subscription_init,
           ros2:rcl_publisher_init, ros2:rcl_client_init,
           ros2:rcl_service_init, ros2:rcl_timer_init,

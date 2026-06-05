@@ -138,46 +138,46 @@ ros2:rclcpp_executor_execute
 FISH custom — action server (C++)
 ----------------------------------
 
-ros2:rclcpp_action_server_init
+ros2:fish_rclcpp_action_server_init
   — USED in postprocess/model.py:290
            postprocess/model_improved.py:290
     Resolves action goal/cancel/result component services into
     entities with action_name + role.
 
-ros2:rclcpp_action_execute_goal
+ros2:fish_rclcpp_action_execute_goal
   — NOT USED. Reserved for future per-goal lifecycle analysis.
 
-ros2:rclcpp_action_execute_cancel
+ros2:fish_rclcpp_action_execute_cancel
   — NOT USED. Reserved.
 
-ros2:rclcpp_action_execute_result
+ros2:fish_rclcpp_action_execute_result
   — NOT USED. Reserved.
 
 
 FISH custom — rclpy parity (Python)
 ------------------------------------
 
-ros2:rclpy_subscription_callback_added
+ros2:fish_rclpy_subscription_callback_added
   — USED in postprocess/model.py:356
            postprocess/model_improved.py:317
     Python-side fallback for subscription → callback when rclcpp
     variant is absent.
 
-ros2:rclpy_service_callback_added
+ros2:fish_rclpy_service_callback_added
   — USED in postprocess/model.py:357
            postprocess/model_improved.py:318
     Python-side fallback for service → callback.
 
-ros2:rclpy_timer_callback_added
+ros2:fish_rclpy_timer_callback_added
   — USED in postprocess/model.py:358
            postprocess/model_improved.py:319
     Python-side fallback for timer → callback. (Very high-volume
     under rclpy sim-time — see known_issues.txt ISSUE-001.)
 
-ros2:rclpy_timer_link_node
+ros2:fish_rclpy_timer_link_node
   — NOT USED. Emitted but no postprocess consumer; parity-only.
 
-ros2:rclpy_callback_register
+ros2:fish_rclpy_callback_register
   — USED in postprocess/model.py:359
            postprocess/model_improved.py:320
     Python-side fallback for callback → symbol.
@@ -186,25 +186,25 @@ ros2:rclpy_callback_register
 FISH custom — service client
 -----------------------------
 
-ros2:rclcpp_client_request_sent
+ros2:fish_rclcpp_client_request_sent
   — USED in postprocess/model.py:613
            postprocess/model_improved.py:907,1064
     Client-side send event; paired with callback window to attribute
     cli_aspects.
 
-ros2:rclcpp_client_response_received
+ros2:fish_rclcpp_client_response_received
   — NOT USED. Emitted but no postprocess consumer.
 
 
 FISH custom — callback-link attribution
 ----------------------------------------
 
-ros2:fish_publish_link
+ros2:fish_rclcpp_publish_link
   — USED in postprocess/model_improved.py:783
     (publisher_handle, callback_addr) pairs → pub-aspect attribution
     at F vertex granularity.
 
-ros2:fish_client_link
+ros2:fish_rclcpp_client_link
   — USED in postprocess/model_improved.py:784
     (client_handle, callback_addr) pairs → cli-aspect attribution
     and callback-continuation splitting.
@@ -213,20 +213,20 @@ ros2:fish_client_link
 FISH custom — scheduler introspection
 --------------------------------------
 
-ros2:fish_executor_init
+ros2:fish_rclcpp_executor_init
   — USED in postprocess/model_improved.py:481
     Executor type (SingleThreaded / MultiThreaded) + num_threads
     → EX vertex attrs.
 
-ros2:fish_callback_group_init
+ros2:fish_rclcpp_callback_group_init
   — USED in postprocess/model_improved.py:482
     Group type (MutuallyExclusive / Reentrant) → E-vertex attr.
 
-ros2:fish_cbgroup_add
+ros2:fish_rclcpp_cbgroup_add
   — USED in postprocess/model_improved.py:483
     entity ↔ callback_group binding.
 
-ros2:fish_executor_add_cbgroup
+ros2:fish_rclcpp_executor_add_cbgroup
   — USED in postprocess/model_improved.py:484
     callback_group ↔ executor binding.
 
@@ -256,11 +256,11 @@ Summary
     ros2:rclcpp_executor_get_next_ready        — per-spin
     ros2:rclcpp_executor_wait_for_work         — per-spin
     ros2:rclcpp_executor_execute               — per-executor-iter
-    ros2:rclcpp_action_execute_goal            — reserved (FISH)
-    ros2:rclcpp_action_execute_cancel          — reserved (FISH)
-    ros2:rclcpp_action_execute_result          — reserved (FISH)
-    ros2:rclpy_timer_link_node                 — parity (FISH)
-    ros2:rclcpp_client_response_received       — unused (FISH)
+    ros2:fish_rclcpp_action_execute_goal            — reserved (FISH)
+    ros2:fish_rclcpp_action_execute_cancel          — reserved (FISH)
+    ros2:fish_rclcpp_action_execute_result          — reserved (FISH)
+    ros2:fish_rclpy_timer_link_node                 — parity (FISH)
+    ros2:fish_rclcpp_client_response_received       — unused (FISH)
 
   (19 entries above — 13 are standard ROS 2 low-volume or lifecycle,
    6 are FISH extras reserved for future use.)

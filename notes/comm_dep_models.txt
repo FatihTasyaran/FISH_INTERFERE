@@ -342,11 +342,11 @@ Service client as entity aspect (not entity type):
 
   FISH custom tracepoints (rclcpp client.hpp patch):
 
-    1. rclcpp_client_request_sent(client_handle, sequence_number)
+    1. fish_rclcpp_client_request_sent(client_handle, sequence_number)
        When: async_send_request_impl, after rcl_send_request succeeds
        Links: client_handle → rcl_client_init → service_name
 
-    2. rclcpp_client_response_received(client_handle, sequence_number, response_type)
+    2. fish_rclcpp_client_response_received(client_handle, sequence_number, response_type)
        When: handle_response entry, before variant dispatch
        response_type: 0=future_only, 1=callback, 2=callback_with_request
        Links: sequence_number matches request_sent, measures round-trip
@@ -439,26 +439,26 @@ Runtime trace sequence (action goal lifecycle):
   Client entity callback (Node A):
     callback_start(entity_cb)
       ...
-      rclcpp_client_request_sent(cli_handle, seq=1)     ← send_goal request
+      fish_rclcpp_client_request_sent(cli_handle, seq=1)     ← send_goal request
     callback_end(entity_cb)
 
-    rclcpp_client_response_received(cli_handle, seq=1)  ← goal accepted
-    rclcpp_client_request_sent(cli_handle, seq=1)       ← get_result request
+    fish_rclcpp_client_response_received(cli_handle, seq=1)  ← goal accepted
+    fish_rclcpp_client_request_sent(cli_handle, seq=1)       ← get_result request
 
   Server (Node B):
-    rclcpp_action_execute_goal(action_handle)            ← goal dispatch
+    fish_rclcpp_action_execute_goal(action_handle)            ← goal dispatch
       callback_start(goal_srv_cb)
         ... process goal ...
         rcl_publish(feedback_handle)                     ← feedback published
       callback_end(goal_srv_cb)
 
-    rclcpp_action_execute_result(action_handle)          ← result dispatch
+    fish_rclcpp_action_execute_result(action_handle)          ← result dispatch
       callback_start(result_srv_cb)
         ... prepare result ...
       callback_end(result_srv_cb)
 
   Client (Node A):
-    rclcpp_client_response_received(cli_handle, seq=1)  ← result received
+    fish_rclcpp_client_response_received(cli_handle, seq=1)  ← result received
 
   Timing measurements:
     Goal accept latency:   send_goal request_sent → response_received
@@ -476,18 +476,18 @@ Edge summary per action:
 
 Trace events used:
   Structural:
-    rclcpp_action_server_init    → action_handle, service handles
+    fish_rclcpp_action_server_init    → action_handle, service handles
     rcl_client_init              → client service names
     rcl_service_init             → server service names
     rcl_subscription_init        → feedback/status subscribers
     rcl_publisher_init           → feedback/status publishers
 
   Runtime:
-    rclcpp_action_execute_goal   → goal dispatch (FISH custom)
-    rclcpp_action_execute_cancel → cancel dispatch (FISH custom)
-    rclcpp_action_execute_result → result dispatch (FISH custom)
-    rclcpp_client_request_sent   → request timing (FISH custom)
-    rclcpp_client_response_received → response timing (FISH custom)
+    fish_rclcpp_action_execute_goal   → goal dispatch (FISH custom)
+    fish_rclcpp_action_execute_cancel → cancel dispatch (FISH custom)
+    fish_rclcpp_action_execute_result → result dispatch (FISH custom)
+    fish_rclcpp_client_request_sent   → request timing (FISH custom)
+    fish_rclcpp_client_response_received → response timing (FISH custom)
     callback_start/end           → callback execution timing
     rcl_publish                  → feedback/status publish timing
 

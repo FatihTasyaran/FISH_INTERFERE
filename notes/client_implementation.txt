@@ -206,7 +206,7 @@ Client has ZERO tracepoints in rclcpp:
   same as publisher attribution.
 
   Potential FISH tracepoint additions:
-    - rclcpp_client_response_received(client_handle, sequence_number)
+    - fish_rclcpp_client_response_received(client_handle, sequence_number)
       → in handle_response, before callback/future dispatch
     - rclcpp_client_callback_start/end(callback)
       → around the callback invocation in handle_response (when present)

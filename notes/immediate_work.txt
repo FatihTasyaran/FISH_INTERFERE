@@ -123,7 +123,7 @@ Better approach:
 Open questions:
   - Does the bt2 Python binding handle all our tracepoint payload types
     (strings, arrays, enum) correctly? Need to confirm with
-    ros2:fish_publish_link + rclpy:* events specifically.
+    ros2:fish_rclcpp_publish_link + rclpy:* events specifically.
   - Memory footprint of the bt2 message iterator on a 16M-event trace.
 
 
@@ -525,7 +525,7 @@ Problem:
      Instead of querying per PID, load ALL relevant events once:
        - All callback_start/end events
        - All rcl_publish events
-       - All rclcpp_client_request_sent events
+       - All fish_rclcpp_client_request_sent events
      Group by vpid in memory, then process per-node.
      Risk: for very long traces, may exceed available memory.
      Mitigation: stream from babeltrace2 directly instead of MongoDB,
@@ -561,12 +561,12 @@ Problem:
 
 Implementation:
   1. For each entity with cli aspect, create a second function vertex
-     (continuation) linked to rclcpp_client_response_received trace event
+     (continuation) linked to fish_rclcpp_client_response_received trace event
   2. Response dep edge targets the continuation function, not the original
   3. Continuation function gets callback_start/end timing from
      handle_response (when callback variant is used)
 
-  Requires: rclcpp_client_response_received tracepoint firing for
+  Requires: fish_rclcpp_client_response_received tracepoint firing for
   internal node-to-node service calls (currently only fires for
   rclpy ActionClient CLI calls, not rclcpp internal clients).
 

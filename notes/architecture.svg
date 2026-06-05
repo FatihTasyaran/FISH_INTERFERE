@@ -114,7 +114,7 @@
   <rect x="630" y="550" width="500" height="115" rx="10" fill="#fff" stroke="#2E86C1" stroke-width="1.2" filter="url(#shadow)"/>
   <text x="880" y="575" text-anchor="middle" font-size="12" font-weight="600" fill="#333">Tracepoints in Patched ROS 2</text>
   <text x="880" y="595" text-anchor="middle" font-size="10" fill="#555">Standard: callback_start/end, rcl_publish, rcl_take, ...</text>
-  <text x="880" y="615" text-anchor="middle" font-size="10" fill="#555">FISH custom: fish_publish_link, fish_client_link,</text>
+  <text x="880" y="615" text-anchor="middle" font-size="10" fill="#555">FISH custom: fish_rclcpp_publish_link, fish_rclcpp_client_link,</text>
   <text x="880" y="635" text-anchor="middle" font-size="10" fill="#555">action_server_init, action_execute_*</text>
   <text x="880" y="655" text-anchor="middle" font-size="10" fill="#555">rclpy: rclpy_callback_start/end, rclpy_publish, ...</text>
 

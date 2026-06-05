@@ -6,7 +6,7 @@
 # for per-event usage citations. Drops 14 high-volume / per-message /
 # per-spin standard ros2_tracing events that the FISH postprocess
 # never queries. Keeps 5 "reserved" FISH-custom events (action
-# execute, rclpy_timer_link_node, client_response_received) for
+# execute, fish_rclpy_timer_link_node, client_response_received) for
 # imminent work even though they are not yet consumed.
 
 # --- Core foundation: init + callback chain (all consumed) ---
@@ -27,33 +27,33 @@ ros2:callback_end
 
 # --- Action server dispatch (FISH custom) ---
 # server_init consumed; execute_* reserved for future per-goal timing
-ros2:rclcpp_action_server_init
-ros2:rclcpp_action_execute_goal
-ros2:rclcpp_action_execute_cancel
-ros2:rclcpp_action_execute_result
+ros2:fish_rclcpp_action_server_init
+ros2:fish_rclcpp_action_execute_goal
+ros2:fish_rclcpp_action_execute_cancel
+ros2:fish_rclcpp_action_execute_result
 
 # --- rclpy callback chain (FISH custom) ---
 # timer_link_node is emitted but not yet consumed (reserved)
-ros2:rclpy_subscription_callback_added
-ros2:rclpy_service_callback_added
-ros2:rclpy_timer_callback_added
-ros2:rclpy_timer_link_node
-ros2:rclpy_callback_register
+ros2:fish_rclpy_subscription_callback_added
+ros2:fish_rclpy_service_callback_added
+ros2:fish_rclpy_timer_callback_added
+ros2:fish_rclpy_timer_link_node
+ros2:fish_rclpy_callback_register
 
 # --- Service client (FISH custom) ---
 # response_received reserved for future client round-trip work
-ros2:rclcpp_client_request_sent
-ros2:rclcpp_client_response_received
+ros2:fish_rclcpp_client_request_sent
+ros2:fish_rclcpp_client_response_received
 
 # --- Callback-link attribution (FISH custom, all consumed) ---
-ros2:fish_publish_link
-ros2:fish_client_link
+ros2:fish_rclcpp_publish_link
+ros2:fish_rclcpp_client_link
 
 # --- Scheduler introspection (FISH custom, all consumed) ---
-ros2:fish_executor_init
-ros2:fish_callback_group_init
-ros2:fish_cbgroup_add
-ros2:fish_executor_add_cbgroup
+ros2:fish_rclcpp_executor_init
+ros2:fish_rclcpp_callback_group_init
+ros2:fish_rclcpp_cbgroup_add
+ros2:fish_rclcpp_executor_add_cbgroup
 
 # --- DROPPED (not consumed, high volume on production stacks) ---
 #   ros2:rcl_init                           (init-only, no consumer)

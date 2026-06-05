@@ -7,7 +7,7 @@ Date discovered: 2026-03-29
 Session: fish_20260329_182842
 
 Observation:
-  rclpy_timer_callback_added fires 88,789 times in a ~30 second session
+  fish_rclpy_timer_callback_added fires 88,789 times in a ~30 second session
   for yolo_inference_node (PID 952). There are hundreds of distinct
   timer_handle values, many repeating ~3000 times each (memory reuse).
 
@@ -28,14 +28,14 @@ Root cause (verified in rclpy source):
 
   Each Timer.__init__() calls _rclpy.Timer() which calls rcl_timer_init()
   in the C layer, firing the rcl_timer_init LTTng tracepoint. Our
-  rclpy_timer_callback_added tracepoint fires from the same __init__.
+  fish_rclpy_timer_callback_added tracepoint fires from the same __init__.
 
   The 348 distinct timer_handle values with high repeat counts (top handle:
   3376 times) confirm memory reuse after free — the rcl_timer_t is
   allocated, used for one WaitSet cycle, then destroyed, and a new one
   is allocated at the same address.
 
-  Note: rclpy_timer_link_node count is 0 for PID 952, confirming these
+  Note: fish_rclpy_timer_link_node count is 0 for PID 952, confirming these
   are NOT user-created timers (Node.create_timer). They are executor-
   internal timeout timers with callback=None.
 
@@ -64,7 +64,7 @@ Upstream concern:
 
 FISH mitigation options:
   1. Filter in tracepoint: check if timer_handle was already seen for this
-     node before firing rclpy_timer_callback_added. Adds complexity to the
+     node before firing fish_rclpy_timer_callback_added. Adds complexity to the
      ctypes bridge but eliminates 99.9% of redundant events.
   2. Filter at ingest: deduplicate timer events by (vpid, timer_handle)
      keeping only the first occurrence. Simple but doesn't reduce trace

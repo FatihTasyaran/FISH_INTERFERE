@@ -8,8 +8,8 @@ Date: 2026-03-31
 -----------------
 
 Two new LTTng tracepoints:
-  ros2:rclcpp_client_request_sent(client_handle, sequence_number)
-  ros2:rclcpp_client_response_received(client_handle, sequence_number, response_type)
+  ros2:fish_rclcpp_client_request_sent(client_handle, sequence_number)
+  ros2:fish_rclcpp_client_response_received(client_handle, sequence_number, response_type)
 
 Patched in three locations:
 
@@ -18,8 +18,8 @@ Patched in three locations:
      Status: WORKING (symbols exported, verified)
 
   B. rclcpp client.hpp (overlay workspace):
-     async_send_request_impl() → rclcpp_client_request_sent after rcl_send_request
-     handle_response() → rclcpp_client_response_received + callback_start/end
+     async_send_request_impl() → fish_rclcpp_client_request_sent after rcl_send_request
+     handle_response() → fish_rclcpp_client_response_received + callback_start/end
      Status: COMPILED, NOT YET TESTED (no rclcpp service client in AAS)
 
   C. rclpy ctypes bridge + Python patches:
@@ -59,14 +59,14 @@ Three separate client communication paths need tracepoints:
   PATH 1: rclcpp Client (client.hpp)
     Used by: rclcpp nodes calling services directly (create_client + async_send_request)
     Current status: PATCHED in client.hpp
-    Tracepoints: rclcpp_client_request_sent + rclcpp_client_response_received
+    Tracepoints: fish_rclcpp_client_request_sent + fish_rclcpp_client_response_received
                  + callback_start/end (when callback variant used)
     Testing needed: find or create an rclcpp node that makes service calls
 
   PATH 2: rclpy Client (client.py)
     Used by: rclpy nodes calling services directly (create_client + call_async)
     Current status: PATCHED in client.py + executors.py
-    Tracepoints: rclcpp_client_request_sent + rclcpp_client_response_received
+    Tracepoints: fish_rclcpp_client_request_sent + fish_rclcpp_client_response_received
                  (via ctypes bridge, response_type always 0=future_only)
     Testing needed: find or create an rclpy node that makes direct service calls
 

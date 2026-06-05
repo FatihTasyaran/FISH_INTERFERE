@@ -14,7 +14,7 @@ Markers:
 1. FISH graph topology (L-1 to L3)
 ----------------------------------
   ✓ Per process: executor count, executor types (ST / MT / StaticST),
-    thread counts (num_threads from fish_executor_init).
+    thread counts (num_threads from fish_rclcpp_executor_init).
   ✓ Per executor: callback group count + types
     (MutuallyExclusive vs. Reentrant).
   ✓ Per node: entity count by kind (pub / sub / cli / serv / timer),
@@ -38,7 +38,7 @@ Markers:
     RE → parallel allowed).
   ✓ Inter-callback gap: time between consecutive invocations of the
     same F → empirical period estimate.
-  ◑ Publisher → subscription latency (fish_publish_link tracepoint,
+  ◑ Publisher → subscription latency (fish_rclcpp_publish_link tracepoint,
     dedup-guarded — present in trace, aggregator pending).
   ◑ Service round-trip latency:
       RTT = response_received.ts − request_sent.ts

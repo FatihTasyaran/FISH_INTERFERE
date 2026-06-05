@@ -303,9 +303,9 @@ rclpy scheduler tracepoints — parity with the C++ side.
 
 2. First deploy — LTTng buffer overflow
    fish_compose_20260419_154439 (first rclpy run):
-     aircraft fish_executor_add_cbgroup: 103,466 events
-     aircraft fish_publish_link:              1 event
-   fish_publish_link dropped from 88 (C++-only baseline) to 1 because
+     aircraft fish_rclcpp_executor_add_cbgroup: 103,466 events
+     aircraft fish_rclcpp_publish_link:              1 event
+   fish_rclcpp_publish_link dropped from 88 (C++-only baseline) to 1 because
    the over-firing add_cbgroup events displaced it in the trace
    buffer. yolo_py alone produced ~25,000 add_cbgroup events from
    rclpy.spin_once's add_node/remove_node cycle.
@@ -322,7 +322,7 @@ rclpy scheduler tracepoints — parity with the C++ side.
    though spin_once is a standalone function rather than a method.
    `get_global_executor()` returns a module-scoped singleton; each
    Python process has one long-lived rclpy executor. Confirmed by
-   the trace: yolo_py (PID 1252) fired fish_executor_init exactly
+   the trace: yolo_py (PID 1252) fired fish_rclcpp_executor_init exactly
    once.
 
 4. Fix — bridge-side dedup
@@ -334,10 +334,10 @@ rclpy scheduler tracepoints — parity with the C++ side.
 
 5. Second deploy — clean counts
    fish_compose_20260419_161633 (same mission, with dedup):
-     aircraft fish_executor_add_cbgroup:  34 events (~3000x reduction)
-     aircraft fish_publish_link:          89 events (recovered)
-     aircraft fish_executor_init:         26  (13 C++ + 13 rclpy)
-     aircraft fish_callback_group_init:   50  (24 C++ + 26 rclpy)
+     aircraft fish_rclcpp_executor_add_cbgroup:  34 events (~3000x reduction)
+     aircraft fish_rclcpp_publish_link:          89 events (recovered)
+     aircraft fish_rclcpp_executor_init:         26  (13 C++ + 13 rclpy)
+     aircraft fish_rclcpp_callback_group_init:   50  (24 C++ + 26 rclpy)
      yolo_py (PID 1252) EX vertex:  SingleThreaded, 1 thread, 1 CG
      9/9 EX vertices in unified graph have executor_type + cb_groups
      (previously 8/9, yolo_py was ?)
@@ -399,12 +399,12 @@ end-to-end validation on a real AAS mission.
    Purpose: answer "what executor type, how many threads, which
    callback groups" directly from trace, not from heuristics.
 
-     fish_executor_init(executor_addr, executor_type, num_threads)
+     fish_rclcpp_executor_init(executor_addr, executor_type, num_threads)
        — in SingleThreadedExecutor / MultiThreadedExecutor /
          StaticSingleThreadedExecutor ctors
-     fish_callback_group_init(group_addr, group_type, automatic_add)
+     fish_rclcpp_callback_group_init(group_addr, group_type, automatic_add)
        — in CallbackGroup ctor
-     fish_cbgroup_add(group_addr, entity_rcl_handle, entity_kind)
+     fish_rclcpp_cbgroup_add(group_addr, entity_rcl_handle, entity_kind)
        — in add_subscription / add_timer / add_service / add_client /
          add_waitable. Critical detail: entity_addr is the RCL handle
          obtained via `subscription_ptr->get_subscription_handle().get()`
@@ -414,7 +414,7 @@ end-to-end validation on a real AAS mission.
          First attempt used the rclcpp wrapper pointer; migration
          logic in install_fish_tracepoints upgrades existing overlays
          in place.
-     fish_executor_add_cbgroup(executor_addr, group_addr, node_addr)
+     fish_rclcpp_executor_add_cbgroup(executor_addr, group_addr, node_addr)
        — in Executor::add_callback_group_to_map (covers both explicit
          add_callback_group and the auto-add path through add_node).
 
@@ -443,8 +443,8 @@ end-to-end validation on a real AAS mission.
    - Model extraction + compose: 129 vertex unified graph (3 CN, 9 EX,
      13 N, ~45 E, ~56 F), 186 edges.
    - Scheduler event yield in aircraft:
-       13 fish_executor_init, 24 fish_callback_group_init,
-       537 fish_cbgroup_add, 21 fish_executor_add_cbgroup.
+       13 fish_rclcpp_executor_init, 24 fish_rclcpp_callback_group_init,
+       537 fish_rclcpp_cbgroup_add, 21 fish_rclcpp_executor_add_cbgroup.
    - 32/33 entities ended up with callback_group attribute.
    - 8/9 executors ended up with executor_type + num_threads + cb_groups
      attributes. The 9th (yolo_py) is rclpy — see below.
@@ -501,7 +501,7 @@ is also muddied by yolo_py's own rough start:
     tracepoints were firing normally here)
 
 So the existing rclpy tracepoints (rclpy_*_callback_added,
-rclpy_callback_register) ARE working — we have PID-1249 callbacks and
+fish_rclpy_callback_register) ARE working — we have PID-1249 callbacks and
 subscription links. What is MISSING is the rclpy-specific
 counterparts for the 4 new scheduler tracepoints. Adding them is
 mechanically straightforward: patch rclpy/executors.py

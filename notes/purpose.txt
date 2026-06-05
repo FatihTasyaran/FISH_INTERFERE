@@ -65,7 +65,7 @@ This purpose drives the design decisions throughout the project:
   * Coverage of rclcpp AND rclpy — Python nodes are first-class.
   * Coverage of ros2 run AND ros2 launch — both entry points patched.
   * Coverage of composable node containers — most modern stacks use them.
-  * Custom tracepoints (fish_publish_link, fish_client_link) — to make
+  * Custom tracepoints (fish_rclcpp_publish_link, fish_rclcpp_client_link) — to make
     callback→publication attribution deterministic instead of heuristic.
   * Multi-container orchestration — real autonomy stacks span multiple
     Docker containers across hosts.

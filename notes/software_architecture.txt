@@ -49,7 +49,7 @@ FISH Software Architecture — Block Diagram
 │                                                                     │
 │  Tracepoints (in patched ROS 2):                                   │
 │    Standard:   callback_start/end, rcl_publish, rcl_take, …        │
-│    FISH custom: fish_publish_link, fish_client_link,               │
+│    FISH custom: fish_rclcpp_publish_link, fish_rclcpp_client_link,               │
 │                 action_server_init, action_execute_goal/cancel/res  │
 ├─────────────────────────────────────────────────────────────────────┤
 │                     3. ORCHESTRATION LAYER                          │

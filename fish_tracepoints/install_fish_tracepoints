@@ -49,7 +49,7 @@ while [ $# -gt 0 ]; do
             echo "  --action     Install 4 action server dispatch tracepoints"
             echo "  --rclpy      Install 5 rclpy callback chain tracepoints"
             echo "  --client     Install 2 service client tracepoints"
-            echo "  --link       Install 2 callback-link tracepoints (fish_publish_link, fish_client_link)"
+            echo "  --link       Install 2 callback-link tracepoints (fish_rclcpp_publish_link, fish_rclcpp_client_link)"
             echo "  --scheduler  Install 4 scheduler introspection tracepoints (executor/cbgroup)"
             echo "  --all        Install all (default if no flag given)"
             exit 0
@@ -193,7 +193,7 @@ patch_tracetools_action() {
 
 +TRACEPOINT_EVENT(
 +  TRACEPOINT_PROVIDER,
-+  rclcpp_action_server_init,
++  fish_rclcpp_action_server_init,
 +  TP_ARGS(
 +    const void *, action_server_handle_arg,
 +    const char *, action_name_arg,
@@ -212,7 +212,7 @@ patch_tracetools_action() {
 +
 +TRACEPOINT_EVENT(
 +  TRACEPOINT_PROVIDER,
-+  rclcpp_action_execute_goal,
++  fish_rclcpp_action_execute_goal,
 +  TP_ARGS(
 +    const void *, action_server_handle_arg
 +  ),
@@ -223,7 +223,7 @@ patch_tracetools_action() {
 +
 +TRACEPOINT_EVENT(
 +  TRACEPOINT_PROVIDER,
-+  rclcpp_action_execute_cancel,
++  fish_rclcpp_action_execute_cancel,
 +  TP_ARGS(
 +    const void *, action_server_handle_arg
 +  ),
@@ -234,7 +234,7 @@ patch_tracetools_action() {
 +
 +TRACEPOINT_EVENT(
 +  TRACEPOINT_PROVIDER,
-+  rclcpp_action_execute_result,
++  fish_rclcpp_action_execute_result,
 +  TP_ARGS(
 +    const void *, action_server_handle_arg
 +  ),
@@ -257,7 +257,7 @@ PATCH_TP_CALL
    rclcpp_executor_execute,
    const void * handle)
 
-+/// `rclcpp_action_server_init`
++/// `fish_rclcpp_action_server_init`
 +/**
 + * Initialization of an action server.
 + * Links the action server handle to its name and component service handles.
@@ -269,41 +269,41 @@ PATCH_TP_CALL
 + * \param[in] result_service_handle pointer to the result service
 + */
 +DECLARE_TRACEPOINT(
-+  rclcpp_action_server_init,
++  fish_rclcpp_action_server_init,
 +  const void * action_server_handle,
 +  const char * action_name,
 +  const void * goal_service_handle,
 +  const void * cancel_service_handle,
 +  const void * result_service_handle)
 +
-+/// `rclcpp_action_execute_goal`
++/// `fish_rclcpp_action_execute_goal`
 +/**
 + * Start of action goal request dispatch.
 + *
 + * \param[in] action_server_handle pointer to the rcl_action_server_t
 + */
 +DECLARE_TRACEPOINT(
-+  rclcpp_action_execute_goal,
++  fish_rclcpp_action_execute_goal,
 +  const void * action_server_handle)
 +
-+/// `rclcpp_action_execute_cancel`
++/// `fish_rclcpp_action_execute_cancel`
 +/**
 + * Start of action cancel request dispatch.
 + *
 + * \param[in] action_server_handle pointer to the rcl_action_server_t
 + */
 +DECLARE_TRACEPOINT(
-+  rclcpp_action_execute_cancel,
++  fish_rclcpp_action_execute_cancel,
 +  const void * action_server_handle)
 +
-+/// `rclcpp_action_execute_result`
++/// `fish_rclcpp_action_execute_result`
 +/**
 + * Start of action result request dispatch.
 + *
 + * \param[in] action_server_handle pointer to the rcl_action_server_t
 + */
 +DECLARE_TRACEPOINT(
-+  rclcpp_action_execute_result,
++  fish_rclcpp_action_execute_result,
 +  const void * action_server_handle)
 +
  #ifdef __cplusplus
@@ -321,7 +321,7 @@ PATCH_TT_H
  }
 
 +void TRACEPOINT(
-+  rclcpp_action_server_init,
++  fish_rclcpp_action_server_init,
 +  const void * action_server_handle,
 +  const char * action_name,
 +  const void * goal_service_handle,
@@ -329,7 +329,7 @@ PATCH_TT_H
 +  const void * result_service_handle)
 +{
 +  CONDITIONAL_TP(
-+    rclcpp_action_server_init,
++    fish_rclcpp_action_server_init,
 +    action_server_handle,
 +    action_name,
 +    goal_service_handle,
@@ -338,29 +338,29 @@ PATCH_TT_H
 +}
 +
 +void TRACEPOINT(
-+  rclcpp_action_execute_goal,
++  fish_rclcpp_action_execute_goal,
 +  const void * action_server_handle)
 +{
 +  CONDITIONAL_TP(
-+    rclcpp_action_execute_goal,
++    fish_rclcpp_action_execute_goal,
 +    action_server_handle);
 +}
 +
 +void TRACEPOINT(
-+  rclcpp_action_execute_cancel,
++  fish_rclcpp_action_execute_cancel,
 +  const void * action_server_handle)
 +{
 +  CONDITIONAL_TP(
-+    rclcpp_action_execute_cancel,
++    fish_rclcpp_action_execute_cancel,
 +    action_server_handle);
 +}
 +
 +void TRACEPOINT(
-+  rclcpp_action_execute_result,
++  fish_rclcpp_action_execute_result,
 +  const void * action_server_handle)
 +{
 +  CONDITIONAL_TP(
-+    rclcpp_action_execute_result,
++    fish_rclcpp_action_execute_result,
 +    action_server_handle);
 +}
 +
@@ -382,14 +382,14 @@ path = f"{OVERLAY}/include/tracetools/tp_call.h"
 with open(path) as f:
     content = f.read()
 
-if "rclpy_subscription_callback_added" in content:
+if "fish_rclpy_subscription_callback_added" in content:
     print("    tp_call.h already has rclpy events, skipping")
 else:
     INSERT_BEFORE = "#endif  // _TRACETOOLS__TP_CALL_H_"
     new_events = """
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclpy_subscription_callback_added,
+  fish_rclpy_subscription_callback_added,
   TP_ARGS(
     const void *, subscription_handle_arg,
     const void *, callback_arg
@@ -402,7 +402,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclpy_service_callback_added,
+  fish_rclpy_service_callback_added,
   TP_ARGS(
     const void *, service_handle_arg,
     const void *, callback_arg
@@ -415,7 +415,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclpy_timer_callback_added,
+  fish_rclpy_timer_callback_added,
   TP_ARGS(
     const void *, timer_handle_arg,
     const void *, callback_arg
@@ -428,7 +428,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclpy_timer_link_node,
+  fish_rclpy_timer_link_node,
   TP_ARGS(
     const void *, timer_handle_arg,
     const void *, node_handle_arg
@@ -441,7 +441,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclpy_callback_register,
+  fish_rclpy_callback_register,
   TP_ARGS(
     const void *, callback_arg,
     const char *, symbol_arg
@@ -463,11 +463,11 @@ path = f"{OVERLAY}/include/tracetools/tracetools.h"
 with open(path) as f:
     content = f.read()
 
-if "rclpy_subscription_callback_added" in content:
+if "fish_rclpy_subscription_callback_added" in content:
     print("    tracetools.h already has rclpy events, skipping")
 else:
     INSERT_BEFORE = "#ifdef __cplusplus\n}\n#endif\n\n#endif  // TRACETOOLS__TRACETOOLS_H_"
-    new_decls = """/// `rclpy_subscription_callback_added`
+    new_decls = """/// `fish_rclpy_subscription_callback_added`
 /**
  * Link a rclpy subscription to its Python callback.
  *
@@ -475,11 +475,11 @@ else:
  * \\param[in] callback Python callback id (id(callable))
  */
 DECLARE_TRACEPOINT(
-  rclpy_subscription_callback_added,
+  fish_rclpy_subscription_callback_added,
   const void * subscription_handle,
   const void * callback)
 
-/// `rclpy_service_callback_added`
+/// `fish_rclpy_service_callback_added`
 /**
  * Link a rclpy service to its Python callback.
  *
@@ -487,11 +487,11 @@ DECLARE_TRACEPOINT(
  * \\param[in] callback Python callback id
  */
 DECLARE_TRACEPOINT(
-  rclpy_service_callback_added,
+  fish_rclpy_service_callback_added,
   const void * service_handle,
   const void * callback)
 
-/// `rclpy_timer_callback_added`
+/// `fish_rclpy_timer_callback_added`
 /**
  * Link a rclpy timer to its Python callback.
  *
@@ -499,11 +499,11 @@ DECLARE_TRACEPOINT(
  * \\param[in] callback Python callback id
  */
 DECLARE_TRACEPOINT(
-  rclpy_timer_callback_added,
+  fish_rclpy_timer_callback_added,
   const void * timer_handle,
   const void * callback)
 
-/// `rclpy_timer_link_node`
+/// `fish_rclpy_timer_link_node`
 /**
  * Link a rclpy timer to its parent node.
  *
@@ -511,11 +511,11 @@ DECLARE_TRACEPOINT(
  * \\param[in] node_handle pointer to the rcl_node_t handle
  */
 DECLARE_TRACEPOINT(
-  rclpy_timer_link_node,
+  fish_rclpy_timer_link_node,
   const void * timer_handle,
   const void * node_handle)
 
-/// `rclpy_callback_register`
+/// `fish_rclpy_callback_register`
 /**
  * Register a Python callback symbol.
  *
@@ -523,7 +523,7 @@ DECLARE_TRACEPOINT(
  * \\param[in] symbol Python qualname of the callback
  */
 DECLARE_TRACEPOINT(
-  rclpy_callback_register,
+  fish_rclpy_callback_register,
   const void * callback,
   const char * symbol)
 
@@ -538,61 +538,61 @@ path = f"{OVERLAY}/src/tracetools.c"
 with open(path) as f:
     content = f.read()
 
-if "rclpy_subscription_callback_added" in content:
+if "fish_rclpy_subscription_callback_added" in content:
     print("    tracetools.c already has rclpy events, skipping")
 else:
     INSERT_BEFORE = "#ifndef _WIN32\n# pragma GCC diagnostic pop"
     new_impls = """void TRACEPOINT(
-  rclpy_subscription_callback_added,
+  fish_rclpy_subscription_callback_added,
   const void * subscription_handle,
   const void * callback)
 {
   CONDITIONAL_TP(
-    rclpy_subscription_callback_added,
+    fish_rclpy_subscription_callback_added,
     subscription_handle,
     callback);
 }
 
 void TRACEPOINT(
-  rclpy_service_callback_added,
+  fish_rclpy_service_callback_added,
   const void * service_handle,
   const void * callback)
 {
   CONDITIONAL_TP(
-    rclpy_service_callback_added,
+    fish_rclpy_service_callback_added,
     service_handle,
     callback);
 }
 
 void TRACEPOINT(
-  rclpy_timer_callback_added,
+  fish_rclpy_timer_callback_added,
   const void * timer_handle,
   const void * callback)
 {
   CONDITIONAL_TP(
-    rclpy_timer_callback_added,
+    fish_rclpy_timer_callback_added,
     timer_handle,
     callback);
 }
 
 void TRACEPOINT(
-  rclpy_timer_link_node,
+  fish_rclpy_timer_link_node,
   const void * timer_handle,
   const void * node_handle)
 {
   CONDITIONAL_TP(
-    rclpy_timer_link_node,
+    fish_rclpy_timer_link_node,
     timer_handle,
     node_handle);
 }
 
 void TRACEPOINT(
-  rclpy_callback_register,
+  fish_rclpy_callback_register,
   const void * callback,
   const char * symbol)
 {
   CONDITIONAL_TP(
-    rclpy_callback_register,
+    fish_rclpy_callback_register,
     callback,
     symbol);
 }
@@ -618,14 +618,14 @@ path = f"{OVERLAY}/include/tracetools/tp_call.h"
 with open(path) as f:
     content = f.read()
 
-if "rclcpp_client_request_sent" in content:
+if "fish_rclcpp_client_request_sent" in content:
     print("    tp_call.h already has client events, skipping")
 else:
     INSERT_BEFORE = "#endif  // _TRACETOOLS__TP_CALL_H_"
     new_events = """
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclcpp_client_request_sent,
+  fish_rclcpp_client_request_sent,
   TP_ARGS(
     const void *, client_handle_arg,
     const int64_t, sequence_number_arg
@@ -638,7 +638,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclcpp_client_response_received,
+  fish_rclcpp_client_response_received,
   TP_ARGS(
     const void *, client_handle_arg,
     const int64_t, sequence_number_arg,
@@ -662,11 +662,11 @@ path = f"{OVERLAY}/include/tracetools/tracetools.h"
 with open(path) as f:
     content = f.read()
 
-if "rclcpp_client_request_sent" in content:
+if "fish_rclcpp_client_request_sent" in content:
     print("    tracetools.h already has client events, skipping")
 else:
     INSERT_BEFORE = "#ifdef __cplusplus\n}\n#endif\n\n#endif  // TRACETOOLS__TRACETOOLS_H_"
-    new_decls = """/// `rclcpp_client_request_sent`
+    new_decls = """/// `fish_rclcpp_client_request_sent`
 /**
  * Service client request sent.
  *
@@ -674,11 +674,11 @@ else:
  * \\param[in] sequence_number request sequence ID
  */
 DECLARE_TRACEPOINT(
-  rclcpp_client_request_sent,
+  fish_rclcpp_client_request_sent,
   const void * client_handle,
   const int64_t sequence_number)
 
-/// `rclcpp_client_response_received`
+/// `fish_rclcpp_client_response_received`
 /**
  * Service client response received.
  * response_type: 0=future_only, 1=callback, 2=callback_with_request
@@ -688,7 +688,7 @@ DECLARE_TRACEPOINT(
  * \\param[in] response_type variant type of the pending request
  */
 DECLARE_TRACEPOINT(
-  rclcpp_client_response_received,
+  fish_rclcpp_client_response_received,
   const void * client_handle,
   const int64_t sequence_number,
   const int response_type)
@@ -704,29 +704,29 @@ path = f"{OVERLAY}/src/tracetools.c"
 with open(path) as f:
     content = f.read()
 
-if "rclcpp_client_request_sent" in content:
+if "fish_rclcpp_client_request_sent" in content:
     print("    tracetools.c already has client events, skipping")
 else:
     INSERT_BEFORE = "#ifndef _WIN32\n# pragma GCC diagnostic pop"
     new_impls = """void TRACEPOINT(
-  rclcpp_client_request_sent,
+  fish_rclcpp_client_request_sent,
   const void * client_handle,
   const int64_t sequence_number)
 {
   CONDITIONAL_TP(
-    rclcpp_client_request_sent,
+    fish_rclcpp_client_request_sent,
     client_handle,
     sequence_number);
 }
 
 void TRACEPOINT(
-  rclcpp_client_response_received,
+  fish_rclcpp_client_response_received,
   const void * client_handle,
   const int64_t sequence_number,
   const int response_type)
 {
   CONDITIONAL_TP(
-    rclcpp_client_response_received,
+    fish_rclcpp_client_response_received,
     client_handle,
     sequence_number,
     response_type);
@@ -754,7 +754,7 @@ path = f"{OVERLAY}/include/tracetools/tp_call.h"
 with open(path) as f:
     content = f.read()
 
-if "fish_publish_link" in content:
+if "fish_rclcpp_publish_link" in content:
     print("    tp_call.h already has link events, skipping")
 else:
     INSERT_BEFORE = "#endif  // _TRACETOOLS__TP_CALL_H_"
@@ -763,7 +763,7 @@ else:
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  fish_publish_link,
+  fish_rclcpp_publish_link,
   TP_ARGS(
     const void *, publisher_handle_arg,
     const void *, callback_arg
@@ -776,7 +776,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  fish_client_link,
+  fish_rclcpp_client_link,
   TP_ARGS(
     const void *, client_handle_arg,
     const void *, callback_arg
@@ -798,21 +798,21 @@ path = f"{OVERLAY}/include/tracetools/tracetools.h"
 with open(path) as f:
     content = f.read()
 
-if "fish_publish_link" in content:
+if "fish_rclcpp_publish_link" in content:
     print("    tracetools.h already has link events, skipping")
 else:
     INSERT_BEFORE = "#ifdef __cplusplus\n}\n#endif\n\n#endif  // TRACETOOLS__TRACETOOLS_H_"
     new_decls = """/* FISH callback-link tracepoints */
 
-/// `fish_publish_link` — associates publisher_handle to active callback
+/// `fish_rclcpp_publish_link` — associates publisher_handle to active callback
 DECLARE_TRACEPOINT(
-  fish_publish_link,
+  fish_rclcpp_publish_link,
   const void * publisher_handle,
   const void * callback)
 
-/// `fish_client_link` — associates client_handle to active callback
+/// `fish_rclcpp_client_link` — associates client_handle to active callback
 DECLARE_TRACEPOINT(
-  fish_client_link,
+  fish_rclcpp_client_link,
   const void * client_handle,
   const void * callback)
 
@@ -830,7 +830,7 @@ path = f"{OVERLAY}/src/tracetools.c"
 with open(path) as f:
     content = f.read()
 
-if "fish_publish_link" in content:
+if "fish_rclcpp_publish_link" in content:
     print("    tracetools.c already has link events, skipping")
 else:
     # 1. Modify callback_start to set __fish_active_callback
@@ -917,7 +917,7 @@ fish_link_seen(fish_link_pair_t * cache, int * n,
 }
 
 void TRACEPOINT(
-  fish_publish_link,
+  fish_rclcpp_publish_link,
   const void * publisher_handle,
   const void * callback)
 {
@@ -925,13 +925,13 @@ void TRACEPOINT(
   if (fish_link_seen(fish_pub_cache, &fish_pub_cache_n,
                      publisher_handle, callback)) { return; }
   CONDITIONAL_TP(
-    fish_publish_link,
+    fish_rclcpp_publish_link,
     publisher_handle,
     callback);
 }
 
 void TRACEPOINT(
-  fish_client_link,
+  fish_rclcpp_client_link,
   const void * client_handle,
   const void * callback)
 {
@@ -939,7 +939,7 @@ void TRACEPOINT(
   if (fish_link_seen(fish_cli_cache, &fish_cli_cache_n,
                      client_handle, callback)) { return; }
   CONDITIONAL_TP(
-    fish_client_link,
+    fish_rclcpp_client_link,
     client_handle,
     callback);
 }
@@ -966,7 +966,7 @@ path = f"{OVERLAY}/include/tracetools/tp_call.h"
 with open(path) as f:
     content = f.read()
 
-if "fish_executor_init" in content:
+if "fish_rclcpp_executor_init" in content:
     print("    tp_call.h already has scheduler events, skipping")
 else:
     INSERT_BEFORE = "#endif  // _TRACETOOLS__TP_CALL_H_"
@@ -975,7 +975,7 @@ else:
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  fish_executor_init,
+  fish_rclcpp_executor_init,
   TP_ARGS(
     const void *, executor_addr_arg,
     const char *, executor_type_arg,
@@ -990,7 +990,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  fish_callback_group_init,
+  fish_rclcpp_callback_group_init,
   TP_ARGS(
     const void *, group_addr_arg,
     const char *, group_type_arg,
@@ -1005,7 +1005,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  fish_cbgroup_add,
+  fish_rclcpp_cbgroup_add,
   TP_ARGS(
     const void *, group_addr_arg,
     const void *, entity_addr_arg,
@@ -1020,7 +1020,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  fish_executor_add_cbgroup,
+  fish_rclcpp_executor_add_cbgroup,
   TP_ARGS(
     const void *, executor_addr_arg,
     const void *, group_addr_arg,
@@ -1044,36 +1044,36 @@ path = f"{OVERLAY}/include/tracetools/tracetools.h"
 with open(path) as f:
     content = f.read()
 
-if "fish_executor_init" in content:
+if "fish_rclcpp_executor_init" in content:
     print("    tracetools.h already has scheduler events, skipping")
 else:
     INSERT_BEFORE = "#ifdef __cplusplus\n}\n#endif\n\n#endif  // TRACETOOLS__TRACETOOLS_H_"
     new_decls = """/* FISH scheduler introspection tracepoints */
 
-/// `fish_executor_init` — fires in each Executor derived class's constructor
+/// `fish_rclcpp_executor_init` — fires in each Executor derived class's constructor
 DECLARE_TRACEPOINT(
-  fish_executor_init,
+  fish_rclcpp_executor_init,
   const void * executor_addr,
   const char * executor_type,
   uint32_t num_threads)
 
-/// `fish_callback_group_init` — fires in CallbackGroup constructor
+/// `fish_rclcpp_callback_group_init` — fires in CallbackGroup constructor
 DECLARE_TRACEPOINT(
-  fish_callback_group_init,
+  fish_rclcpp_callback_group_init,
   const void * group_addr,
   const char * group_type,
   uint8_t automatic_add)
 
-/// `fish_cbgroup_add` — fires in CallbackGroup::add_{sub,tmr,srv,cli,wait}
+/// `fish_rclcpp_cbgroup_add` — fires in CallbackGroup::add_{sub,tmr,srv,cli,wait}
 DECLARE_TRACEPOINT(
-  fish_cbgroup_add,
+  fish_rclcpp_cbgroup_add,
   const void * group_addr,
   const void * entity_addr,
   const char * entity_kind)
 
-/// `fish_executor_add_cbgroup` — fires in Executor::add_callback_group_to_map
+/// `fish_rclcpp_executor_add_cbgroup` — fires in Executor::add_callback_group_to_map
 DECLARE_TRACEPOINT(
-  fish_executor_add_cbgroup,
+  fish_rclcpp_executor_add_cbgroup,
   const void * executor_addr,
   const void * group_addr,
   const void * node_addr)
@@ -1089,59 +1089,59 @@ path = f"{OVERLAY}/src/tracetools.c"
 with open(path) as f:
     content = f.read()
 
-if "fish_executor_init" in content:
+if "fish_rclcpp_executor_init" in content:
     print("    tracetools.c already has scheduler events, skipping")
 else:
     INSERT_BEFORE = "#ifndef _WIN32\n# pragma GCC diagnostic pop"
     new_impls = """/* FISH scheduler tracepoints (one-shot, no dedup) */
 
 void TRACEPOINT(
-  fish_executor_init,
+  fish_rclcpp_executor_init,
   const void * executor_addr,
   const char * executor_type,
   uint32_t num_threads)
 {
   CONDITIONAL_TP(
-    fish_executor_init,
+    fish_rclcpp_executor_init,
     executor_addr,
     executor_type,
     num_threads);
 }
 
 void TRACEPOINT(
-  fish_callback_group_init,
+  fish_rclcpp_callback_group_init,
   const void * group_addr,
   const char * group_type,
   uint8_t automatic_add)
 {
   CONDITIONAL_TP(
-    fish_callback_group_init,
+    fish_rclcpp_callback_group_init,
     group_addr,
     group_type,
     automatic_add);
 }
 
 void TRACEPOINT(
-  fish_cbgroup_add,
+  fish_rclcpp_cbgroup_add,
   const void * group_addr,
   const void * entity_addr,
   const char * entity_kind)
 {
   CONDITIONAL_TP(
-    fish_cbgroup_add,
+    fish_rclcpp_cbgroup_add,
     group_addr,
     entity_addr,
     entity_kind);
 }
 
 void TRACEPOINT(
-  fish_executor_add_cbgroup,
+  fish_rclcpp_executor_add_cbgroup,
   const void * executor_addr,
   const void * group_addr,
   const void * node_addr)
 {
   CONDITIONAL_TP(
-    fish_executor_add_cbgroup,
+    fish_rclcpp_executor_add_cbgroup,
     executor_addr,
     group_addr,
     node_addr);
@@ -1175,8 +1175,8 @@ path = f"{OVERLAY}/src/rclcpp/callback_group.cpp"
 with open(path) as f:
     content = f.read()
 
-if "fish_callback_group_init" in content:
-    # Migration: upgrade old fish_cbgroup_add that used the rclcpp wrapper
+if "fish_rclcpp_callback_group_init" in content:
+    # Migration: upgrade old fish_rclcpp_cbgroup_add that used the rclcpp wrapper
     # pointer (arg_name.get()) to the RCL handle variant so entity_addr
     # matches the handles from rcl_*_init events.
     migrations = [
@@ -1221,7 +1221,7 @@ else:
   automatically_add_to_executor_with_node_(automatically_add_to_executor_with_node)
 {
   TRACEPOINT(
-    fish_callback_group_init,
+    fish_rclcpp_callback_group_init,
     static_cast<const void *>(this),
     (group_type == CallbackGroupType::MutuallyExclusive) ?
       "MutuallyExclusive" : "Reentrant",
@@ -1251,7 +1251,7 @@ else:
                     f"  {list_name}.push_back({arg_name});")
         new_push = (f"  std::lock_guard<std::mutex> lock(mutex_);\n"
                     f"  TRACEPOINT(\n"
-                    f"    fish_cbgroup_add,\n"
+                    f"    fish_rclcpp_cbgroup_add,\n"
                     f"    static_cast<const void *>(this),\n"
                     f"    static_cast<const void *>({entity_expr}),\n"
                     f"    \"{kind}\");\n"
@@ -1280,7 +1280,7 @@ path = f"{OVERLAY}/src/rclcpp/executor.cpp"
 with open(path) as f:
     content = f.read()
 
-if "fish_executor_add_cbgroup" in content:
+if "fish_rclcpp_executor_add_cbgroup" in content:
     print("    executor.cpp already patched, skipping")
 else:
     if "tracetools/tracetools.h" not in content:
@@ -1295,7 +1295,7 @@ else:
   weak_groups_to_nodes_.insert(std::make_pair(weak_group_ptr, node_ptr));
 
   TRACEPOINT(
-    fish_executor_add_cbgroup,
+    fish_rclcpp_executor_add_cbgroup,
     static_cast<const void *>(this),
     static_cast<const void *>(group_ptr.get()),
     static_cast<const void *>(node_ptr.get()));"""
@@ -1305,7 +1305,7 @@ else:
     content = content.replace(old_block, new_block, 1)
     with open(path, "w") as f:
         f.write(content)
-    print("    executor.cpp patched (fish_executor_add_cbgroup)")
+    print("    executor.cpp patched (fish_rclcpp_executor_add_cbgroup)")
 
 
 # ── single_threaded_executor.cpp ──
@@ -1313,7 +1313,7 @@ path = f"{OVERLAY}/src/rclcpp/executors/single_threaded_executor.cpp"
 with open(path) as f:
     content = f.read()
 
-if "fish_executor_init" in content:
+if "fish_rclcpp_executor_init" in content:
     print("    single_threaded_executor.cpp already patched, skipping")
 else:
     old_inc = '#include "rclcpp/any_executable.hpp"'
@@ -1331,7 +1331,7 @@ else:
                 ": rclcpp::Executor(options)\n"
                 "{\n"
                 "  TRACEPOINT(\n"
-                "    fish_executor_init,\n"
+                "    fish_rclcpp_executor_init,\n"
                 "    static_cast<const void *>(this),\n"
                 "    \"SingleThreaded\",\n"
                 "    static_cast<uint32_t>(1));\n"
@@ -1350,7 +1350,7 @@ path = f"{OVERLAY}/src/rclcpp/executors/multi_threaded_executor.cpp"
 with open(path) as f:
     content = f.read()
 
-if "fish_executor_init" in content:
+if "fish_rclcpp_executor_init" in content:
     print("    multi_threaded_executor.cpp already patched, skipping")
 else:
     old_inc = '#include "rclcpp/utilities.hpp"'
@@ -1372,7 +1372,7 @@ else:
                 "    number_of_threads_ = 1;\n"
                 "  }\n"
                 "  TRACEPOINT(\n"
-                "    fish_executor_init,\n"
+                "    fish_rclcpp_executor_init,\n"
                 "    static_cast<const void *>(this),\n"
                 "    \"MultiThreaded\",\n"
                 "    static_cast<uint32_t>(number_of_threads_));\n"
@@ -1391,7 +1391,7 @@ path = f"{OVERLAY}/src/rclcpp/executors/static_single_threaded_executor.cpp"
 with open(path) as f:
     content = f.read()
 
-if "fish_executor_init" in content:
+if "fish_rclcpp_executor_init" in content:
     print("    static_single_threaded_executor.cpp already patched, skipping")
 else:
     old_inc = '#include "rcpputils/scope_exit.hpp"'
@@ -1413,7 +1413,7 @@ else:
 {
   entities_collector_ = std::make_shared<StaticExecutorEntitiesCollector>();
   TRACEPOINT(
-    fish_executor_init,
+    fish_rclcpp_executor_init,
     static_cast<const void *>(this),
     "StaticSingleThreaded",
     static_cast<uint32_t>(1));
@@ -1448,39 +1448,39 @@ patch_and_build_rcl() {
     python3 <<'PATCH_RCL'
 OVERLAY = "/root/trace_overlay_ws/src/rcl"
 
-# ── publisher.c: add fish_publish_link after rcl_publish tracepoint ──
+# ── publisher.c: add fish_rclcpp_publish_link after rcl_publish tracepoint ──
 path = f"{OVERLAY}/src/rcl/publisher.c"
 with open(path) as f:
     content = f.read()
 
-if "fish_publish_link" in content:
+if "fish_rclcpp_publish_link" in content:
     print("    publisher.c already patched, skipping")
 else:
     old = "  TRACEPOINT(rcl_publish, (const void *)publisher, (const void *)ros_message);"
-    new = old + "\n  TRACEPOINT(fish_publish_link, (const void *)publisher, __fish_active_callback);"
+    new = old + "\n  TRACEPOINT(fish_rclcpp_publish_link, (const void *)publisher, __fish_active_callback);"
     if old in content:
         content = content.replace(old, new)
         with open(path, "w") as f:
             f.write(content)
-        print("    publisher.c patched — fish_publish_link after rcl_publish")
+        print("    publisher.c patched — fish_rclcpp_publish_link after rcl_publish")
     else:
         print("    WARNING: rcl_publish tracepoint not found in publisher.c")
 
-# ── client.c: add fish_client_link in rcl_send_request ──
+# ── client.c: add fish_rclcpp_client_link in rcl_send_request ──
 path = f"{OVERLAY}/src/rcl/client.c"
 with open(path) as f:
     content = f.read()
 
-if "fish_client_link" in content:
+if "fish_rclcpp_client_link" in content:
     print("    client.c already patched, skipping")
 else:
     old = "  rcutils_atomic_exchange_int64_t(&client->impl->sequence_number, *sequence_number);"
-    new = old + "\n  TRACEPOINT(fish_client_link, (const void *)client, __fish_active_callback);"
+    new = old + "\n  TRACEPOINT(fish_rclcpp_client_link, (const void *)client, __fish_active_callback);"
     if old in content:
         content = content.replace(old, new)
         with open(path, "w") as f:
             f.write(content)
-        print("    client.c patched — fish_client_link in rcl_send_request")
+        print("    client.c patched — fish_rclcpp_client_link in rcl_send_request")
     else:
         print("    WARNING: rcl_send_request pattern not found in client.c")
 
@@ -1520,7 +1520,7 @@ path = os.environ.get("OVERLAY_WS", "/root/trace_overlay_ws") + "/src/rclcpp/inc
 with open(path) as f:
     content = f.read()
 
-if "rclcpp_client_request_sent" in content:
+if "fish_rclcpp_client_request_sent" in content:
     print("    client.hpp already patched, skipping")
 else:
     # 1. Add tracetools include after rcl/wait.h
@@ -1540,7 +1540,7 @@ else:
     }
     // FISH: trace client request sent
     TRACEPOINT(
-      rclcpp_client_request_sent,
+      fish_rclcpp_client_request_sent,
       static_cast<const void *>(get_client_handle().get()),
       sequence_number);
     pending_requests_.try_emplace("""
@@ -1572,7 +1572,7 @@ else:
     int fish_response_type = std::holds_alternative<Promise>(value) ? 0 :
         std::holds_alternative<CallbackTypeValueVariant>(value) ? 1 : 2;
     TRACEPOINT(
-      rclcpp_client_response_received,
+      fish_rclcpp_client_response_received,
       static_cast<const void *>(this->get_client_handle().get()),
       request_header->sequence_number,
       fish_response_type);
@@ -1718,7 +1718,7 @@ PATCH_CMAKE
 +  {
 +    rcl_action_server_t * as = pimpl_->action_server_.get();
 +    TRACEPOINT(
-+      rclcpp_action_server_init,
++      fish_rclcpp_action_server_init,
 +      static_cast<const void *>(as),
 +      as->impl->action_name,
 +      static_cast<const void *>(&as->impl->goal_service),
@@ -1733,7 +1733,7 @@ PATCH_CMAKE
  void
  ServerBase::execute_goal_request_received(std::shared_ptr<void> & data)
  {
-+  TRACEPOINT(rclcpp_action_execute_goal, static_cast<const void *>(pimpl_->action_server_.get()));
++  TRACEPOINT(fish_rclcpp_action_execute_goal, static_cast<const void *>(pimpl_->action_server_.get()));
    std::shared_ptr<ServerBaseData> data_ptr = std::static_pointer_cast<ServerBaseData>(data);
    const ServerBaseData::GoalRequestData & gData(
      std::get<ServerBaseData::GoalRequestData>(data_ptr->data));
@@ -1741,7 +1741,7 @@ PATCH_CMAKE
  void
  ServerBase::execute_cancel_request_received(std::shared_ptr<void> & data)
  {
-+  TRACEPOINT(rclcpp_action_execute_cancel, static_cast<const void *>(pimpl_->action_server_.get()));
++  TRACEPOINT(fish_rclcpp_action_execute_cancel, static_cast<const void *>(pimpl_->action_server_.get()));
    std::shared_ptr<ServerBaseData> data_ptr = std::static_pointer_cast<ServerBaseData>(data);
    const ServerBaseData::CancelRequestData & gData(
      std::get<ServerBaseData::CancelRequestData>(data_ptr->data));
@@ -1749,7 +1749,7 @@ PATCH_CMAKE
  void
  ServerBase::execute_result_request_received(std::shared_ptr<void> & data)
  {
-+  TRACEPOINT(rclcpp_action_execute_result, static_cast<const void *>(pimpl_->action_server_.get()));
++  TRACEPOINT(fish_rclcpp_action_execute_result, static_cast<const void *>(pimpl_->action_server_.get()));
    std::shared_ptr<ServerBaseData> data_ptr = std::static_pointer_cast<ServerBaseData>(data);
    const ServerBaseData::ResultRequestData & gData(
      std::get<ServerBaseData::ResultRequestData>(data_ptr->data));
@@ -1967,7 +1967,7 @@ _active_cb = threading.local()
 
 
 def trace_client_link(client_handle_ptr):
-    """Fire fish_client_link — associates client handle to active callback."""
+    """Fire fish_rclcpp_client_link — associates client handle to active callback."""
     if not _enabled:
         return
     cb = getattr(_active_cb, 'value', None)
@@ -1980,7 +1980,7 @@ def trace_client_link(client_handle_ptr):
 
 
 def trace_publish_link(publisher_handle_ptr):
-    """Fire fish_publish_link — associates publisher handle to active callback."""
+    """Fire fish_rclcpp_publish_link — associates publisher handle to active callback."""
     if not _enabled:
         return
     cb = getattr(_active_cb, 'value', None)
@@ -2019,7 +2019,7 @@ _ENTITY_KIND = {
 
 
 def trace_executor_init(executor, executor_type, num_threads):
-    """Fire fish_executor_init — executor type + thread count."""
+    """Fire fish_rclcpp_executor_init — executor type + thread count."""
     if not _enabled:
         return
     try:
@@ -2032,7 +2032,7 @@ def trace_executor_init(executor, executor_type, num_threads):
 
 
 def trace_cbgroup_init(group, group_type, automatic_add=True):
-    """Fire fish_callback_group_init — CG type + automatic_add flag.
+    """Fire fish_rclcpp_callback_group_init — CG type + automatic_add flag.
 
     `group_type` is "MutuallyExclusive" or "Reentrant" (match C++ literal
     so the model code does not need to special-case rclpy).
@@ -2049,7 +2049,7 @@ def trace_cbgroup_init(group, group_type, automatic_add=True):
 
 
 def trace_cbgroup_add(group, entity):
-    """Fire fish_cbgroup_add — entity-to-CG association.
+    """Fire fish_rclcpp_cbgroup_add — entity-to-CG association.
 
     entity_addr is the rcl handle when available, so the event joins
     directly with rcl_*_init tracepoints (same convention as C++ side).
@@ -2074,7 +2074,7 @@ _SEEN_EXEC_CG = set()
 
 
 def trace_executor_add_cbgroup(executor, group, node):
-    """Fire fish_executor_add_cbgroup — executor ↔ CG association.
+    """Fire fish_rclcpp_executor_add_cbgroup — executor ↔ CG association.
 
     Deduplicates on (executor, group, node) id triple: each logical
     association is reported once per process lifetime, matching the C++
@@ -2345,7 +2345,7 @@ else:
     else:
         print("    WARNING: MultiThreadedExecutor anchor not found")
 
-    # Executor.add_node — emit fish_executor_add_cbgroup for the node's default CG
+    # Executor.add_node — emit fish_rclcpp_executor_add_cbgroup for the node's default CG
     old_an = """        with self._nodes_lock:
             if node not in self._nodes:
                 self._nodes.add(node)
@@ -2412,7 +2412,7 @@ else:
     else:
         print("    WARNING: CallbackGroup.__init__ anchor not found")
 
-    # CallbackGroup.add_entity — fire fish_cbgroup_add for every entity addition
+    # CallbackGroup.add_entity — fire fish_rclcpp_cbgroup_add for every entity addition
     old_add = "        self.entities.add(weakref.ref(entity))"
     new_add = """        self.entities.add(weakref.ref(entity))
         try:
@@ -2558,11 +2558,11 @@ with open("$NAMES_PY") as f:
 changed = False
 
 # Action events
-if do_action and "rclcpp_action_server_init" not in content:
-    action_entries = '''    "ros2:rclcpp_action_server_init",
-    "ros2:rclcpp_action_execute_goal",
-    "ros2:rclcpp_action_execute_cancel",
-    "ros2:rclcpp_action_execute_result",'''
+if do_action and "fish_rclcpp_action_server_init" not in content:
+    action_entries = '''    "ros2:fish_rclcpp_action_server_init",
+    "ros2:fish_rclcpp_action_execute_goal",
+    "ros2:fish_rclcpp_action_execute_cancel",
+    "ros2:fish_rclcpp_action_execute_result",'''
     content = content.replace(
         "    tracepoints.rclcpp_executor_execute,\n]",
         "    tracepoints.rclcpp_executor_execute,\n" + action_entries + "\n]"
@@ -2573,18 +2573,18 @@ elif do_action:
     print("  Action events already present")
 
 # rclpy events
-if do_rclpy and "rclpy_subscription_callback_added" not in content:
-    rclpy_entries = '''    "ros2:rclpy_subscription_callback_added",
-    "ros2:rclpy_service_callback_added",
-    "ros2:rclpy_timer_callback_added",
-    "ros2:rclpy_timer_link_node",
-    "ros2:rclpy_callback_register",'''
+if do_rclpy and "fish_rclpy_subscription_callback_added" not in content:
+    rclpy_entries = '''    "ros2:fish_rclpy_subscription_callback_added",
+    "ros2:fish_rclpy_service_callback_added",
+    "ros2:fish_rclpy_timer_callback_added",
+    "ros2:fish_rclpy_timer_link_node",
+    "ros2:fish_rclpy_callback_register",'''
 
     # Find the right anchor: after action events if present, else after stock events
-    if '"ros2:rclcpp_action_execute_result",' in content:
-        anchor = '    "ros2:rclcpp_action_execute_result",\n]'
+    if '"ros2:fish_rclcpp_action_execute_result",' in content:
+        anchor = '    "ros2:fish_rclcpp_action_execute_result",\n]'
         content = content.replace(anchor,
-            '    "ros2:rclcpp_action_execute_result",\n' + rclpy_entries + '\n]')
+            '    "ros2:fish_rclcpp_action_execute_result",\n' + rclpy_entries + '\n]')
     else:
         anchor = "    tracepoints.rclcpp_executor_execute,\n]"
         content = content.replace(anchor,
@@ -2595,19 +2595,19 @@ elif do_rclpy:
     print("  rclpy events already present")
 
 # Client events
-if do_client and "rclcpp_client_request_sent" not in content:
-    client_entries = '''    "ros2:rclcpp_client_request_sent",
-    "ros2:rclcpp_client_response_received",'''
+if do_client and "fish_rclcpp_client_request_sent" not in content:
+    client_entries = '''    "ros2:fish_rclcpp_client_request_sent",
+    "ros2:fish_rclcpp_client_response_received",'''
 
     # Find the right anchor: after rclpy events, action events, or stock events
-    if '"ros2:rclpy_callback_register",' in content:
-        anchor = '    "ros2:rclpy_callback_register",\n]'
+    if '"ros2:fish_rclpy_callback_register",' in content:
+        anchor = '    "ros2:fish_rclpy_callback_register",\n]'
         content = content.replace(anchor,
-            '    "ros2:rclpy_callback_register",\n' + client_entries + '\n]')
-    elif '"ros2:rclcpp_action_execute_result",' in content:
-        anchor = '    "ros2:rclcpp_action_execute_result",\n]'
+            '    "ros2:fish_rclpy_callback_register",\n' + client_entries + '\n]')
+    elif '"ros2:fish_rclcpp_action_execute_result",' in content:
+        anchor = '    "ros2:fish_rclcpp_action_execute_result",\n]'
         content = content.replace(anchor,
-            '    "ros2:rclcpp_action_execute_result",\n' + client_entries + '\n]')
+            '    "ros2:fish_rclcpp_action_execute_result",\n' + client_entries + '\n]')
     else:
         anchor = "    tracepoints.rclcpp_executor_execute,\n]"
         content = content.replace(anchor,
@@ -2618,22 +2618,22 @@ elif do_client:
     print("  Client events already present")
 
 # Link events
-if do_link and "fish_publish_link" not in content:
-    link_entries = '''    "ros2:fish_publish_link",
-    "ros2:fish_client_link",'''
+if do_link and "fish_rclcpp_publish_link" not in content:
+    link_entries = '''    "ros2:fish_rclcpp_publish_link",
+    "ros2:fish_rclcpp_client_link",'''
 
-    if '"ros2:rclcpp_client_response_received",' in content:
-        anchor = '    "ros2:rclcpp_client_response_received",\n]'
+    if '"ros2:fish_rclcpp_client_response_received",' in content:
+        anchor = '    "ros2:fish_rclcpp_client_response_received",\n]'
         content = content.replace(anchor,
-            '    "ros2:rclcpp_client_response_received",\n' + link_entries + '\n]')
-    elif '"ros2:rclpy_callback_register",' in content:
-        anchor = '    "ros2:rclpy_callback_register",\n]'
+            '    "ros2:fish_rclcpp_client_response_received",\n' + link_entries + '\n]')
+    elif '"ros2:fish_rclpy_callback_register",' in content:
+        anchor = '    "ros2:fish_rclpy_callback_register",\n]'
         content = content.replace(anchor,
-            '    "ros2:rclpy_callback_register",\n' + link_entries + '\n]')
-    elif '"ros2:rclcpp_action_execute_result",' in content:
-        anchor = '    "ros2:rclcpp_action_execute_result",\n]'
+            '    "ros2:fish_rclpy_callback_register",\n' + link_entries + '\n]')
+    elif '"ros2:fish_rclcpp_action_execute_result",' in content:
+        anchor = '    "ros2:fish_rclcpp_action_execute_result",\n]'
         content = content.replace(anchor,
-            '    "ros2:rclcpp_action_execute_result",\n' + link_entries + '\n]')
+            '    "ros2:fish_rclcpp_action_execute_result",\n' + link_entries + '\n]')
     else:
         anchor = "    tracepoints.rclcpp_executor_execute,\n]"
         content = content.replace(anchor,
@@ -2644,28 +2644,28 @@ elif do_link:
     print("  Link events already present")
 
 # Scheduler events
-if do_scheduler and "fish_executor_init" not in content:
-    sched_entries = '''    "ros2:fish_executor_init",
-    "ros2:fish_callback_group_init",
-    "ros2:fish_cbgroup_add",
-    "ros2:fish_executor_add_cbgroup",'''
+if do_scheduler and "fish_rclcpp_executor_init" not in content:
+    sched_entries = '''    "ros2:fish_rclcpp_executor_init",
+    "ros2:fish_rclcpp_callback_group_init",
+    "ros2:fish_rclcpp_cbgroup_add",
+    "ros2:fish_rclcpp_executor_add_cbgroup",'''
 
-    if '"ros2:fish_client_link",' in content:
-        anchor = '    "ros2:fish_client_link",\n]'
+    if '"ros2:fish_rclcpp_client_link",' in content:
+        anchor = '    "ros2:fish_rclcpp_client_link",\n]'
         content = content.replace(anchor,
-            '    "ros2:fish_client_link",\n' + sched_entries + '\n]')
-    elif '"ros2:rclcpp_client_response_received",' in content:
-        anchor = '    "ros2:rclcpp_client_response_received",\n]'
+            '    "ros2:fish_rclcpp_client_link",\n' + sched_entries + '\n]')
+    elif '"ros2:fish_rclcpp_client_response_received",' in content:
+        anchor = '    "ros2:fish_rclcpp_client_response_received",\n]'
         content = content.replace(anchor,
-            '    "ros2:rclcpp_client_response_received",\n' + sched_entries + '\n]')
-    elif '"ros2:rclpy_callback_register",' in content:
-        anchor = '    "ros2:rclpy_callback_register",\n]'
+            '    "ros2:fish_rclcpp_client_response_received",\n' + sched_entries + '\n]')
+    elif '"ros2:fish_rclpy_callback_register",' in content:
+        anchor = '    "ros2:fish_rclpy_callback_register",\n]'
         content = content.replace(anchor,
-            '    "ros2:rclpy_callback_register",\n' + sched_entries + '\n]')
-    elif '"ros2:rclcpp_action_execute_result",' in content:
-        anchor = '    "ros2:rclcpp_action_execute_result",\n]'
+            '    "ros2:fish_rclpy_callback_register",\n' + sched_entries + '\n]')
+    elif '"ros2:fish_rclcpp_action_execute_result",' in content:
+        anchor = '    "ros2:fish_rclcpp_action_execute_result",\n]'
         content = content.replace(anchor,
-            '    "ros2:rclcpp_action_execute_result",\n' + sched_entries + '\n]')
+            '    "ros2:fish_rclcpp_action_execute_result",\n' + sched_entries + '\n]')
     else:
         anchor = "    tracepoints.rclcpp_executor_execute,\n]"
         content = content.replace(anchor,
@@ -2724,7 +2724,7 @@ verify() {
         log "Scheduler symbols in libtracetools.so: $sched_syms (expected: 4)"
 
         local rclcpp_so="$OVERLAY_WS/install/rclcpp/lib/librclcpp.so"
-        if [ -f "$rclcpp_so" ] && nm -D "$rclcpp_so" 2>/dev/null | grep -q "fish_executor_init\|fish_callback_group_init"; then
+        if [ -f "$rclcpp_so" ] && nm -D "$rclcpp_so" 2>/dev/null | grep -q "fish_rclcpp_executor_init\|fish_rclcpp_callback_group_init"; then
             log "rclcpp scheduler tracepoints: linked"
         elif [ -f "$rclcpp_so" ]; then
             warn "rclcpp scheduler tracepoints: symbols not found in librclcpp.so"

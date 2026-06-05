@@ -40,20 +40,20 @@ Runtime callback window (2)	callback_end	1,142,796
 
 == Table 5: FISH custom events (17 total), counts from Autoware run ==
 Category	Event name	Count	Added
-Scheduler introspection (04-18)	fish_cbgroup_add	5,888	2026-04-18
-Scheduler introspection (04-18)	fish_callback_group_init	836	2026-04-18
-Scheduler introspection (04-18)	fish_executor_add_cbgroup	604	2026-04-18
-Scheduler introspection (04-18)	fish_executor_init	392	2026-04-18
-Callback-link, dedup-guarded (04-14)	fish_publish_link	2,141	2026-04-14
-Callback-link, dedup-guarded (04-14)	fish_client_link	710	2026-04-14
-Service client tracing (03-31)	rclcpp_client_request_sent	1,057	2026-03-31
-Service client tracing (03-31)	rclcpp_client_response_received	779	2026-03-31
-rclpy parity (03-28)	rclpy_callback_register	129	2026-03-28
-rclpy parity (03-28)	rclpy_timer_callback_added	115	2026-03-28
-rclpy parity (03-28)	rclpy_timer_link_node	115	2026-03-28
-rclpy parity (03-28)	rclpy_service_callback_added	13	2026-03-28
-rclpy parity (03-28)	rclpy_subscription_callback_added	1	2026-03-28
-Action server (03-28)	rclcpp_action_server_init	0	2026-03-28
-Action server (03-28)	rclcpp_action_execute_goal	0	2026-03-28
-Action server (03-28)	rclcpp_action_execute_cancel	0	2026-03-28
-Action server (03-28)	rclcpp_action_execute_result	0	2026-03-28
+Scheduler introspection (04-18)	fish_rclcpp_cbgroup_add	5,888	2026-04-18
+Scheduler introspection (04-18)	fish_rclcpp_callback_group_init	836	2026-04-18
+Scheduler introspection (04-18)	fish_rclcpp_executor_add_cbgroup	604	2026-04-18
+Scheduler introspection (04-18)	fish_rclcpp_executor_init	392	2026-04-18
+Callback-link, dedup-guarded (04-14)	fish_rclcpp_publish_link	2,141	2026-04-14
+Callback-link, dedup-guarded (04-14)	fish_rclcpp_client_link	710	2026-04-14
+Service client tracing (03-31)	fish_rclcpp_client_request_sent	1,057	2026-03-31
+Service client tracing (03-31)	fish_rclcpp_client_response_received	779	2026-03-31
+rclpy parity (03-28)	fish_rclpy_callback_register	129	2026-03-28
+rclpy parity (03-28)	fish_rclpy_timer_callback_added	115	2026-03-28
+rclpy parity (03-28)	fish_rclpy_timer_link_node	115	2026-03-28
+rclpy parity (03-28)	fish_rclpy_service_callback_added	13	2026-03-28
+rclpy parity (03-28)	fish_rclpy_subscription_callback_added	1	2026-03-28
+Action server (03-28)	fish_rclcpp_action_server_init	0	2026-03-28
+Action server (03-28)	fish_rclcpp_action_execute_goal	0	2026-03-28
+Action server (03-28)	fish_rclcpp_action_execute_cancel	0	2026-03-28
+Action server (03-28)	fish_rclcpp_action_execute_result	0	2026-03-28

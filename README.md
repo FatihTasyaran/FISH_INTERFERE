@@ -51,8 +51,8 @@ snapshot files it is computed over. Source taxonomy:
 
 - **LTTng tracepoints (MongoDB `ros2_trace`)** — standard
   rclcpp/rclpy events (`callback_start`, `rcl_*_init`, ...) and the
-  FISH custom set (`fish_executor_init`, `fish_callback_group_init`,
-  `fish_publish_link`, `fish_client_link`, action probes).
+  FISH custom set (`fish_rclcpp_executor_init`, `fish_rclcpp_callback_group_init`,
+  `fish_rclcpp_publish_link`, `fish_rclcpp_client_link`, action probes).
 - **nsys CUPTI tables (InfluxDB `fish`)** — `gpu_kernels`,
   `gpu_memcpy`, `gpu_memset`, `gpu_sync`, `cuda_runtime`,
   `nvtx_events`, `cuda_callchain`.
@@ -70,8 +70,8 @@ and which still need one.
 | Data point | Viz |
 |------------|-----|
 | **Hierarchical task graph (CN → EX → N → E → F)** <br><sub>← `rcl_node_init`, `rcl_{publisher,subscription,service,client,timer}_init`, `rclcpp_callback_register`, `rclcpp_subscription_callback_added` (LTTng); `gpu_kernels.globalPid` ↔ `process_tree` for the CN layer</sub> | X |
-| **Per-process executor count and types** (ST / MT / StaticST) <br><sub>← `fish_executor_init` (pid → executor_type, num_threads)</sub> | X |
-| **Per-executor callback-group composition** (MutuallyExclusive vs Reentrant) <br><sub>← `fish_callback_group_init` (group_addr → type); `fish_cbgroup_add` (entity ↔ group); `fish_executor_add_cbgroup` (group ↔ executor)</sub> | X |
+| **Per-process executor count and types** (ST / MT / StaticST) <br><sub>← `fish_rclcpp_executor_init` (pid → executor_type, num_threads)</sub> | X |
+| **Per-executor callback-group composition** (MutuallyExclusive vs Reentrant) <br><sub>← `fish_rclcpp_callback_group_init` (group_addr → type); `fish_rclcpp_cbgroup_add` (entity ↔ group); `fish_rclcpp_executor_add_cbgroup` (group ↔ executor)</sub> | X |
 | **Per-entity QoS, message type, and peer counts** (pub fan-out, srv ↔ cli pairs) <br><sub>← `rcl_publisher_init.qos`, `rcl_subscription_init.qos` + msg type fields; snapshot `topic_info` (subscriber count per topic), `node_info`</sub> | X |
 | **Cross-container external boundary edges** (process A pub → process B sub) <br><sub>← Snapshot `topic_info` across all container roles + topic-name matching during `fish_compose` merge</sub> | X |
 | **Composed multi-container graph totals** (\|CN\|, \|EX\|, \|N\|, \|E\|, \|F\|, edge mix) <br><sub>← Aggregation over the per-container subgraphs by `fish_compose.compose_graphs`</sub> | X |
@@ -82,10 +82,10 @@ and which still need one.
 | Data point | Viz |
 |------------|-----|
 | **Per-callback invocation count + duration distribution** <br><sub>← `callback_start` ↔ `callback_end` paired by (`callback`, `vtid`); duration = `end.ts` − `start.ts`</sub> | X |
-| **Per-callback-group serialisation pattern** (MX → no overlap, RE → parallel allowed) <br><sub>← `fish_callback_group_init.type`</sub> | X |
+| **Per-callback-group serialisation pattern** (MX → no overlap, RE → parallel allowed) <br><sub>← `fish_rclcpp_callback_group_init.type`</sub> | X |
 | **Inter-callback gap → empirical period estimate** <br><sub>← Successive `callback_start` timestamps for the same callback handle</sub> | X |
-| **Publisher → subscription latency** (via `fish_publish_link`) <br><sub>← `fish_publish_link` (pub_handle → sub_callback_handle); paired with the receiving `callback_start.ts`</sub> | X |
-| **Service round-trip latency** (request_sent → response_received, paired by seq number) <br><sub>← `rclcpp_service_send_request` ↔ `rclcpp_service_receive_response` (paired on `sequence_number`); or `fish_client_link` for the deterministic variant</sub> | X |
+| **Publisher → subscription latency** (via `fish_rclcpp_publish_link`) <br><sub>← `fish_rclcpp_publish_link` (pub_handle → sub_callback_handle); paired with the receiving `callback_start.ts`</sub> | X |
+| **Service round-trip latency** (request_sent → response_received, paired by seq number) <br><sub>← `rclcpp_service_send_request` ↔ `rclcpp_service_receive_response` (paired on `sequence_number`); or `fish_rclcpp_client_link` for the deterministic variant</sub> | X |
 | **Action latency per phase** (goal / cancel / result) <br><sub>← FISH custom probes `action_execute_goal`, `action_execute_cancel`, `action_execute_result`</sub> | X |
 | **Split-callback durations** (`::part1` + `::continuation`) <br><sub>← `callback_start` → `client_request_sent` (part1); `client_response_received` → `callback_end` (continuation)</sub> | X |
 

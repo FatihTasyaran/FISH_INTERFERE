@@ -1,12 +1,12 @@
-Dedup mechanism for rclpy fish_executor_add_cbgroup
+Dedup mechanism for rclpy fish_rclcpp_executor_add_cbgroup
 ====================================================
 
 Purpose:
-  Prevent the `fish_executor_add_cbgroup` tracepoint from firing
+  Prevent the `fish_rclcpp_executor_add_cbgroup` tracepoint from firing
   thousands of times per second in rclpy processes. Without dedup,
   the event floods LTTng buffers and displaces other trace events
   (we measured 103,466 add_cbgroup events in one aircraft trace
-  and fish_publish_link dropped from 88 to 1 as a result).
+  and fish_rclcpp_publish_link dropped from 88 to 1 as a result).
 
   Cross-reference:
     notes/EXPECTED_OBSERVED.txt §7 — problem statement, paper context
@@ -133,10 +133,10 @@ Invariants and caveats
 
    Verified empirically (2026-04-19 trace, aircraft container):
 
-     fish_executor_init         26 events
-     fish_callback_group_init   50 events
-     fish_cbgroup_add          351 events  (~1 per entity per creation)
-     fish_executor_add_cbgroup  34 events  (WITHOUT dedup: 103,466)
+     fish_rclcpp_executor_init         26 events
+     fish_rclcpp_callback_group_init   50 events
+     fish_rclcpp_cbgroup_add          351 events  (~1 per entity per creation)
+     fish_rclcpp_executor_add_cbgroup  34 events  (WITHOUT dedup: 103,466)
 
 
 Alternative designs considered
@@ -145,7 +145,7 @@ Alternative designs considered
 A. Dedup on the C side (tracetools.c).
    Rejected: the C fire-point wrapper has no process-scoped state
    mechanism that is cheap and thread-safe; adding one would match
-   the `fish_pub_cache` pattern used for fish_publish_link but would
+   the `fish_pub_cache` pattern used for fish_rclcpp_publish_link but would
    tax the C++ call site unnecessarily (C++ doesn't have the
    over-firing problem).
 
@@ -178,7 +178,7 @@ want each association event), check:
        from pymongo import MongoClient
        from collections import Counter
        c = MongoClient()['<session>']
-       docs = list(c.ros2_trace.find({'event':'ros2:fish_executor_add_cbgroup'}, {'payload':1}))
+       docs = list(c.ros2_trace.find({'event':'ros2:fish_rclcpp_executor_add_cbgroup'}, {'payload':1}))
        total = len(docs)
        triples = Counter((d['payload']['executor_addr'], d['payload']['group_addr'], d['payload']['node_addr']) for d in docs)
        print(f'{total} events, {len(triples)} distinct triples')

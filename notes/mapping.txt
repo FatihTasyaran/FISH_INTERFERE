@@ -112,11 +112,11 @@ Verified: 83 total rclcpp_callback_register events, ALL accounted for
     Match by: payload.node_handle = N.A_v['node_handle']
     Extract:  payload.subscription_handle, payload.topic_name
 
-  Step 2: rclpy_subscription_callback_added
+  Step 2: fish_rclpy_subscription_callback_added
     Match by: payload.subscription_handle = step 1's subscription_handle
     Extract:  payload.callback  (Python id(callable), linking key to step 3)
 
-  Step 3: rclpy_callback_register
+  Step 3: fish_rclpy_callback_register
     Match by: payload.callback = step 2's callback
     Extract:  payload.symbol  (Python module.qualname)
 
@@ -196,12 +196,12 @@ Verified: 83 total rclcpp_callback_register events, ALL accounted for
   rclcpp_service_callback_added is NOT found, use:
 
   Timer:
-    rclpy_timer_callback_added(timer_handle → callback)
-    → rclpy_callback_register(callback → symbol)
+    fish_rclpy_timer_callback_added(timer_handle → callback)
+    → fish_rclpy_callback_register(callback → symbol)
 
   Service:
-    rclpy_service_callback_added(service_handle → callback)
-    → rclpy_callback_register(callback → symbol)
+    fish_rclpy_service_callback_added(service_handle → callback)
+    → fish_rclpy_callback_register(callback → symbol)
 
   Verified for yolo_inference_node (PID 952, session fish_20260329_182842):
     7 services all resolved via rclpy path (ParameterService._*_callback)

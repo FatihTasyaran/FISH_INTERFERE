@@ -113,7 +113,7 @@ It is initialized in the constructor (line 158):
 ------------------------------
 We add 4 tracepoints to complete the dispatch chain:
 
-  A. rclcpp_action_server_init
+  A. fish_rclcpp_action_server_init
      ─────────────────────────
      When:   ServerBase constructor, after rcl_action_server_init() succeeds
      Args:   (action_server_handle, action_name,
@@ -124,27 +124,27 @@ We add 4 tracepoints to complete the dispatch chain:
               and to the rcl_service_init events already in the trace.
 
      Linking chain this enables:
-       rclcpp_action_server_init.action_server_handle
-         → rclcpp_action_execute_goal.action_server_handle  (same pointer)
-       rclcpp_action_server_init.goal_service_handle
+       fish_rclcpp_action_server_init.action_server_handle
+         → fish_rclcpp_action_execute_goal.action_server_handle  (same pointer)
+       fish_rclcpp_action_server_init.goal_service_handle
          → rcl_service_init.service_handle                  (existing event)
          → service_name (e.g., /Drone1/land_action/_action/send_goal)
          → action_name  (strip /_action/send_goal suffix)
 
-  B. rclcpp_action_execute_goal
+  B. fish_rclcpp_action_execute_goal
      ──────────────────────────
      When:   Entry of execute_goal_request_received()
      Args:   (action_server_handle)
      Purpose: Marks the start of goal request processing.
               Paired with an existing or new end tracepoint for duration.
 
-  C. rclcpp_action_execute_cancel
+  C. fish_rclcpp_action_execute_cancel
      ────────────────────────────
      When:   Entry of execute_cancel_request_received()
      Args:   (action_server_handle)
      Purpose: Marks cancel request processing.
 
-  D. rclcpp_action_execute_result
+  D. fish_rclcpp_action_execute_result
      ────────────────────────────
      When:   Entry of execute_result_request_received()
      Args:   (action_server_handle)
@@ -174,13 +174,13 @@ After (with new tracepoints):
 
   identify_callbacks() new path:
     rcl_service_init(service_handle for send_goal)
-      → rclcpp_action_server_init(action_handle, ..., goal_service_handle=service_handle, ...)
-      → rclcpp_action_execute_goal(action_handle)  ← FOUND
+      → fish_rclcpp_action_server_init(action_handle, ..., goal_service_handle=service_handle, ...)
+      → fish_rclcpp_action_execute_goal(action_handle)  ← FOUND
   Chain complete. Function vertex created with symbol from action_server_handle mapping.
 
   At runtime:
-    rclcpp_action_execute_goal(action_handle) fires with timestamp, vpid, vtid.
-    FISH maps action_handle → action_name via rclcpp_action_server_init.
+    fish_rclcpp_action_execute_goal(action_handle) fires with timestamp, vpid, vtid.
+    FISH maps action_handle → action_name via fish_rclcpp_action_server_init.
     FISH maps action_handle → component service entity via goal_service_handle.
     Result: each action dispatch is attributed to the correct entity and action.
 

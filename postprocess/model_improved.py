@@ -314,10 +314,10 @@ def identify_callbacks(mongo, nodes, entities, executors, *, session_dir=None):
     rcl_srv_init = _bulk("ros2:rcl_service_init")
     rclcpp_srv_cb_added = _bulk("ros2:rclcpp_service_callback_added")
     rclcpp_tmr_cb_added = _bulk("ros2:rclcpp_timer_callback_added")
-    rclpy_sub_cb_added = _bulk("ros2:rclpy_subscription_callback_added")
-    rclpy_srv_cb_added = _bulk("ros2:rclpy_service_callback_added")
-    rclpy_tmr_cb_added = _bulk("ros2:rclpy_timer_callback_added")
-    rclpy_cb_register = _bulk("ros2:rclpy_callback_register")
+    rclpy_sub_cb_added = _bulk("ros2:fish_rclpy_subscription_callback_added")
+    rclpy_srv_cb_added = _bulk("ros2:fish_rclpy_service_callback_added")
+    rclpy_tmr_cb_added = _bulk("ros2:fish_rclpy_timer_callback_added")
+    rclpy_cb_register = _bulk("ros2:fish_rclpy_callback_register")
 
     log(f"  Bulk load: {time.time()-t0:.1f}s")
 
@@ -469,19 +469,19 @@ def attach_callback_groups(mongo, executors, nodes, entities, functions):
     callback_group info on E (and mirrored onto F).
 
     Reads four new FISH tracepoints:
-      fish_executor_init         — (pid → executor type + num_threads)
-      fish_callback_group_init   — (group_addr → type + automatic_add)
-      fish_cbgroup_add           — (entity_rcl_handle → group_addr)
-      fish_executor_add_cbgroup  — (executor_addr → group_addrs)
+      fish_rclcpp_executor_init         — (pid → executor type + num_threads)
+      fish_rclcpp_callback_group_init   — (group_addr → type + automatic_add)
+      fish_rclcpp_cbgroup_add           — (entity_rcl_handle → group_addr)
+      fish_rclcpp_executor_add_cbgroup  — (executor_addr → group_addrs)
     """
     coll = mongo["ros2_trace"]
     t0 = time.time()
 
     # --- Bulk load new tracepoint events --------------------------------
-    exec_init_docs = list(coll.find({"event": "ros2:fish_executor_init"}))
-    cg_init_docs   = list(coll.find({"event": "ros2:fish_callback_group_init"}))
-    cg_add_docs    = list(coll.find({"event": "ros2:fish_cbgroup_add"}))
-    ex_add_docs    = list(coll.find({"event": "ros2:fish_executor_add_cbgroup"}))
+    exec_init_docs = list(coll.find({"event": "ros2:fish_rclcpp_executor_init"}))
+    cg_init_docs   = list(coll.find({"event": "ros2:fish_rclcpp_callback_group_init"}))
+    cg_add_docs    = list(coll.find({"event": "ros2:fish_rclcpp_cbgroup_add"}))
+    ex_add_docs    = list(coll.find({"event": "ros2:fish_rclcpp_executor_add_cbgroup"}))
 
     if not (exec_init_docs or cg_init_docs or cg_add_docs or ex_add_docs):
         log("attach_callback_groups: no scheduler events in trace, skipping")
@@ -491,7 +491,7 @@ def attach_callback_groups(mongo, executors, nodes, entities, functions):
         f"{len(exec_init_docs)} exec_init, {len(cg_init_docs)} cg_init, "
         f"{len(cg_add_docs)} cg_add, {len(ex_add_docs)} ex_add")
 
-    # --- fish_callback_group_init: group_addr → CG metadata -------------
+    # --- fish_rclcpp_callback_group_init: group_addr → CG metadata -------------
     cg_info = {}
     for d in cg_init_docs:
         p = d["payload"]
@@ -501,7 +501,7 @@ def attach_callback_groups(mongo, executors, nodes, entities, functions):
             "pid": d["vpid"],
         }
 
-    # --- fish_cbgroup_add: entity_rcl_handle → group_addr ---------------
+    # --- fish_rclcpp_cbgroup_add: entity_rcl_handle → group_addr ---------------
     entity_to_group = {}
     for d in cg_add_docs:
         p = d["payload"]
@@ -510,7 +510,7 @@ def attach_callback_groups(mongo, executors, nodes, entities, functions):
             "kind": p["entity_kind"],
         }
 
-    # --- fish_executor_init: pid → [executor info] ----------------------
+    # --- fish_rclcpp_executor_init: pid → [executor info] ----------------------
     executors_per_pid = {}
     for d in exec_init_docs:
         p = d["payload"]
@@ -521,14 +521,14 @@ def attach_callback_groups(mongo, executors, nodes, entities, functions):
             "num_threads": p["num_threads"],
         })
 
-    # --- fish_executor_add_cbgroup: executor_addr → set(group_addrs) ----
+    # --- fish_rclcpp_executor_add_cbgroup: executor_addr → set(group_addrs) ----
     exec_to_groups = {}
     for d in ex_add_docs:
         p = d["payload"]
         exec_to_groups.setdefault(p["executor_addr"], set()).add(p["group_addr"])
 
     # --- Handle → (entity_kind, node_handle, name) for sub/serv/cli ----
-    # This bridge lets us match entity_addr (rcl handle) in fish_cbgroup_add
+    # This bridge lets us match entity_addr (rcl handle) in fish_rclcpp_cbgroup_add
     # to the right E vertex even if we don't already store the handle on E.
     handle_to_topic_node = {}   # rcl handle → (topic_or_name, node_handle, kind)
     for d in coll.find({"event": "ros2:rcl_subscription_init"}):
@@ -766,7 +766,7 @@ def attribute_aspects(mongo, executors, nodes, entities):
     """Attribute pub and cli aspects to entities.
 
     Strategy:
-      1. Try fish_publish_link / fish_client_link tracepoints (deterministic)
+      1. Try fish_rclcpp_publish_link / fish_rclcpp_client_link tracepoints (deterministic)
       2. Fall back to runtime callback window scan (probabilistic)
     """
     coll = mongo["ros2_trace"]
@@ -779,9 +779,9 @@ def attribute_aspects(mongo, executors, nodes, entities):
         if cb and cb != "NA":
             cb_to_entity[cb] = (e_id, e)
 
-    # --- Try fish_publish_link first ---
-    publish_links = list(coll.find({"event": "ros2:fish_publish_link"}))
-    client_links = list(coll.find({"event": "ros2:fish_client_link"}))
+    # --- Try fish_rclcpp_publish_link first ---
+    publish_links = list(coll.find({"event": "ros2:fish_rclcpp_publish_link"}))
+    client_links = list(coll.find({"event": "ros2:fish_rclcpp_client_link"}))
 
     if publish_links or client_links:
         log(f"attribute_aspects: using tracepoint method "
@@ -789,7 +789,7 @@ def attribute_aspects(mongo, executors, nodes, entities):
         _attribute_via_tracepoints(
             publish_links, client_links, cb_to_entity, mongo, nodes, entities)
     else:
-        log(f"attribute_aspects: fish_publish_link not found, using runtime fallback")
+        log(f"attribute_aspects: fish_rclcpp_publish_link not found, using runtime fallback")
         _attribute_via_runtime(mongo, executors, nodes, entities, cb_to_entity)
 
     log(f"attribute_aspects DONE in {time.time()-t0:.1f}s")
@@ -797,7 +797,7 @@ def attribute_aspects(mongo, executors, nodes, entities):
 
 def _attribute_via_tracepoints(publish_links, client_links, cb_to_entity,
                                 mongo, nodes, entities):
-    """Deterministic aspect attribution from fish_publish_link/fish_client_link."""
+    """Deterministic aspect attribution from fish_rclcpp_publish_link/fish_rclcpp_client_link."""
     coll = mongo["ros2_trace"]
 
     # Build publisher_handle → topic from rcl_publisher_init
@@ -815,7 +815,7 @@ def _attribute_via_tracepoints(publish_links, client_links, cb_to_entity,
     total_pub = 0
     total_cli = 0
 
-    # Pub aspects from fish_publish_link
+    # Pub aspects from fish_rclcpp_publish_link
     seen_pub = set()  # (entity_id, topic) dedup
     for d in publish_links:
         p = d["payload"]
@@ -837,7 +837,7 @@ def _attribute_via_tracepoints(publish_links, client_links, cb_to_entity,
         entity.A_v["aspects"].append({"aspect": "pub", "topic": topic})
         total_pub += 1
 
-    # Cli aspects from fish_client_link
+    # Cli aspects from fish_rclcpp_client_link
     seen_cli = set()
     for d in client_links:
         p = d["payload"]
@@ -904,7 +904,7 @@ def _attribute_via_runtime(mongo, executors, nodes, entities, cb_to_entity):
         ("ros2:callback_start", "cb_start", "callback"),
         ("ros2:callback_end", "cb_end", "callback"),
         ("ros2:rcl_publish", "publish", "publisher_handle"),
-        ("ros2:rclcpp_client_request_sent", "cli_req", "client_handle"),
+        ("ros2:fish_rclcpp_client_request_sent", "cli_req", "client_handle"),
     ]:
         for d in coll.find({"event": evt_name}):
             pid = d["vpid"]
@@ -1050,7 +1050,7 @@ def detect_actions(entities):
 def split_callbacks(mongo, entities, functions):
     """For entities with cli aspects, split callback into part1 + continuation.
 
-    Uses rclcpp_client_request_sent and rclcpp_client_response_received
+    Uses fish_rclcpp_client_request_sent and fish_rclcpp_client_response_received
     tracepoints to determine the split point.
 
     Creates:
@@ -1061,9 +1061,9 @@ def split_callbacks(mongo, entities, functions):
 
     # Check if split tracepoints exist
     has_request_sent = coll.count_documents(
-        {"event": "ros2:rclcpp_client_request_sent"}, limit=1)
+        {"event": "ros2:fish_rclcpp_client_request_sent"}, limit=1)
     if not has_request_sent:
-        log("split_callbacks: no rclcpp_client_request_sent events, skipping")
+        log("split_callbacks: no fish_rclcpp_client_request_sent events, skipping")
         return
 
     split_count = 0

@@ -298,7 +298,7 @@ or from the repo checkout (`config/fish_settings.ini`).
 | `gpu_dag.py` says "no callback_start events"                                        | Trace was captured without rclcpp tracetools instrumentation              | Confirm trace was captured INSIDE a container that ran `scripts/setup_fish.sh` first.                |
 | `babeltrace2` deadlock during `ingest.py`                                           | stderr full from CTF warnings (large Autoware traces especially)          | Already fixed: stderr is redirected to a file. If reappears, check `bt2_*_stderr.log`.               |
 | Cross-session contamination in queries                                              | InfluxDB SELECT without `session` + `container` WHERE clause              | Add the filter. `_scope_where()` helper in pre_analysis.py does this for you.                        |
-| Composed graph missing executor info                                                | `fish_executor_init` tracepoint wasn't sourced when the process launched  | Verify FISH was sourced in the SAME shell the process ran in. Re-bake the image if needed.           |
+| Composed graph missing executor info                                                | `fish_rclcpp_executor_init` tracepoint wasn't sourced when the process launched  | Verify FISH was sourced in the SAME shell the process ran in. Re-bake the image if needed.           |
 
 ---
 

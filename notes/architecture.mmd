@@ -26,7 +26,7 @@ flowchart TD
         wrapper --> cli
 
         trace_sess["trace_session.sh<br/>(LTTng start/stop,<br/>gpu.py daemon, snapshot.py)"]
-        tracepoints["Tracepoints in patched ROS 2:<br/>Standard: callback_start/end,<br/>rcl_publish, rcl_take, ...<br/>FISH: fish_publish_link,<br/>fish_client_link, action_*"]
+        tracepoints["Tracepoints in patched ROS 2:<br/>Standard: callback_start/end,<br/>rcl_publish, rcl_take, ...<br/>FISH: fish_rclcpp_publish_link,<br/>fish_rclcpp_client_link, action_*"]
     end
 
     %% ===== LAYER 3: ORCHESTRATION =====

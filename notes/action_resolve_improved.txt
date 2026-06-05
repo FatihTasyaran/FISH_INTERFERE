@@ -77,8 +77,8 @@ ready and dispatches to the appropriate user callback:
 
 IMPORTANT: Because the Waitable pattern is used, rclcpp_service_callback_added
 does NOT fire for action service components. Instead, FISH custom tracepoints
-fire: rclcpp_action_execute_goal, rclcpp_action_execute_cancel,
-rclcpp_action_execute_result.
+fire: fish_rclcpp_action_execute_goal, fish_rclcpp_action_execute_cancel,
+fish_rclcpp_action_execute_result.
 
 However, rcl_service_init DOES fire for each of the 3 services (this
 happens in the rcl layer, below the Waitable abstraction).
@@ -191,9 +191,9 @@ their label. Group by base name (everything before "/_action/"). If a
 group has the expected components, add action_name and action_role
 properties to each entity.
 
-Publisher → entity attribution comes from fish_publish_link tracepoint
+Publisher → entity attribution comes from fish_rclcpp_publish_link tracepoint
 (or runtime callback window scan as fallback). Client → entity
-attribution comes from fish_client_link tracepoint (or runtime scan).
+attribution comes from fish_rclcpp_client_link tracepoint (or runtime scan).
 
 
 8. Callback Matching for Action Components
@@ -203,14 +203,14 @@ Standard service callback chain does NOT work for action components
 because rclcpp_service_callback_added does not fire (Waitable pattern).
 
 Instead, use FISH custom tracepoints:
-  rclcpp_action_server_init → links action_server_handle to service handles
-  rclcpp_action_execute_goal → fires when goal handler dispatched
-  rclcpp_action_execute_cancel → fires when cancel handler dispatched
-  rclcpp_action_execute_result → fires when result handler dispatched
+  fish_rclcpp_action_server_init → links action_server_handle to service handles
+  fish_rclcpp_action_execute_goal → fires when goal handler dispatched
+  fish_rclcpp_action_execute_cancel → fires when cancel handler dispatched
+  fish_rclcpp_action_execute_result → fires when result handler dispatched
 
 These provide the action_server_handle which can be linked back to the
 service entities via rcl_service_init handles stored in
-rclcpp_action_server_init payload (goal_service_handle,
+fish_rclcpp_action_server_init payload (goal_service_handle,
 cancel_service_handle, result_service_handle).
 
 
@@ -222,9 +222,9 @@ two phases by the service call:
 
   callback_start(callback_ptr)
     ... part1: code before request ...
-    rclcpp_client_request_sent(client_handle, sequence_number)
+    fish_rclcpp_client_request_sent(client_handle, sequence_number)
     ... server processes request ...
-    rclcpp_client_response_received(client_handle, sequence_number, response_type)
+    fish_rclcpp_client_response_received(client_handle, sequence_number, response_type)
     ... part2: code after response ...
   callback_end(callback_ptr)
 
@@ -249,7 +249,7 @@ This split is critical for scheduling analysis because:
     one monolithic function with no dependency on the server
 
 Implementation in model_improved.py:
-  - For each entity with cli aspect, check if rclcpp_client_request_sent
+  - For each entity with cli aspect, check if fish_rclcpp_client_request_sent
     events exist within its callback windows
   - If found: create two function vertices (part1 + part2 = continuation)
   - Connect: part1 → server entity → part2 (precedence edges)
@@ -268,8 +268,8 @@ Removed:
 
 Added:
   - action_name, action_role properties on component entities
-  - fish_publish_link(publisher_handle, callback) custom tracepoint
-  - fish_client_link(client_handle, callback) custom tracepoint
+  - fish_rclcpp_publish_link(publisher_handle, callback) custom tracepoint
+  - fish_rclcpp_client_link(client_handle, callback) custom tracepoint
 
 Preserved:
   - FishVertex, FishEdge, FishMessage dataclasses

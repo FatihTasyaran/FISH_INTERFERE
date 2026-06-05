@@ -8,7 +8,7 @@ Organised by day. Each commit/note cited with hash + filename.
 2026-04-14 (Salı) — callback→publisher/client link tracepoints
 ---------------------------------------------------------------
 
-Only commit: **952a939** "fish_publish_link / fish_client_link
+Only commit: **952a939** "fish_rclcpp_publish_link / fish_rclcpp_client_link
 tracepoints — deterministic callback-to-publisher/client association"
   - Two new LTTng tracepoints defined in tracetools
   - Fired from rclcpp Publisher::publish and Client::async_send_request
@@ -33,9 +33,9 @@ Commit: **0284efb** "Scheduler introspection, graph_store persistence,
 end-to-end compose"
 
 Scope of this commit:
-  - 4 new ros2 tracepoints shipped: fish_executor_init,
-    fish_callback_group_init, fish_cbgroup_add,
-    fish_executor_add_cbgroup (SingleThreaded/MultiThreaded executor
+  - 4 new ros2 tracepoints shipped: fish_rclcpp_executor_init,
+    fish_rclcpp_callback_group_init, fish_rclcpp_cbgroup_add,
+    fish_rclcpp_executor_add_cbgroup (SingleThreaded/MultiThreaded executor
     + callback-group topology captured at runtime)
   - Postprocess attach_callback_groups() in model_improved.py:
     reads the 4 events, attaches executor_type / num_threads to EX
@@ -60,7 +60,7 @@ Many commits, in order:
 1. **84efb3a** "rclpy scheduler tracepoints (parity with C++) + dedup
    for rclpy add_node cycle"
      - Adds rclpy_{subscription/service/timer}_callback_added,
-       rclpy_timer_link_node, rclpy_callback_register — Python parity
+       fish_rclpy_timer_link_node, fish_rclpy_callback_register — Python parity
        of the 4 existing C++ scheduler events
      - Dedup logic for rclpy's repeat add_node firings (103K → 34
        events in one AAS session, ~3000× reduction)
@@ -222,21 +222,21 @@ Weekly deliverables
 -------------------
 
 **Runtime instrumentation added (tracepoints) — THIS WEEK:**
-  2 callback-link events (04-14: fish_publish_link, fish_client_link) +
-  4 scheduler-introspection events (04-18: fish_executor_init,
-    fish_callback_group_init, fish_cbgroup_add,
-    fish_executor_add_cbgroup) =
+  2 callback-link events (04-14: fish_rclcpp_publish_link, fish_rclcpp_client_link) +
+  4 scheduler-introspection events (04-18: fish_rclcpp_executor_init,
+    fish_rclcpp_callback_group_init, fish_rclcpp_cbgroup_add,
+    fish_rclcpp_executor_add_cbgroup) =
   **6 new FISH tracepoints this week**.
 
   Pre-existing FISH customs (added earlier in March — NOT this week):
     5 rclpy parity events (03-28: rclpy_{sub/srv/tmr}_callback_added,
-                                   rclpy_timer_link_node,
-                                   rclpy_callback_register)
-    4 action server events (03-28: rclcpp_action_server_init,
+                                   fish_rclpy_timer_link_node,
+                                   fish_rclpy_callback_register)
+    4 action server events (03-28: fish_rclcpp_action_server_init,
                                     rclcpp_action_execute_{goal/cancel/
                                     result})
-    2 service client events (03-31: rclcpp_client_request_sent,
-                                     rclcpp_client_response_received)
+    2 service client events (03-31: fish_rclcpp_client_request_sent,
+                                     fish_rclcpp_client_response_received)
 
   TOTAL FISH custom tracepoints (all-time): 17.
   LTTng whitelist after the 2026-04-20 trim: 31 active events

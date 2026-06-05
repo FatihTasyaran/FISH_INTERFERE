@@ -6,15 +6,15 @@
 # creates a ctypes bridge module, and patches rclpy source files.
 #
 # Tracepoints added:
-#   ros2:rclpy_subscription_callback_added — subscription handle → callback
-#   ros2:rclpy_service_callback_added      — service handle → callback
-#   ros2:rclpy_timer_callback_added        — timer handle → callback
-#   ros2:rclpy_timer_link_node             — timer handle → node handle
-#   ros2:rclpy_callback_register           — callback → symbol string
+#   ros2:fish_rclpy_subscription_callback_added — subscription handle → callback
+#   ros2:fish_rclpy_service_callback_added      — service handle → callback
+#   ros2:fish_rclpy_timer_callback_added        — timer handle → callback
+#   ros2:fish_rclpy_timer_link_node             — timer handle → node handle
+#   ros2:fish_rclpy_callback_register           — callback → symbol string
 #
 # Ctypes bridge also exposes (defined in install.sh v2):
-#   ros2:fish_publish_link  — publisher handle → active callback
-#   ros2:fish_client_link   — client handle → active callback
+#   ros2:fish_rclcpp_publish_link  — publisher handle → active callback
+#   ros2:fish_rclcpp_client_link   — client handle → active callback
 #
 # Reuses existing (no modification):
 #   ros2:callback_start, ros2:callback_end
@@ -72,14 +72,14 @@ tp_call_path = f"{OVERLAY}/include/tracetools/tp_call.h"
 with open(tp_call_path) as f:
     content = f.read()
 
-if "rclpy_subscription_callback_added" in content:
+if "fish_rclpy_subscription_callback_added" in content:
     print("  tp_call.h already patched, skipping")
 else:
     INSERT_BEFORE = "#endif  // _TRACETOOLS__TP_CALL_H_"
     new_events = """
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclpy_subscription_callback_added,
+  fish_rclpy_subscription_callback_added,
   TP_ARGS(
     const void *, subscription_handle_arg,
     const void *, callback_arg
@@ -92,7 +92,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclpy_service_callback_added,
+  fish_rclpy_service_callback_added,
   TP_ARGS(
     const void *, service_handle_arg,
     const void *, callback_arg
@@ -105,7 +105,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclpy_timer_callback_added,
+  fish_rclpy_timer_callback_added,
   TP_ARGS(
     const void *, timer_handle_arg,
     const void *, callback_arg
@@ -118,7 +118,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclpy_timer_link_node,
+  fish_rclpy_timer_link_node,
   TP_ARGS(
     const void *, timer_handle_arg,
     const void *, node_handle_arg
@@ -131,7 +131,7 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  rclpy_callback_register,
+  fish_rclpy_callback_register,
   TP_ARGS(
     const void *, callback_arg,
     const char *, symbol_arg
@@ -153,13 +153,13 @@ tt_h_path = f"{OVERLAY}/include/tracetools/tracetools.h"
 with open(tt_h_path) as f:
     content = f.read()
 
-if "rclpy_subscription_callback_added" in content:
+if "fish_rclpy_subscription_callback_added" in content:
     print("  tracetools.h already patched, skipping")
 else:
     # Insert before the closing #ifdef __cplusplus
     # Find the LAST occurrence (after action tracepoints)
     INSERT_BEFORE = "#ifdef __cplusplus\n}\n#endif\n\n#endif  // TRACETOOLS__TRACETOOLS_H_"
-    new_decls = """/// `rclpy_subscription_callback_added`
+    new_decls = """/// `fish_rclpy_subscription_callback_added`
 /**
  * Link a rclpy subscription to its Python callback.
  *
@@ -167,11 +167,11 @@ else:
  * \\param[in] callback Python callback id (id(callable))
  */
 DECLARE_TRACEPOINT(
-  rclpy_subscription_callback_added,
+  fish_rclpy_subscription_callback_added,
   const void * subscription_handle,
   const void * callback)
 
-/// `rclpy_service_callback_added`
+/// `fish_rclpy_service_callback_added`
 /**
  * Link a rclpy service to its Python callback.
  *
@@ -179,11 +179,11 @@ DECLARE_TRACEPOINT(
  * \\param[in] callback Python callback id
  */
 DECLARE_TRACEPOINT(
-  rclpy_service_callback_added,
+  fish_rclpy_service_callback_added,
   const void * service_handle,
   const void * callback)
 
-/// `rclpy_timer_callback_added`
+/// `fish_rclpy_timer_callback_added`
 /**
  * Link a rclpy timer to its Python callback.
  *
@@ -191,11 +191,11 @@ DECLARE_TRACEPOINT(
  * \\param[in] callback Python callback id
  */
 DECLARE_TRACEPOINT(
-  rclpy_timer_callback_added,
+  fish_rclpy_timer_callback_added,
   const void * timer_handle,
   const void * callback)
 
-/// `rclpy_timer_link_node`
+/// `fish_rclpy_timer_link_node`
 /**
  * Link a rclpy timer to its parent node.
  *
@@ -203,11 +203,11 @@ DECLARE_TRACEPOINT(
  * \\param[in] node_handle pointer to the rcl_node_t handle
  */
 DECLARE_TRACEPOINT(
-  rclpy_timer_link_node,
+  fish_rclpy_timer_link_node,
   const void * timer_handle,
   const void * node_handle)
 
-/// `rclpy_callback_register`
+/// `fish_rclpy_callback_register`
 /**
  * Register a Python callback symbol.
  *
@@ -215,7 +215,7 @@ DECLARE_TRACEPOINT(
  * \\param[in] symbol Python qualname of the callback
  */
 DECLARE_TRACEPOINT(
-  rclpy_callback_register,
+  fish_rclpy_callback_register,
   const void * callback,
   const char * symbol)
 
@@ -230,61 +230,61 @@ tt_c_path = f"{OVERLAY}/src/tracetools.c"
 with open(tt_c_path) as f:
     content = f.read()
 
-if "rclpy_subscription_callback_added" in content:
+if "fish_rclpy_subscription_callback_added" in content:
     print("  tracetools.c already patched, skipping")
 else:
     INSERT_BEFORE = "#ifndef _WIN32\n# pragma GCC diagnostic pop"
     new_impls = """void TRACEPOINT(
-  rclpy_subscription_callback_added,
+  fish_rclpy_subscription_callback_added,
   const void * subscription_handle,
   const void * callback)
 {
   CONDITIONAL_TP(
-    rclpy_subscription_callback_added,
+    fish_rclpy_subscription_callback_added,
     subscription_handle,
     callback);
 }
 
 void TRACEPOINT(
-  rclpy_service_callback_added,
+  fish_rclpy_service_callback_added,
   const void * service_handle,
   const void * callback)
 {
   CONDITIONAL_TP(
-    rclpy_service_callback_added,
+    fish_rclpy_service_callback_added,
     service_handle,
     callback);
 }
 
 void TRACEPOINT(
-  rclpy_timer_callback_added,
+  fish_rclpy_timer_callback_added,
   const void * timer_handle,
   const void * callback)
 {
   CONDITIONAL_TP(
-    rclpy_timer_callback_added,
+    fish_rclpy_timer_callback_added,
     timer_handle,
     callback);
 }
 
 void TRACEPOINT(
-  rclpy_timer_link_node,
+  fish_rclpy_timer_link_node,
   const void * timer_handle,
   const void * node_handle)
 {
   CONDITIONAL_TP(
-    rclpy_timer_link_node,
+    fish_rclpy_timer_link_node,
     timer_handle,
     node_handle);
 }
 
 void TRACEPOINT(
-  rclpy_callback_register,
+  fish_rclpy_callback_register,
   const void * callback,
   const char * symbol)
 {
   CONDITIONAL_TP(
-    rclpy_callback_register,
+    fish_rclpy_callback_register,
     callback,
     symbol);
 }
@@ -425,7 +425,7 @@ def _register(callback):
 
 
 def trace_sub_cb(sub_handle_ptr, callback):
-    """Fire rclpy_subscription_callback_added + rclpy_callback_register."""
+    """Fire fish_rclpy_subscription_callback_added + fish_rclpy_callback_register."""
     if not _enabled:
         return
     cb_id = ctypes.c_void_p(id(callback))
@@ -435,7 +435,7 @@ def trace_sub_cb(sub_handle_ptr, callback):
 
 
 def trace_srv_cb(srv_handle_ptr, callback):
-    """Fire rclpy_service_callback_added + rclpy_callback_register."""
+    """Fire fish_rclpy_service_callback_added + fish_rclpy_callback_register."""
     if not _enabled:
         return
     cb_id = ctypes.c_void_p(id(callback))
@@ -445,7 +445,7 @@ def trace_srv_cb(srv_handle_ptr, callback):
 
 
 def trace_tmr_cb(tmr_handle_ptr, callback):
-    """Fire rclpy_timer_callback_added + rclpy_callback_register."""
+    """Fire fish_rclpy_timer_callback_added + fish_rclpy_callback_register."""
     if not _enabled:
         return
     cb_id = ctypes.c_void_p(id(callback))
@@ -455,7 +455,7 @@ def trace_tmr_cb(tmr_handle_ptr, callback):
 
 
 def trace_tmr_node(tmr_handle_ptr, node_handle_ptr):
-    """Fire rclpy_timer_link_node."""
+    """Fire fish_rclpy_timer_link_node."""
     if not _enabled:
         return
     _lib.ros_trace_rclpy_timer_link_node(
@@ -480,7 +480,7 @@ def trace_cb_end(callback):
 
 
 def trace_client_link(client_handle_ptr):
-    """Fire fish_client_link — associates client handle to active callback."""
+    """Fire fish_rclcpp_client_link — associates client handle to active callback."""
     if not _enabled:
         return
     cb = getattr(_active_cb, 'value', None)
@@ -490,7 +490,7 @@ def trace_client_link(client_handle_ptr):
 
 
 def trace_publish_link(publisher_handle_ptr):
-    """Fire fish_publish_link — associates publisher handle to active callback."""
+    """Fire fish_rclcpp_publish_link — associates publisher handle to active callback."""
     if not _enabled:
         return
     cb = getattr(_active_cb, 'value', None)
@@ -688,30 +688,30 @@ import os
 print(os.path.abspath(m.__file__))
 ")
 
-if grep -q "rclpy_subscription_callback_added" "$NAMES_PY"; then
+if grep -q "fish_rclpy_subscription_callback_added" "$NAMES_PY"; then
     log "  names.py already has rclpy events, skipping"
 else
     python3 <<PATCHNAMES
 with open("$NAMES_PY") as f:
     content = f.read()
 
-new_entries = '''    "ros2:rclpy_subscription_callback_added",
-    "ros2:rclpy_service_callback_added",
-    "ros2:rclpy_timer_callback_added",
-    "ros2:rclpy_timer_link_node",
-    "ros2:rclpy_callback_register",'''
+new_entries = '''    "ros2:fish_rclpy_subscription_callback_added",
+    "ros2:fish_rclpy_service_callback_added",
+    "ros2:fish_rclpy_timer_callback_added",
+    "ros2:fish_rclpy_timer_link_node",
+    "ros2:fish_rclpy_callback_register",'''
 
-# Insert after the last FISH tracepoint entry (fish_client_link from install.sh v2)
+# Insert after the last FISH tracepoint entry (fish_rclcpp_client_link from install.sh v2)
 # Fall back to action_execute_result if link events not present yet
-if '    "ros2:fish_client_link",\n]' in content:
+if '    "ros2:fish_rclcpp_client_link",\n]' in content:
     content = content.replace(
-        '    "ros2:fish_client_link",\n]',
-        '    "ros2:fish_client_link",\n' + new_entries + '\n]'
+        '    "ros2:fish_rclcpp_client_link",\n]',
+        '    "ros2:fish_rclcpp_client_link",\n' + new_entries + '\n]'
     )
-elif '    "ros2:rclcpp_action_execute_result",\n]' in content:
+elif '    "ros2:fish_rclcpp_action_execute_result",\n]' in content:
     content = content.replace(
-        '    "ros2:rclcpp_action_execute_result",\n]',
-        '    "ros2:rclcpp_action_execute_result",\n' + new_entries + '\n]'
+        '    "ros2:fish_rclcpp_action_execute_result",\n]',
+        '    "ros2:fish_rclcpp_action_execute_result",\n' + new_entries + '\n]'
     )
 else:
     # Fallback: find DEFAULT_EVENTS_ROS closing bracket

@@ -12,10 +12,10 @@ because action servers use the Waitable interface, bypassing ServiceBase.
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `ros2:rclcpp_action_server_init` | action_server_handle, action_name, goal/cancel/result service handles | Links action handle to name and component services |
-| `ros2:rclcpp_action_execute_goal` | action_server_handle | Goal request dispatch entry |
-| `ros2:rclcpp_action_execute_cancel` | action_server_handle | Cancel request dispatch entry |
-| `ros2:rclcpp_action_execute_result` | action_server_handle | Result request dispatch entry |
+| `ros2:fish_rclcpp_action_server_init` | action_server_handle, action_name, goal/cancel/result service handles | Links action handle to name and component services |
+| `ros2:fish_rclcpp_action_execute_goal` | action_server_handle | Goal request dispatch entry |
+| `ros2:fish_rclcpp_action_execute_cancel` | action_server_handle | Cancel request dispatch entry |
+| `ros2:fish_rclcpp_action_execute_result` | action_server_handle | Result request dispatch entry |
 
 ## rclpy Callback Chain (5 events)
 
@@ -24,11 +24,11 @@ visibility for Python nodes that is natively available only for C++ nodes.
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `ros2:rclpy_subscription_callback_added` | subscription_handle, callback | Links subscription to Python callback ID |
-| `ros2:rclpy_service_callback_added` | service_handle, callback | Links service to Python callback ID |
-| `ros2:rclpy_timer_callback_added` | timer_handle, callback | Links timer to Python callback ID |
-| `ros2:rclpy_timer_link_node` | timer_handle, node_handle | Links timer to parent node |
-| `ros2:rclpy_callback_register` | callback, symbol | Maps callback ID to Python qualname |
+| `ros2:fish_rclpy_subscription_callback_added` | subscription_handle, callback | Links subscription to Python callback ID |
+| `ros2:fish_rclpy_service_callback_added` | service_handle, callback | Links service to Python callback ID |
+| `ros2:fish_rclpy_timer_callback_added` | timer_handle, callback | Links timer to Python callback ID |
+| `ros2:fish_rclpy_timer_link_node` | timer_handle, node_handle | Links timer to parent node |
+| `ros2:fish_rclpy_callback_register` | callback, symbol | Maps callback ID to Python qualname |
 
 Existing `ros2:callback_start` and `ros2:callback_end` events are reused for
 rclpy runtime callback boundaries (injected into `rclpy/executors.py`).
@@ -42,8 +42,8 @@ standard tracing.
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `ros2:rclcpp_client_request_sent` | client_handle, sequence_number | Client sends a service request |
-| `ros2:rclcpp_client_response_received` | client_handle, sequence_number, response_type | Client receives a service response |
+| `ros2:fish_rclcpp_client_request_sent` | client_handle, sequence_number | Client sends a service request |
+| `ros2:fish_rclcpp_client_response_received` | client_handle, sequence_number, response_type | Client receives a service response |
 
 `response_type`: 0 = future-only, 1 = callback, 2 = callback with request.
 

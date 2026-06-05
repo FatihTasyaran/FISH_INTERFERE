@@ -19,9 +19,9 @@ Purpose:
     session:    fish_compose_20260418_165627
     containers: aircraft, ground, simulation (AAS single-drone w/ PX4 SITL)
     mission:    takeoff -> orbit -> land, ~95 s of active flight
-    tracepoints: 4 new scheduler tracepoints (fish_executor_init,
-                 fish_callback_group_init, fish_cbgroup_add,
-                 fish_executor_add_cbgroup) installed in rclcpp
+    tracepoints: 4 new scheduler tracepoints (fish_rclcpp_executor_init,
+                 fish_rclcpp_callback_group_init, fish_rclcpp_cbgroup_add,
+                 fish_rclcpp_executor_add_cbgroup) installed in rclcpp
                  (callback_group.cpp + executor.cpp + 3 executors/*.cpp)
 
 
@@ -66,12 +66,12 @@ The "extras" split into two categories — see below.
 EVIDENCE
 --------
   Trace events:
-    aircraft  — 13 fish_executor_init events
+    aircraft  — 13 fish_rclcpp_executor_init events
     ground    — subset of the 13 (3 parameter_bridges split across roles)
-    simulation — 3 fish_executor_init events
+    simulation — 3 fish_rclcpp_executor_init events
 
   Event payload (raw):
-    ros2:fish_executor_init {
+    ros2:fish_rclcpp_executor_init {
       executor_addr: "0x7FFCD1A35B30",
       executor_type: "SingleThreaded" | "MultiThreaded" | "StaticSingleThreaded",
       num_threads:   1 | 20 | ...
@@ -97,7 +97,7 @@ Two distinct mechanisms produce multiple executors per process:
       Same pattern in rclcpp::spin_some() and
       rclcpp::spin_until_future_complete(). Every call allocates a fresh
       SingleThreadedExecutor on the stack, constructs it (→ fires
-      fish_executor_init), spins, then destructs it.
+      fish_rclcpp_executor_init), spins, then destructs it.
 
       Common callers inside nodes (any of these trigger a new executor):
         - Client<T>::async_send_request(req).get()   (blocking sync)
@@ -190,12 +190,12 @@ MutuallyExclusive to avoid races.
 
 EVIDENCE
 --------
-  ros2:fish_callback_group_init events per container:
+  ros2:fish_rclcpp_callback_group_init events per container:
     aircraft     — 24 CG init events
     ground       —  3 CG init events
     simulation   —  3 CG init events
 
-  ros2:fish_cbgroup_add events (entity ↔ CG association):
+  ros2:fish_rclcpp_cbgroup_add events (entity ↔ CG association):
     aircraft     — 537 add events (entities + waitables)
 
   The cg_add event uses the RCL handle (obtained via
@@ -314,8 +314,8 @@ Tutorials describe the two interchangeably.
 OBSERVED
 --------
 The yolo_py node in AAS (PID 1249, rclpy-based) produced ZERO
-fish_executor_init, fish_callback_group_init, fish_cbgroup_add, or
-fish_executor_add_cbgroup events. In the graph_store model, its EX
+fish_rclcpp_executor_init, fish_rclcpp_callback_group_init, fish_rclcpp_cbgroup_add, or
+fish_rclcpp_executor_add_cbgroup events. In the graph_store model, its EX
 vertex has:
 
     executor_type: ?        (unknown)
@@ -353,7 +353,7 @@ constraints.
 
 
 ============================================================================
-5. fish_callback_group_init fires BEFORE the owning node is known
+5. fish_rclcpp_callback_group_init fires BEFORE the owning node is known
 ============================================================================
 
 EXPECTED
@@ -364,16 +364,16 @@ the owning node as metadata.
 
 OBSERVED
 --------
-The fish_callback_group_init event payload has:
+The fish_rclcpp_callback_group_init event payload has:
     group_addr, group_type, automatic_add, vpid (process id)
 but NOT the node_addr.
 
 The node association is recoverable only after the first
-fish_cbgroup_add or fish_executor_add_cbgroup that mentions the same
+fish_rclcpp_cbgroup_add or fish_rclcpp_executor_add_cbgroup that mentions the same
 group_addr — at that point we can triangulate:
     E.entity_addr → parent N → node_handle
 or
-    fish_executor_add_cbgroup(executor_addr, group_addr, node_addr)
+    fish_rclcpp_executor_add_cbgroup(executor_addr, group_addr, node_addr)
 
 In the current FISH extraction this triangulation works: every CG that
 ends up in the graph has at least one entity added to it, so we
@@ -451,10 +451,10 @@ Both intuitions are wrong, and they fail in opposite directions.
 OBSERVED
 --------
 In the 2026-04-19 AAS mission (fish_compose_20260419_154439) with an
-initial non-deduplicated `fish_executor_add_cbgroup` tracepoint patch
+initial non-deduplicated `fish_rclcpp_executor_add_cbgroup` tracepoint patch
 in rclpy, we measured:
 
-  aircraft container total fish_executor_add_cbgroup events: 103,466
+  aircraft container total fish_rclcpp_executor_add_cbgroup events: 103,466
   yolo_py process (PID 1252) alone:                          ~25,000
   Distinct (executor_addr, group_addr, node_addr) triples in
     yolo_py:                                                         1
@@ -462,7 +462,7 @@ in rclpy, we measured:
 So the SAME logical association fired ~25,000 times inside yolo_py.
 
 At the same time, the rclpy Executor was NOT being recreated:
-  yolo_py (PID 1252) fish_executor_init events:                     1
+  yolo_py (PID 1252) fish_rclcpp_executor_init events:                     1
   (SingleThreaded, 1 thread)
 
 So exactly one executor lived for the entire yolo_py lifetime.
@@ -502,12 +502,12 @@ CONSEQUENCE
 -----------
 LTTng trace buffers are finite. 25,000+ events per yolo_py plus
 similar volume from other rclpy PIDs produced ~100K redundant
-fish_executor_add_cbgroup events across the aircraft trace, which
-displaced other events: fish_publish_link events dropped from the
+fish_rclcpp_executor_add_cbgroup events across the aircraft trace, which
+displaced other events: fish_rclcpp_publish_link events dropped from the
 expected 88 to 1 in the first run. The trace was still usable for
-graph extraction (32/33 entities got CG info via fish_cbgroup_add
+graph extraction (32/33 entities got CG info via fish_rclcpp_cbgroup_add
 which was not affected) but cross-container comm attribution via
-fish_publish_link degraded from "88 genuine edges" to "1 residual".
+fish_rclcpp_publish_link degraded from "88 genuine edges" to "1 residual".
 
 ROOT CAUSE
 ----------
@@ -536,9 +536,9 @@ full mechanism and invariants.
 
 After the fix, fish_compose_20260419_161633 (identical mission):
 
-  aircraft fish_executor_add_cbgroup: 103,466 → 34   (~3000× reduction)
-  aircraft fish_publish_link:              1 → 89    (recovered to expected)
-  yolo_py (PID 1252) fish_executor_init:              1 (unchanged)
+  aircraft fish_rclcpp_executor_add_cbgroup: 103,466 → 34   (~3000× reduction)
+  aircraft fish_rclcpp_publish_link:              1 → 89    (recovered to expected)
+  yolo_py (PID 1252) fish_rclcpp_executor_init:              1 (unchanged)
   yolo_py EX vertex type:  ?  →  SingleThreaded, 1 thread, 1 CG
   9/9 EX vertices with executor_type + cb_groups (was 8/9)
 
@@ -604,9 +604,9 @@ Key measurements from the aircraft trace (fish_compose_20260419_161633):
 
   CUDA runtime events on tid 1252:        1,029,170
   callback_start events on tid 1252:              0   ← no callbacks!
-  rclpy_callback_register on pid 1252:            7
+  fish_rclpy_callback_register on pid 1252:            7
     (all TimeSource / ParameterService — nothing user-defined)
-  rclpy_subscription_callback_added on pid 1252:  1  (only /clock)
+  fish_rclpy_subscription_callback_added on pid 1252:  1  (only /clock)
 
 So the entire GPU task — 764K kernel launches, 78K memory copies, etc.
 — is produced by a thread that is NOT managed by a ROS 2 executor.
@@ -976,12 +976,12 @@ Appendix B. Open questions for future measurement
    rclcpp::spin(node) creates an executor AND calls add_node internally.
    But a user's own Executor might be constructed without any add_node
    call yet. Do we observe such executors? (Would show up as
-   fish_executor_init with zero matching fish_executor_add_cbgroup.)
+   fish_rclcpp_executor_init with zero matching fish_rclcpp_executor_add_cbgroup.)
 
 3. CG reuse across nodes.
    Does any AAS process share a single CG across multiple nodes? Check
    with: for each group_addr, count distinct node_addrs it's associated
-   with via fish_executor_add_cbgroup or inferred from entities.
+   with via fish_rclcpp_executor_add_cbgroup or inferred from entities.
 
 4. Reentrant CG concurrency actually observed.
    Just because a CG is Reentrant does not mean the callback ever runs
