@@ -1,0 +1,131 @@
+# NITROS inheritance — how ResizeNode (PrepResizeNode) creates vertices
+
+Context: PrepResizeNode logical name in apriltag pipeline maps to
+`nvidia::isaac_ros::image_proc::ResizeNode`. This class never calls
+create_publisher / create_subscription / create_*timer directly — all
+sub/pub/timer creation is bounced through nitros::NitrosNode +
+negotiated::NegotiatedPublisher/Subscription. For per-Node VCC
+accounting in compute_expected_vertex, we need to trace the chain.
+
+## Inheritance chain (class hierarchy)
+
+                    rclcpp::Node
+                         ▲
+                         │ public inheritance
+                         │
+                ┌────────────────────┐
+                │ nitros::NitrosNode │  ◄── (1) Constructor creates
+                └────────────────────┘       2 wall_timers:
+                         ▲                   - negotiation_timer (nitros_node.cpp:548)
+                         │                   - gxf_heartbeat_timer (line 721)
+                         │
+        ┌────────────────────────────────────┐
+        │ isaac_ros::image_proc::ResizeNode  │  ◄── (2) Constructor only calls
+        └────────────────────────────────────┘       declare_parameter ×7.
+                                                    NO direct create_*.
+                                                    Just sets static CONFIG_MAP
+                                                    with 4 topic entries.
+
+## Composition chain (what creates rcl_*_init events)
+
+ResizeNode ctor
+   │
+   ├──► NitrosNode ctor
+   │        │
+   │        ├──► 2× create_wall_timer  ───► 2 rcl_timer_init + 2 rclcpp_timer_callback_added
+   │        │
+   │        └──► for each entry in CONFIG_MAP (4 entries):
+   │                │
+   │                ├── if INPUT type ─► nitros::NitrosSubscriber
+   │                │                       │
+   │                │                       └──► negotiated::NegotiatedSubscription ctor
+   │                │                               │
+   │                │                               ├── create_subscription<NegotiatedTopicsInfo>(topic)
+   │                │                               │     ───► 1 rcl_sub_init + 1 cb (e.g. "image")
+   │                │                               │
+   │                │                               └── create_publisher<SupportedTypes>(topic+"/_supported_types")
+   │                │                                     ───► 1 rcl_pub_init      (e.g. "image/_supported_types")
+   │                │
+   │                └── if OUTPUT type ─► nitros::NitrosPublisher
+   │                                        │
+   │                                        └──► negotiated::NegotiatedPublisher ctor
+   │                                                │
+   │                                                ├── create_publisher<NegotiatedTopicsInfo>(topic)
+   │                                                │     ───► 1 rcl_pub_init      (e.g. "resize/image")
+   │                                                │
+   │                                                └── create_wall_timer(100ms, graph_change_cb)
+   │                                                      ───► 1 rcl_timer_init + 1 cb (3rd timer per output!)
+   │
+   └── Plus Node defaults (rosout/parameter_events/6 param svcs/cbs)
+
+## Per-entity vertex count (STATIC, deterministic)
+
+| Source                            | E added | F added |
+|-----------------------------------|---------|---------|
+| Node defaults (boilerplate)       | 8       | 6       |
+| NitrosNode 2 wall_timers          | 2       | 2       |
+| Per NegotiatedSubscription        | 2 (1 metadata sub + 1 _supported_types pub) | 1 (sub cb) |
+| Per NegotiatedPublisher           | 2 (1 metadata pub + 1 100ms timer)          | 1 (timer cb) |
+
+## ResizeNode totals (CONFIG_MAP = 2 inputs + 2 outputs)
+
+- 2× NegotiatedSub × (2 E + 1 F) = 4 E + 2 F
+- 2× NegotiatedPub × (2 E + 1 F) = 4 E + 2 F
+- NitrosNode own: 2 E + 2 F
+- Boilerplate: 8 E + 6 F
+- **Static total: 1 N + 18 E + 12 F**  (ctor-time, before negotiation)
+
+## Runtime expansion (after type negotiation completes)
+
+- NegotiatedSubscription::topics_info_cb dynamically calls create_subscription
+  for the resolved data type → +1 E + 1 F per negotiated sub
+- NegotiatedPublisher creates _supported_types sub per connected upstream
+  → +1 E + 1 F per upstream connection
+- NITROS bridge: when a non-NITROS publisher feeds the input, an additional
+  "<topic>/nitros" bridge subscription appears (observed empirically — exact
+  code path TBD).
+
+These are not in the static count but appear in the captured graph once data
+starts flowing.
+
+## Empirical observation (apriltag PrepResizeNode, direct children[])
+
+- 8 E + 8 F via children[] field (boilerplate not in direct children — it's
+  attached via attribute_aspects, not as N→E edge)
+- Children list:
+  * /r2b/data_loader/camera_info       (input metadata sub, remapped)
+  * /r2b/data_loader/camera_info/nitros (NITROS bridge sub)
+  * /r2b/data_loader/image
+  * /r2b/data_loader/image/nitros
+  * timer_100000000ns ×2  (NitrosNode negotiation_timer + NegotiatedPub graph_change_timer)
+  * timer_1000000000ns ×2 (NitrosNode gxf_heartbeat_timer + ???)
+
+So in the actual graph we see 4 data-topic subs (2 NITROS-aware + 2 bridge
+fallbacks) + 4 timers. _supported_types pub/sub vertices and output-side
+publishers are visible elsewhere (transitive count was 17 E).
+
+## Open questions
+
+1. Where does the /nitros bridge subscription get created? Probably nitros::
+   ManagedNitrosSubscriber or the NITROS type adapter — needs further dig if
+   we want exact static count.
+2. Should compute_expected_vertex VCC table use the static ctor-time count
+   (18 E + 12 F) or the steady-state count (boilerplate + ~25 E + ~15 F)?
+   Static is deterministic but excludes runtime arrows; steady-state matches
+   what FISH actually captures.
+3. Same pattern repeats for every NitrosNode subclass (Dnn*, Encoder, etc.).
+   If we accept "NitrosNode framework adds K vertices per CONFIG_MAP entry"
+   as a VCC, we get clean reusable accounting across the Isaac ROS image_proc
+   suite.
+
+## File pointers
+
+- nitros::NitrosNode header: isaac_ros_nitros/isaac_ros_nitros/include/isaac_ros_nitros/nitros_node.hpp:50
+- NitrosNode timers: isaac_ros_nitros/isaac_ros_nitros/src/nitros_node.cpp:548, :721
+- NitrosSubscriber wraps NegotiatedSubscription: nitros_subscriber.cpp:83
+- NitrosPublisher wraps NegotiatedPublisher: nitros_publisher.cpp:141
+- NegotiatedSubscription ctor: negotiated/negotiated/src/negotiated_subscription.cpp:71
+- NegotiatedPublisher ctor: negotiated/negotiated/src/negotiated_publisher.cpp:290
+- NegotiatedPublisher graph_change_timer: line 324
+- ResizeNode source: isaac_ros_image_pipeline/isaac_ros_image_proc/src/resize_node.cpp:135
+- ResizeNode CONFIG_MAP: same file line 82 (input/output × image/camera_info)

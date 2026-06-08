@@ -1,0 +1,114 @@
+# FISH entity model — why pub/cli are aspects, not E vertices
+# Date: 2026-06-08
+
+## Question that triggered this
+
+When building compute_expected_vertex catalog for Isaac ROS NITROS chain
+investigation, the asymmetry surfaced:
+
+  create_subscription(topic, qos, cb)  → FISH makes 1 E + 1 F
+  create_service(name, cb)             → FISH makes 1 E + 1 F
+  create_wall_timer(period, cb)        → FISH makes 1 E + 1 F
+  create_publisher(topic, qos)         → FISH makes 0 vertices (pub aspect on N only)
+  create_client(name)                  → FISH makes 0 vertices (cli aspect on N only)
+
+User: "FISH formülleri 1:1 source→vertex symmetric olmalı, FISH'i değiştirmeli miyiz?"
+
+Walked through three alternatives:
+  A. Current: pub/cli stay as aspects (no new E)
+  B. pub becomes E (symmetric but creates leaf E with no F child)
+  C. New `P` vertex type for pub/cli (clean but more refactor)
+  D. pub becomes E with many-to-many F mapping (incoming F→pub_E edges)
+
+## Empirical verification of the ROS API asymmetry
+
+Checked rclcpp/node.hpp (Humble) signatures directly:
+
+  create_subscription(topic, qos, **CallbackT&& callback**, options)   ✓ ctor cb
+  create_service(name, **CallbackT&& callback**, qos, group)            ✓ ctor cb
+  create_wall_timer(period, **CallbackT callback**, group)              ✓ ctor cb
+
+  create_publisher(topic, qos, options)                                 ✗ no cb
+  create_client(name, qos, group)                                       ✗ no cb
+  client->async_send_request(req, **CallbackT&& cb**)                   ✓ but PER-REQUEST runtime
+
+So the ROS API itself encodes the asymmetry:
+  - 3 APIs take a callback at create-time → "trigger entities"
+  - 2 APIs (pub/cli) take no callback at create-time → "tools / outbound channels"
+  - cli's response callback is per-request runtime, not per-client
+
+## The semantic that follows
+
+A subscription / service / timer is FUNDAMENTALLY a callback-binding:
+the entity is the binding between a trigger source and a function. You
+cannot create one without specifying what to do when it fires. Without
+the callback, the entity has no purpose.
+
+A publisher / client is FUNDAMENTALLY a tool — an interface to send
+data out. It does not bind a callback. A callback (some F) can later
+invoke it. The same pub can be invoked by many F's; one F can invoke
+many pubs. A subscription's F can later publish via a pub it has
+access to — meaning the F gains a "pub aspect" dynamically.
+
+So:
+  - E = create-time-callback-binder (sub / serv / tmr)
+  - F = the bound callback
+  - pub / cli = aspects F's gain at runtime by invoking them
+
+FISH's current model already reflects this faithfully. The asymmetry
+between sub/serv/tmr → E and pub/cli → aspect is NOT a FISH limitation;
+it MIRRORS the ROS API design.
+
+## Consequences
+
+1. The "compute_expected_vertex" symmetric source→vertex mapping is
+   not the right framing. Pub/cli don't add vertices; they add aspects.
+2. Static analysis should track TWO orthogonal counts:
+     - Vertex count: EX / N / E / F (graph topology)
+     - Aspect count: pub aspects, cli aspects (F-level outbound count)
+   Both predictable from source.
+3. FISH model stays unchanged. No refactor.
+4. compute_expected_vertex gets 2 new columns: F-pub_aspect, F-cli_aspect.
+5. Paper notation: "E is a callback-binding entity; pub/cli are F-side
+   aspects" — defended directly by the ROS API design.
+
+## Why options B, C, D were rejected
+
+  B (pub as E with no F child):
+    - Breaks "E is a trigger" semantic
+    - Creates structural leaf-E anomaly
+    - No real benefit since pub doesn't bind a callback
+
+  C (new P vertex type):
+    - Symmetric source mapping but adds a new vertex type
+    - Forces a new edge-type vocabulary
+    - Treats pub/cli as first-class graph citizens even though they are
+      not callback-binders, blurring the semantic that callbacks are the
+      unit of work
+
+  D (pub as E with many-many F links via F→pub_E edges):
+    - Removed the leaf anomaly (pub_E has incoming F edges)
+    - But still treats a non-callback-binder as if it were on equal
+      footing with sub/serv/tmr
+    - Source-graph mapping becomes symmetric only at the cost of
+      conflating "trigger" and "tool" semantics
+    - User insight that killed it: a sub's F can later acquire pub
+      property — pub is not an intrinsic identity, it's a runtime-attached
+      action. Promoting it to E would require treating every F's runtime
+      action set as a vertex set, which is not what FISH is modeling.
+
+## File pointers
+
+  - rclcpp create_* signatures: /opt/ros/humble/include/rclcpp/rclcpp/node.hpp
+  - async_send_request: /opt/ros/humble/include/rclcpp/rclcpp/client.hpp:643
+  - FISH identify_entities: postprocess/model_improved.py:200 (only sub/serv/tmr → E)
+  - FISH attribute_aspects: postprocess/model_improved.py:785 (pub/cli aspects on F)
+
+## Decision
+
+Keep FISH model as-is (Option A). Add pub/cli aspect columns to
+compute_expected_vertex catalog. Paper position: "FISH represents the
+callback-trigger DAG of ROS. Publishers and clients are outbound
+aspects of callbacks, not entities — this matches the ROS API design
+where sub/serv/tmr require a callback parameter at construction and
+pub/cli do not."

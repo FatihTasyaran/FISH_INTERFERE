@@ -1,0 +1,160 @@
+# Apriltag pipeline model validation
+# Date: 2026-06-08
+
+## What we did
+
+Built a static expected-vertex model from source code review (VCC + VCCI
+catalog) and compared row-by-row to the actual FISH graph from a fresh
+apriltag run (smoke test 4). Goal: get expected == actual for every node.
+
+Spreadsheets in fatih's Drive (folder "FISH Sheets"):
+  - API-ROS-NITROSA04 — VCC + VCCI reference (numeric)
+  - APRILTAG-NODE-A0  — per-node source review + expected_codes + expected_vertex + actual_vertex
+
+## Initial state (before fixes)
+
+Empirical (actual graph direct children[]) vs expected:
+  - container: 4 / 9 (expected too high, -5)
+  - launch_ros: 6 / 6 ✓
+  - Controller: 6 / 6 ✓
+  - DataLoaderNode: 11 / 10 (+1)
+  - MonitorNode: 10 / 8 (+2)
+  - PlaybackNode: 16 / 9 (+7)
+  - AprilTagNode: 10 / 9 (+1)
+  - PrepResizeNode: 17 / 15 (+2)
+
+Three rounds of refinement closed almost all gaps.
+
+## Fix 1: rclcpp Node default has /parameter_events SUB
+
+Every rclcpp::Node ctor instantiates a NodeTimeSource, which calls
+TimeSource::attachNode, which calls AsyncParametersClient::on_parameter_event
+which creates a /parameter_events SUBSCRIPTION. This was missing from our
+VCC1 formula. Path:
+
+  rclcpp/src/rclcpp/node.cpp:197              new NodeTimeSource(...)
+  → rclcpp/src/rclcpp/node_interfaces/node_time_source.cpp:41
+      time_source_.attachNode(...)
+  → rclcpp/src/rclcpp/time_source.cpp:270
+      parameter_subscription_ = AsyncParametersClient::on_parameter_event(...)
+  → rclcpp/include/rclcpp/parameter_client.hpp:245
+      rclcpp::create_subscription<ParameterEvent>("/parameter_events", ...)
+
+Empirical confirmation: every rclcpp Node in the apriltag trace has exactly
+one /parameter_events SUB as a direct E child. Controller (rclpy) does NOT —
+rclpy doesn't auto-attach TimeSource, so this is rclcpp-only.
+
+Model update:
+  VCC1 (rclcpp)  = 1 N + 7 E + 7 F + 2 pub_aspect (was 6 E + 6 F)
+  VCC1.rclpy     = 1 N + 6 E + 6 F + 2 pub_aspect
+
+## Fix 2: ComponentManager has internal NodeOptions override
+
+component_container_mt main calls ComponentManager() with default
+NodeOptions, BUT the binary has setter symbols for both
+start_parameter_services and start_parameter_event_publisher — meaning
+something in the installed system source calls them with false. (Our
+patched overlay source has the plain pass-through ctor, so the override
+must live in the system rclcpp_components or in a hidden CTOR overload.)
+
+Empirical: container shows NO 6 boilerplate param services and NO
+/parameter_events PUB. Only 3 _container/* services + 1 /parameter_events
+SUB (TimeSource) + 1 /rosout PUB.
+
+Model update:
+  VCC1.cm (ComponentManager) = 1 N + 1 E + 1 F + 1 pub_aspect
+                              (just TimeSource sub + rosout pub_aspect)
+
+## Fix 3: Per-node source review must include NITROS subclasses
+
+PlaybackNode in apriltag is NOT ros2_benchmark::PlaybackNode — it is
+isaac_ros_benchmark::NitrosPlaybackNode (subclass). My initial source
+review used the parent class only, missing the subclass's ctor work:
+
+  NitrosPlaybackNode::NitrosPlaybackNode(opts)
+    : ros2_benchmark::PlaybackNode("NitrosPlaybackNode", opts)
+    │
+    ├── NitrosTypeManager (no vertex)
+    └── for each data_format (apriltag → 2):
+          CreateNitrosPubSub or CreateGenericPubSub
+            ├── new NitrosPublisher NEGOTIATED on "inputN"
+            │     → 1 VCC3 compat pub + 1 VCCI14 NegPub
+            └── recording subscriber on "buffer/inputN"
+                  → 1 VCC2 sub
+
+Same pattern for MonitorNode = isaac_ros_benchmark::NitrosMonitorNode:
+  CreateMonitorSubscriber → CreateNitrosMonitorSubscriber or
+    CreateROSTypeMonitorSubscriber → 1 monitor_sub_ create_subscription
+
+Model update: PlaybackNode and MonitorNode rows in APRILTAG-NODE-A0 now
+use the NITROS-subclass source as canonical.
+
+## Final state (after fixes)
+
+  Node              Expected E/F   Actual E/F   Δ        Status
+  container         4 / 4          4 / 4        0        ✓
+  launch_ros        6 / 6          6 / 6        0        ✓
+  Controller        6 / 6          6 / 6        0        ✓
+  DataLoaderNode    11 / 11        11 / 11      0        ✓
+  MonitorNode       10 / 10        10 / 9       0 / -1   ⚠ (1 F gap — see Fix 4)
+  PlaybackNode      16 / 16        16 / 16      0        ✓
+  AprilTagNode      10 / 10        10 / 10      0        ✓
+  PrepResizeNode    16 / 16        17 / 17      +1 / +1  ⚠ runtime
+
+  TOTAL             79 / 79        80 / 79      +1 / 0
+
+## Remaining gaps
+
+### PrepResizeNode +1 E +1 F (runtime, not a model bug)
+
+ResizeNode is a nitros::NitrosNode subclass. After type negotiation
+completes, NitrosNode::postNegotiationCallback (nitros_node.cpp:556+)
+runs and creates a gxf_heartbeat_timer (line 721) via create_wall_timer.
+This fires post-ctor, after negotiation_timer expires. Genuinely runtime
+behaviour, not part of the ctor-time static model.
+
+Model would predict this with a "VCCI-post-negotiation = +1 E + 1 F"
+runtime extension, parameterized on type=NEGOTIATED + first negotiation
+completion. Adds complexity for one timer — leaving as documented
+runtime delta for now.
+
+### MonitorNode F=9 vs 10 (FISH instrumentation gap)
+
+The /r2b/apriltag_detections sub fires rcl_subscription_init but not
+rclcpp_subscription_init or rclcpp_subscription_callback_added. FISH
+attribution links E→F via the callback_added event, so this E ends up
+with no F child even though the callback (NitrosTypeMonitorSubscriberCallback)
+is bound and active.
+
+Root cause: NITROS subscriber for a NITROS-typed format where the upstream
+publisher is a plain rclcpp publisher (no /_supported_types peer) falls
+back to compat mode. The compat sub instantiation goes through a
+rclcpp::TypeAdapter template specialization (since the NITROS message type
+is registered as a type-adapted ROS type). That template specialization
+bypasses the standard rclcpp_subscription_init / callback_added tracepoint
+calls.
+
+20 subs in the apriltag pipeline:
+  19 fire both rcl_subscription_init AND rclcpp_subscription_init (✓)
+   1 fires only rcl_subscription_init (✗ — the apriltag_detections one)
+
+This is a NITROS-specific edge: NITROS NEGOTIATED sub + non-NITROS pub
+peer. See notes/high_impact/typeadapter_attribution_gap.txt for the
+coverage-claim implication.
+
+## Sheet snapshot
+
+The static formula now reproduces 79 of 80 actual ctor-time E/F vertices.
+The one remaining genuine runtime entity (gxf_heartbeat_timer) is
+documented; the one missing callback attribution is a FISH instrumentation
+limitation downstream of an rclcpp TypeAdapter specialization.
+
+## Open follow-ups
+
+1. NITROS-side fish_nitros_compat_sub_callback_added tracepoint to close
+   the MonitorNode F gap (separate task — discussed for next round).
+2. Generalize the static model to other Isaac ROS benchmarks (currently
+   apriltag-specific; same template should apply to detectnet, centerpose,
+   etc. with their own VCCI source rows).
+3. Decide how to model runtime extensions like gxf_heartbeat_timer in
+   compute_expected_vertex (separate "runtime delta" column?).
