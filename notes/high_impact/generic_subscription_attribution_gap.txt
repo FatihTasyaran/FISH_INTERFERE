@@ -1,0 +1,144 @@
+# HIGH-IMPACT: rclcpp::GenericSubscription callback-attribution gap (and fix)
+# Date: 2026-06-08
+# Status: diagnosed, POC patch applied + verified, persisted in install_fish_tracepoints
+#
+# This file SUPERSEDES the earlier (incorrect) typeadapter_attribution_gap.txt.
+# The TypeAdapter hypothesis was wrong; the actual gap was in GenericSubscription.
+
+## TL;DR
+
+Upstream rclcpp's `Subscription<T>::Subscription` ctor fires
+`TRACEPOINT(rclcpp_subscription_init)` and
+`TRACEPOINT(rclcpp_subscription_callback_added)`. Its sibling class
+`GenericSubscription::GenericSubscription` (used by
+`Node::create_generic_subscription`, runtime-typed serialized subs) does
+NOT — upstream simply forgot to add those calls. So any subscription
+created via the generic path lands a rcl-layer E vertex in FISH but no
+F child, breaking attribution.
+
+Fix is one-file: add the two `TRACEPOINT` calls to GenericSubscription's
+ctor. Integrated into `fish_tracepoints/install_fish_tracepoints` under
+`patch_and_build_rclcpp_scheduler` (idempotent, gated by the "FISH:
+GenericSubscription attribution" marker comment).
+
+## How we found it
+
+apriltag pipeline post-validation:
+  79 expected E/F vs 80 actual — one MonitorNode sub (`/r2b/apriltag_detections`)
+  had a graph E with no F child. See apriltag_model_validation.txt for the
+  full validation walk.
+
+Initial wrong hypothesis: rclcpp::TypeAdapter template specialization
+bypasses the standard tracepoints. Investigation showed:
+
+  - `nm -CD` on `libnitros_monitor_node.so` did contain
+    `Subscription<NitrosDetection2DArray>::Subscription` with
+    `ros_trace_rclcpp_subscription_init` referenced (compile-time present).
+  - LTTng tracepoint code IS in the running binary.
+  - Yet `rclcpp_subscription_init` did not fire for /r2b/apriltag_detections.
+
+Real cause: trace evidence shows `fish_cbgroup_add` DID fire for that
+sub handle (so callback_group->add_subscription ran), meaning a
+SubscriptionBase object was constructed and added — but the ctor that
+ran was `GenericSubscription`, not `Subscription<T>`. The two classes
+are siblings under SubscriptionBase:
+
+  SubscriptionBase
+  ├── Subscription<T>       ← TRACEPOINT(rclcpp_subscription_init) in ctor
+  └── GenericSubscription   ← no tracepoint in ctor (the gap)
+
+The trigger in apriltag: `ros2_benchmark::MonitorNode::Subscribe()`
+sets `revise_timestamps_as_message_ids_ = true` via the StartMonitoring
+RPC, which routes to `CreateGenericTypeMonitorSubscriber()` which uses
+`create_generic_subscription`. Bypasses NitrosMonitorNode override.
+
+Verified the diagnosis with grep:
+  $ grep -n TRACEPOINT \
+       /root/trace_overlay_ws/src/rclcpp/include/rclcpp/generic_subscription.hpp \
+       /root/trace_overlay_ws/src/rclcpp/src/rclcpp/generic_subscription.cpp
+  (no matches)
+
+## Patch
+
+In `generic_subscription.hpp`, GenericSubscription ctor, after the last
+`add_event_handler(message_lost_callback, ...)` block, add:
+
+  TRACEPOINT(
+    rclcpp_subscription_init,
+    static_cast<const void *>(get_subscription_handle().get()),
+    static_cast<const void *>(this));
+  TRACEPOINT(
+    rclcpp_subscription_callback_added,
+    static_cast<const void *>(this),
+    static_cast<const void *>(&callback_));
+
+Plus an include for `tracetools/tracetools.h`. Marker comment
+`// FISH: GenericSubscription attribution — ...` makes the patch
+idempotent in install_fish_tracepoints.
+
+## POC verification
+
+  Run: apriltag benchmark in fresh fish-r2b-apriltag container with
+       patched overlay + ros2_benchmark/isaac_ros_benchmark rebuilt
+       against patched headers.
+
+  Trace dir: /tmp/poc_trace/fish_20260608_215307/
+
+  Before patch (isaac_test3/fish_20260601_111142):
+    /r2b/apriltag_detections    sub_handle=0x7BA28813E790
+      rcl_subscription_init     ✓
+      rclcpp_subscription_init  ✗  ← gap
+
+  After patch (fish_20260608_215307):
+    /r2b/apriltag_detections    sub_handle=0x7C411C13E940
+      rcl_subscription_init     ✓
+      rclcpp_subscription_init  ✓  ← FIRES
+
+  Other remaining subs missing rclcpp_subscription_init in the new run
+  are all from `procname=ros2` (rclpy CLI tools — `ros2 topic echo` /
+  `ros2 bag` spawned by launch_test for benchmark validation). These
+  use rclpy and never enter rclcpp; they fire `rclpy_subscription_callback_added`
+  in their own layer. Not an rclcpp gap.
+
+## Scope — much broader than NITROS
+
+`create_generic_subscription` is in upstream rclcpp, available to any
+package. Users:
+
+  - `ros2 bag record` / `ros2 bag play` — runtime-typed bag I/O
+  - `ros2 topic echo` — generic CLI subscriber
+  - `ros_bridge_suite` and many DDS/RMW bridges that don't know the
+    type at compile time
+  - dynamic monitors / introspection tools
+  - ros2_benchmark MonitorNode (the apriltag case)
+  - NITROS NEGOTIATED-fallback compat path when peer is non-NITROS
+    (also goes through Subscription<T> which DOES fire, but the
+    `revise_timestamps` route to generic preempts that for ros2_benchmark)
+
+Anywhere `Node::create_generic_subscription` appears in production code,
+FISH's F-attribution was previously incomplete. Now it isn't.
+
+## Paper position
+
+Replaces the earlier "NITROS-specific edge" caveat. Honest framing:
+
+  "FISH provides complete attribution for the standard rclcpp + rclpy
+  callback chains. We identified one upstream rclcpp gap — the
+  GenericSubscription ctor in upstream Humble does not emit the
+  `rclcpp_subscription_init` / `rclcpp_subscription_callback_added`
+  tracepoints that its templated sibling Subscription<T> emits. FISH
+  applies a 2-tracepoint patch to that ctor as part of its overlay,
+  closing the gap for the standard `create_generic_subscription` API.
+  After the patch, every sub created via either path emits a matching
+  E + F vertex pair."
+
+This is a structurally cleaner story than the previous TypeAdapter
+framing and could be proposed as an upstream PR to rclcpp.
+
+## Cross-references
+
+  - notes/apriltag_model_validation.txt (full validation context)
+  - notes/nitros_inheritance.txt (NITROS chain analysis)
+  - notes/fish_entity_model.txt (entity model justification)
+  - fish_tracepoints/install_fish_tracepoints (persisted patch under
+    patch_and_build_rclcpp_scheduler → generic_subscription.hpp block)

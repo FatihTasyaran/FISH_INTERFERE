@@ -118,29 +118,33 @@ runtime extension, parameterized on type=NEGOTIATED + first negotiation
 completion. Adds complexity for one timer — leaving as documented
 runtime delta for now.
 
-### MonitorNode F=9 vs 10 (FISH instrumentation gap)
+### MonitorNode F=9 vs 10 (FISH instrumentation gap) — DIAGNOSED + FIXED
 
 The /r2b/apriltag_detections sub fires rcl_subscription_init but not
 rclcpp_subscription_init or rclcpp_subscription_callback_added. FISH
 attribution links E→F via the callback_added event, so this E ends up
-with no F child even though the callback (NitrosTypeMonitorSubscriberCallback)
-is bound and active.
+with no F child even though the callback is bound and active.
 
-Root cause: NITROS subscriber for a NITROS-typed format where the upstream
-publisher is a plain rclcpp publisher (no /_supported_types peer) falls
-back to compat mode. The compat sub instantiation goes through a
-rclcpp::TypeAdapter template specialization (since the NITROS message type
-is registered as a type-adapted ROS type). That template specialization
-bypasses the standard rclcpp_subscription_init / callback_added tracepoint
-calls.
+Initial wrong hypothesis: rclcpp::TypeAdapter specialization bypass.
+Investigation showed all relevant libs DO have the standard tracepoints
+compiled in.
+
+Real cause: ros2_benchmark::MonitorNode's `revise_timestamps_as_message_ids_`
+mode routes the monitor sub through `create_generic_subscription`, which
+creates a `GenericSubscription` — a sibling of `Subscription<T>` under
+SubscriptionBase. Upstream rclcpp's `GenericSubscription::GenericSubscription`
+ctor does not call `TRACEPOINT(rclcpp_subscription_init)` /
+`TRACEPOINT(rclcpp_subscription_callback_added)` like `Subscription<T>` does.
 
 20 subs in the apriltag pipeline:
   19 fire both rcl_subscription_init AND rclcpp_subscription_init (✓)
    1 fires only rcl_subscription_init (✗ — the apriltag_detections one)
 
-This is a NITROS-specific edge: NITROS NEGOTIATED sub + non-NITROS pub
-peer. See notes/high_impact/typeadapter_attribution_gap.txt for the
-coverage-claim implication.
+Fix: 2-tracepoint patch to GenericSubscription ctor. Persisted in
+fish_tracepoints/install_fish_tracepoints under
+patch_and_build_rclcpp_scheduler. POC verified on 2026-06-08:
+post-patch trace shows /r2b/apriltag_detections now fires
+rclcpp_subscription_init. See notes/high_impact/generic_subscription_attribution_gap.txt.
 
 ## Sheet snapshot
 
@@ -151,8 +155,8 @@ limitation downstream of an rclcpp TypeAdapter specialization.
 
 ## Open follow-ups
 
-1. NITROS-side fish_nitros_compat_sub_callback_added tracepoint to close
-   the MonitorNode F gap (separate task — discussed for next round).
+1. ✓ DONE: GenericSubscription ctor tracepoint patch — see
+   notes/high_impact/generic_subscription_attribution_gap.txt.
 2. Generalize the static model to other Isaac ROS benchmarks (currently
    apriltag-specific; same template should apply to detectnet, centerpose,
    etc. with their own VCCI source rows).

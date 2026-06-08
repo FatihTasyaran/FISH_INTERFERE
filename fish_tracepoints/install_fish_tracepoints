@@ -1488,6 +1488,62 @@ else:
         f.write(content)
     print("    static_single_threaded_executor.cpp patched")
 
+
+# ── generic_subscription.hpp ──
+# FISH attribution fix: GenericSubscription ctor lacks the standard
+# rclcpp_subscription_init / rclcpp_subscription_callback_added tracepoints
+# that Subscription<T>::Subscription has. Without this, subs created via
+# create_generic_subscription (ros2 bag, ros2 topic echo, ros2_benchmark
+# MonitorNode, NITROS NEGOTIATED fallback compat path) emit rcl_subscription_init
+# but no rclcpp_* events — leaving the E vertex with no F child in the FISH
+# graph. See notes/high_impact/generic_subscription_attribution_gap.txt.
+path = f"{OVERLAY}/include/rclcpp/generic_subscription.hpp"
+with open(path) as f:
+    content = f.read()
+
+if "FISH: GenericSubscription attribution" in content:
+    print("    generic_subscription.hpp already patched, skipping")
+else:
+    if "tracetools/tracetools.h" not in content:
+        old_inc = '#include "rclcpp/visibility_control.hpp"'
+        new_inc = old_inc + '\n#include "tracetools/tracetools.h"'
+        if old_inc not in content:
+            print("    WARNING: generic_subscription.hpp include anchor not found")
+            sys.exit(1)
+        content = content.replace(old_inc, new_inc, 1)
+
+    old_block = """    if (options.event_callbacks.message_lost_callback) {
+      this->add_event_handler(
+        options.event_callbacks.message_lost_callback,
+        RCL_SUBSCRIPTION_MESSAGE_LOST);
+    }
+  }"""
+    new_block = """    if (options.event_callbacks.message_lost_callback) {
+      this->add_event_handler(
+        options.event_callbacks.message_lost_callback,
+        RCL_SUBSCRIPTION_MESSAGE_LOST);
+    }
+    // FISH: GenericSubscription attribution — fires the same tracepoints
+    // as Subscription<T>::Subscription so subs created via
+    // create_generic_subscription land an F vertex like any other sub.
+    TRACEPOINT(
+      rclcpp_subscription_init,
+      static_cast<const void *>(get_subscription_handle().get()),
+      static_cast<const void *>(this));
+    TRACEPOINT(
+      rclcpp_subscription_callback_added,
+      static_cast<const void *>(this),
+      static_cast<const void *>(&callback_));
+  }"""
+    if old_block not in content:
+        print("    WARNING: generic_subscription.hpp ctor anchor not found")
+        sys.exit(1)
+    content = content.replace(old_block, new_block, 1)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    generic_subscription.hpp patched (FISH GenericSubscription tracepoints)")
+
+
 print("  Done patching rclcpp for scheduler tracepoints.")
 PATCH_RCLCPP_SCHED
 
