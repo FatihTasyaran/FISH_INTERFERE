@@ -33,17 +33,16 @@ ros2:fish_rclcpp_action_execute_cancel
 ros2:fish_rclcpp_action_execute_result
 
 # --- rclpy callback chain (FISH custom) ---
-# timer_link_node is emitted but not yet consumed (reserved)
 ros2:fish_rclpy_subscription_callback_added
 ros2:fish_rclpy_service_callback_added
 ros2:fish_rclpy_timer_callback_added
-ros2:fish_rclpy_timer_link_node
+ros2:fish_rclpy_timer_init
 ros2:fish_rclpy_callback_register
 
-# --- Service client (FISH custom) ---
-# response_received reserved for future client round-trip work
+# --- Service client + atomic timer init (FISH custom) ---
 ros2:fish_rclcpp_client_request_sent
 ros2:fish_rclcpp_client_response_received
+ros2:fish_rclcpp_timer_init
 
 # --- Callback-link attribution (FISH custom, all consumed) ---
 ros2:fish_rclcpp_publish_link

@@ -200,15 +200,14 @@ def entity_fallback_from_trace(mongo, node_handle):
         name = doc["payload"].get("service_name", "?")
         result["Service_Clients"][name] = "?"
 
-    # Timers — linked via rclcpp_timer_link_node (C++) or fish_rclpy_timer_link_node
-    # (Python). Both must be queried, otherwise Python-side timer entities
-    # silently vanish and their owning node ends up with no callback child.
-    for event_name in ("ros2:rclcpp_timer_link_node", "ros2:fish_rclpy_timer_link_node"):
+    # Timers — atomic events fish_rclcpp_timer_init (C++) and fish_rclpy_timer_init
+    # (Python) carry {timer_handle, node_handle, period_ns} in one payload, so no
+    # JOIN with rcl_timer_init is needed. The upstream split (rcl_timer_init has
+    # period; rclcpp_timer_link_node has node_handle but no period) was a
+    # historical artifact of rcl/rclcpp layer separation.
+    for event_name in ("ros2:fish_rclcpp_timer_init", "ros2:fish_rclpy_timer_init"):
         for doc in coll.find({"event": event_name, "payload.node_handle": node_handle}):
-            timer_handle = doc["payload"]["timer_handle"]
-            timer_init = coll.find_one({"event": "ros2:rcl_timer_init", "payload.timer_handle": timer_handle})
-            period = timer_init["payload"]["period"] if timer_init else 0
-            result["Timers"][timer_handle] = period
+            result["Timers"][doc["payload"]["timer_handle"]] = doc["payload"]["period_ns"]
 
     print(f"  FALLBACK for node_handle={node_handle}: "
           f"{len(result['Subscribers'])} subs, {len(result['Publishers'])} pubs, "

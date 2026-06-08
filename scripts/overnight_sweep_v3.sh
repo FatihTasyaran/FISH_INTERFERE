@@ -260,6 +260,13 @@ run_one() {
                 exit 90
             }
             source /opt/ros/humble/setup.bash
+            # Overlay setup.bash: prepends overlay paths to LD_LIBRARY_PATH so
+            # component_container_mt loads the patched librclcpp.so (with
+            # fish_rclcpp_* tracepoint calls) instead of the stock one in
+            # /opt/ros/humble/lib. Without this, rclpy ctypes-bridge events fire
+            # but rclcpp-side tracepoints (timer_init, action, link, scheduler)
+            # silently emit zero events because the stock lib has no call sites.
+            source /root/trace_overlay_ws/install/setup.bash
             export PATH=/opt/ros/humble/fish/bin:\$PATH
             export PYTHONPATH=/opt/ros/humble/fish/python:\$PYTHONPATH
 

@@ -440,14 +440,16 @@ TRACEPOINT_EVENT(
 
 TRACEPOINT_EVENT(
   TRACEPOINT_PROVIDER,
-  fish_rclpy_timer_link_node,
+  fish_rclpy_timer_init,
   TP_ARGS(
     const void *, timer_handle_arg,
-    const void *, node_handle_arg
+    const void *, node_handle_arg,
+    int64_t, period_ns_arg
   ),
   TP_FIELDS(
     ctf_integer_hex(const void *, timer_handle, timer_handle_arg)
     ctf_integer_hex(const void *, node_handle, node_handle_arg)
+    ctf_integer(int64_t, period_ns, period_ns_arg)
   )
 )
 
@@ -515,17 +517,20 @@ DECLARE_TRACEPOINT(
   const void * timer_handle,
   const void * callback)
 
-/// `fish_rclpy_timer_link_node`
+/// `fish_rclpy_timer_init`
 /**
- * Link a rclpy timer to its parent node.
+ * Atomic rclpy timer creation event — emits handle + parent node + period
+ * together so no JOIN is needed in postprocess.
  *
  * \\param[in] timer_handle pointer to the rcl_timer_t handle
  * \\param[in] node_handle pointer to the rcl_node_t handle
+ * \\param[in] period_ns timer period in nanoseconds
  */
 DECLARE_TRACEPOINT(
-  fish_rclpy_timer_link_node,
+  fish_rclpy_timer_init,
   const void * timer_handle,
-  const void * node_handle)
+  const void * node_handle,
+  int64_t period_ns)
 
 /// `fish_rclpy_callback_register`
 /**
@@ -588,14 +593,16 @@ void TRACEPOINT(
 }
 
 void TRACEPOINT(
-  fish_rclpy_timer_link_node,
+  fish_rclpy_timer_init,
   const void * timer_handle,
-  const void * node_handle)
+  const void * node_handle,
+  int64_t period_ns)
 {
   CONDITIONAL_TP(
-    fish_rclpy_timer_link_node,
+    fish_rclpy_timer_init,
     timer_handle,
-    node_handle);
+    node_handle,
+    period_ns);
 }
 
 void TRACEPOINT(
@@ -663,11 +670,26 @@ TRACEPOINT_EVENT(
   )
 )
 
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_rclcpp_timer_init,
+  TP_ARGS(
+    const void *, timer_handle_arg,
+    const void *, node_handle_arg,
+    int64_t, period_ns_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, timer_handle, timer_handle_arg)
+    ctf_integer_hex(const void *, node_handle, node_handle_arg)
+    ctf_integer(int64_t, period_ns, period_ns_arg)
+  )
+)
+
 """
     content = content.replace(INSERT_BEFORE, new_events + INSERT_BEFORE)
     with open(path, "w") as f:
         f.write(content)
-    print("    tp_call.h patched — 2 client TRACEPOINT_EVENT added")
+    print("    tp_call.h patched — 3 client TRACEPOINT_EVENT added")
 
 # ── tracetools.h ──
 path = f"{OVERLAY}/include/tracetools/tracetools.h"
@@ -705,11 +727,26 @@ DECLARE_TRACEPOINT(
   const int64_t sequence_number,
   const int response_type)
 
+/// `fish_rclcpp_timer_init`
+/**
+ * Atomic rclcpp timer creation event — handle + parent node + period in one
+ * event, removes the need to JOIN rcl_timer_init with rclcpp_timer_link_node.
+ *
+ * \\param[in] timer_handle pointer to the rcl_timer_t handle
+ * \\param[in] node_handle pointer to the rcl_node_t handle
+ * \\param[in] period_ns timer period in nanoseconds
+ */
+DECLARE_TRACEPOINT(
+  fish_rclcpp_timer_init,
+  const void * timer_handle,
+  const void * node_handle,
+  int64_t period_ns)
+
 """
     content = content.replace(INSERT_BEFORE, new_decls + INSERT_BEFORE)
     with open(path, "w") as f:
         f.write(content)
-    print("    tracetools.h patched — 2 client DECLARE_TRACEPOINT added")
+    print("    tracetools.h patched — 3 client DECLARE_TRACEPOINT added")
 
 # ── tracetools.c ──
 path = f"{OVERLAY}/src/tracetools.c"
@@ -744,11 +781,24 @@ void TRACEPOINT(
     response_type);
 }
 
+void TRACEPOINT(
+  fish_rclcpp_timer_init,
+  const void * timer_handle,
+  const void * node_handle,
+  int64_t period_ns)
+{
+  CONDITIONAL_TP(
+    fish_rclcpp_timer_init,
+    timer_handle,
+    node_handle,
+    period_ns);
+}
+
 """
     content = content.replace(INSERT_BEFORE, new_impls + INSERT_BEFORE)
     with open(path, "w") as f:
         f.write(content)
-    print("    tracetools.c patched — 2 client TRACEPOINT implementations added")
+    print("    tracetools.c patched — 3 client TRACEPOINT implementations added")
 
 print("  Done.")
 PATCH_CLIENT_C
@@ -1620,6 +1670,52 @@ else:
 
 PATCH_CLIENT_HPP
 
+    # ── node_timers.cpp: emit atomic fish_rclcpp_timer_init ──
+    python3 <<'PATCH_NODE_TIMERS'
+import os
+
+path = os.environ.get("OVERLAY_WS", "/root/trace_overlay_ws") + "/src/rclcpp/src/rclcpp/node_interfaces/node_timers.cpp"
+with open(path) as f:
+    content = f.read()
+
+if "fish_rclcpp_timer_init" in content:
+    print("    node_timers.cpp already patched, skipping")
+else:
+    # Add rcl_timer.h include for rcl_timer_get_period
+    if '#include "rcl/timer.h"' not in content:
+        content = content.replace(
+            '#include "tracetools/tracetools.h"',
+            '#include "rcl/timer.h"\n#include "tracetools/tracetools.h"')
+
+    old_tp = """  TRACEPOINT(
+    rclcpp_timer_link_node,
+    static_cast<const void *>(timer->get_timer_handle().get()),
+    static_cast<const void *>(node_base_->get_rcl_node_handle()));"""
+    new_tp = """  TRACEPOINT(
+    rclcpp_timer_link_node,
+    static_cast<const void *>(timer->get_timer_handle().get()),
+    static_cast<const void *>(node_base_->get_rcl_node_handle()));
+
+  // FISH: atomic timer init — emit (handle, node, period) together so
+  // postprocess does not need to JOIN rcl_timer_init + rclcpp_timer_link_node.
+  {
+    int64_t fish_period_ns = 0;
+    (void) rcl_timer_get_period(
+      timer->get_timer_handle().get(), &fish_period_ns);
+    TRACEPOINT(
+      fish_rclcpp_timer_init,
+      static_cast<const void *>(timer->get_timer_handle().get()),
+      static_cast<const void *>(node_base_->get_rcl_node_handle()),
+      fish_period_ns);
+  }"""
+    if old_tp not in content:
+        raise SystemExit("    ERROR: rclcpp_timer_link_node call site not found in node_timers.cpp")
+    content = content.replace(old_tp, new_tp)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    node_timers.cpp patched — fish_rclcpp_timer_init added")
+PATCH_NODE_TIMERS
+
     # Build rclcpp with overlay tracetools
     set +u && source "$OVERLAY_WS/install/setup.bash" && set -u
 
@@ -1631,7 +1727,7 @@ PATCH_CLIENT_HPP
             "-Dtracetools_DIR=$OVERLAY_WS/install/tracetools/share/tracetools/cmake" \
         2>&1 | tail -5
 
-    log "  rclcpp built with client tracepoints"
+    log "  rclcpp built with client + timer tracepoints"
 }
 
 # ─── Build tracetools ───────────────────────────────────────────────────────
@@ -1827,11 +1923,15 @@ def _init():
             "ros_trace_fish_rclpy_subscription_callback_added",
             "ros_trace_fish_rclpy_service_callback_added",
             "ros_trace_fish_rclpy_timer_callback_added",
-            "ros_trace_fish_rclpy_timer_link_node",
         ]:
             fn = getattr(_lib, name)
             fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
             fn.restype = None
+
+        # fish_rclpy_timer_init: (timer_handle, node_handle, period_ns)
+        _lib.ros_trace_fish_rclpy_timer_init.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
+        _lib.ros_trace_fish_rclpy_timer_init.restype = None
 
         _lib.ros_trace_fish_rclpy_callback_register.argtypes = [
             ctypes.c_void_p, ctypes.c_char_p]
@@ -1934,12 +2034,13 @@ def trace_tmr_cb(tmr_handle_ptr, callback):
     _register(callback)
 
 
-def trace_tmr_node(tmr_handle_ptr, node_handle_ptr):
+def trace_tmr_init(tmr_handle_ptr, node_handle_ptr, period_nsec):
     if not _enabled:
         return
-    _lib.ros_trace_fish_rclpy_timer_link_node(
+    _lib.ros_trace_fish_rclpy_timer_init(
         ctypes.c_void_p(tmr_handle_ptr),
-        ctypes.c_void_p(node_handle_ptr))
+        ctypes.c_void_p(node_handle_ptr),
+        ctypes.c_int64(int(period_nsec)))
 
 
 def trace_cb_start(callback):
@@ -2188,28 +2289,46 @@ else:
     print("    timer.py patched")
 
 # ── node.py ──
+# Idempotent: handles migration from old trace_tmr_node(handle, node) to
+# new trace_tmr_init(handle, node, period). Image bakes may carry either.
 path = f"{RCLPY}/node.py"
 with open(path) as f:
     content = f.read()
 
-if "fish_rclpy_trace" in content:
-    print("    node.py already patched")
+if "trace_tmr_init(" in content:
+    print("    node.py already has trace_tmr_init")
+elif "trace_tmr_node(" in content:
+    # Migrate from old patch
+    old_import = "            from rclpy.fish_rclpy_trace import trace_tmr_node"
+    new_import = "            from rclpy.fish_rclpy_trace import trace_tmr_init"
+    old_call = "            trace_tmr_node(timer.handle.pointer, self.handle.pointer)"
+    new_call = "            trace_tmr_init(timer.handle.pointer, self.handle.pointer, timer_period_nsec)"
+    if old_import in content and old_call in content:
+        content = content.replace(old_import, new_import).replace(old_call, new_call)
+        with open(path, "w") as f:
+            f.write(content)
+        print("    node.py migrated trace_tmr_node -> trace_tmr_init")
+    else:
+        raise SystemExit("    ERROR: trace_tmr_node present but expected lines not found in node.py")
 else:
+    # Fresh patch
     old = "        timer = Timer(callback, callback_group, timer_period_nsec, clock, context=self.context)\n\n        callback_group.add_entity(timer)"
     new = """        timer = Timer(callback, callback_group, timer_period_nsec, clock, context=self.context)
 
-        # FISH: trace rclpy timer -> node link
+        # FISH: atomic rclpy timer init (handle + node + period in one event)
         try:
-            from rclpy.fish_rclpy_trace import trace_tmr_node
-            trace_tmr_node(timer.handle.pointer, self.handle.pointer)
+            from rclpy.fish_rclpy_trace import trace_tmr_init
+            trace_tmr_init(timer.handle.pointer, self.handle.pointer, timer_period_nsec)
         except Exception:
             pass
 
         callback_group.add_entity(timer)"""
+    if old not in content:
+        raise SystemExit("    ERROR: node.py anchor (Timer() ctor block) not found")
     content = content.replace(old, new)
     with open(path, "w") as f:
         f.write(content)
-    print("    node.py patched")
+    print("    node.py freshly patched")
 
 # ── executors.py ──
 path = f"{RCLPY}/executors.py"
@@ -2558,138 +2677,92 @@ print(os.path.abspath(m.__file__))
     fi
 
     python3 <<PATCHNAMES
+import re
+
 do_action    = $( $DO_ACTION    && echo "True" || echo "False" )
 do_rclpy     = $( $DO_RCLPY     && echo "True" || echo "False" )
 do_client    = $( $DO_CLIENT    && echo "True" || echo "False" )
 do_link      = $( $DO_LINK      && echo "True" || echo "False" )
 do_scheduler = $( $DO_SCHEDULER && echo "True" || echo "False" )
 
+# Idempotent regeneration of DEFAULT_EVENTS_ROS: keep stock entries
+# (tracepoints.X), discard ALL "ros2:..." entries (which are FISH additions —
+# possibly stale from a pre-rename install), then re-emit a fresh FISH section
+# based on the current --flags. Running twice gives the same result.
+
 with open("$NAMES_PY") as f:
     content = f.read()
 
-changed = False
+m = re.search(r'(DEFAULT_EVENTS_ROS\s*=\s*\[\n)(.*?)(^\])',
+              content, re.MULTILINE | re.DOTALL)
+if not m:
+    raise SystemExit("Could not find DEFAULT_EVENTS_ROS list in names.py")
 
-# Action events
-if do_action and "fish_rclcpp_action_server_init" not in content:
-    action_entries = '''    "ros2:fish_rclcpp_action_server_init",
-    "ros2:fish_rclcpp_action_execute_goal",
-    "ros2:fish_rclcpp_action_execute_cancel",
-    "ros2:fish_rclcpp_action_execute_result",'''
-    content = content.replace(
-        "    tracepoints.rclcpp_executor_execute,\n]",
-        "    tracepoints.rclcpp_executor_execute,\n" + action_entries + "\n]"
-    )
-    changed = True
-    print("  Added 4 action events")
-elif do_action:
-    print("  Action events already present")
+prefix, body, suffix = m.group(1), m.group(2), m.group(3)
 
-# rclpy events
-if do_rclpy and "fish_rclpy_subscription_callback_added" not in content:
-    rclpy_entries = '''    "ros2:fish_rclpy_subscription_callback_added",
-    "ros2:fish_rclpy_service_callback_added",
-    "ros2:fish_rclpy_timer_callback_added",
-    "ros2:fish_rclpy_timer_link_node",
-    "ros2:fish_rclpy_callback_register",'''
+# Keep only stock entries (lines that use the tracepoints.X form)
+stock_lines = []
+for line in body.split("\n"):
+    s = line.strip().rstrip(",")
+    if not s:
+        continue
+    if s.startswith("tracepoints."):
+        stock_lines.append("    " + s + ",")
+    # everything else (ros2:fish_*, ros2:rclpy_*, etc.) is dropped
 
-    # Find the right anchor: after action events if present, else after stock events
-    if '"ros2:fish_rclcpp_action_execute_result",' in content:
-        anchor = '    "ros2:fish_rclcpp_action_execute_result",\n]'
-        content = content.replace(anchor,
-            '    "ros2:fish_rclcpp_action_execute_result",\n' + rclpy_entries + '\n]')
-    else:
-        anchor = "    tracepoints.rclcpp_executor_execute,\n]"
-        content = content.replace(anchor,
-            "    tracepoints.rclcpp_executor_execute,\n" + rclpy_entries + "\n]")
-    changed = True
-    print("  Added 5 rclpy events")
-elif do_rclpy:
-    print("  rclpy events already present")
+# Re-emit FISH section based on --flags
+fish_groups = []
+if do_action:
+    fish_groups.append([
+        "fish_rclcpp_action_server_init",
+        "fish_rclcpp_action_execute_goal",
+        "fish_rclcpp_action_execute_cancel",
+        "fish_rclcpp_action_execute_result",
+    ])
+if do_rclpy:
+    fish_groups.append([
+        "fish_rclpy_subscription_callback_added",
+        "fish_rclpy_service_callback_added",
+        "fish_rclpy_timer_callback_added",
+        "fish_rclpy_timer_init",
+        "fish_rclpy_callback_register",
+    ])
+if do_client:
+    fish_groups.append([
+        "fish_rclcpp_client_request_sent",
+        "fish_rclcpp_client_response_received",
+        "fish_rclcpp_timer_init",
+    ])
+if do_link:
+    fish_groups.append([
+        "fish_rclcpp_publish_link",
+        "fish_rclcpp_client_link",
+    ])
+if do_scheduler:
+    fish_groups.append([
+        "fish_rclcpp_executor_init",
+        "fish_rclcpp_callback_group_init",
+        "fish_rclcpp_cbgroup_add",
+        "fish_rclcpp_executor_add_cbgroup",
+    ])
 
-# Client events
-if do_client and "fish_rclcpp_client_request_sent" not in content:
-    client_entries = '''    "ros2:fish_rclcpp_client_request_sent",
-    "ros2:fish_rclcpp_client_response_received",'''
+fish_lines = []
+for group in fish_groups:
+    for evt in group:
+        fish_lines.append('    "ros2:' + evt + '",')
 
-    # Find the right anchor: after rclpy events, action events, or stock events
-    if '"ros2:fish_rclpy_callback_register",' in content:
-        anchor = '    "ros2:fish_rclpy_callback_register",\n]'
-        content = content.replace(anchor,
-            '    "ros2:fish_rclpy_callback_register",\n' + client_entries + '\n]')
-    elif '"ros2:fish_rclcpp_action_execute_result",' in content:
-        anchor = '    "ros2:fish_rclcpp_action_execute_result",\n]'
-        content = content.replace(anchor,
-            '    "ros2:fish_rclcpp_action_execute_result",\n' + client_entries + '\n]')
-    else:
-        anchor = "    tracepoints.rclcpp_executor_execute,\n]"
-        content = content.replace(anchor,
-            "    tracepoints.rclcpp_executor_execute,\n" + client_entries + "\n]")
-    changed = True
-    print("  Added 2 client events")
-elif do_client:
-    print("  Client events already present")
+new_body = "\n".join(stock_lines + fish_lines) + "\n"
+new_block = prefix + new_body + suffix
+new_content = content[:m.start()] + new_block + content[m.end():]
 
-# Link events
-if do_link and "fish_rclcpp_publish_link" not in content:
-    link_entries = '''    "ros2:fish_rclcpp_publish_link",
-    "ros2:fish_rclcpp_client_link",'''
-
-    if '"ros2:fish_rclcpp_client_response_received",' in content:
-        anchor = '    "ros2:fish_rclcpp_client_response_received",\n]'
-        content = content.replace(anchor,
-            '    "ros2:fish_rclcpp_client_response_received",\n' + link_entries + '\n]')
-    elif '"ros2:fish_rclpy_callback_register",' in content:
-        anchor = '    "ros2:fish_rclpy_callback_register",\n]'
-        content = content.replace(anchor,
-            '    "ros2:fish_rclpy_callback_register",\n' + link_entries + '\n]')
-    elif '"ros2:fish_rclcpp_action_execute_result",' in content:
-        anchor = '    "ros2:fish_rclcpp_action_execute_result",\n]'
-        content = content.replace(anchor,
-            '    "ros2:fish_rclcpp_action_execute_result",\n' + link_entries + '\n]')
-    else:
-        anchor = "    tracepoints.rclcpp_executor_execute,\n]"
-        content = content.replace(anchor,
-            "    tracepoints.rclcpp_executor_execute,\n" + link_entries + "\n]")
-    changed = True
-    print("  Added 2 link events")
-elif do_link:
-    print("  Link events already present")
-
-# Scheduler events
-if do_scheduler and "fish_rclcpp_executor_init" not in content:
-    sched_entries = '''    "ros2:fish_rclcpp_executor_init",
-    "ros2:fish_rclcpp_callback_group_init",
-    "ros2:fish_rclcpp_cbgroup_add",
-    "ros2:fish_rclcpp_executor_add_cbgroup",'''
-
-    if '"ros2:fish_rclcpp_client_link",' in content:
-        anchor = '    "ros2:fish_rclcpp_client_link",\n]'
-        content = content.replace(anchor,
-            '    "ros2:fish_rclcpp_client_link",\n' + sched_entries + '\n]')
-    elif '"ros2:fish_rclcpp_client_response_received",' in content:
-        anchor = '    "ros2:fish_rclcpp_client_response_received",\n]'
-        content = content.replace(anchor,
-            '    "ros2:fish_rclcpp_client_response_received",\n' + sched_entries + '\n]')
-    elif '"ros2:fish_rclpy_callback_register",' in content:
-        anchor = '    "ros2:fish_rclpy_callback_register",\n]'
-        content = content.replace(anchor,
-            '    "ros2:fish_rclpy_callback_register",\n' + sched_entries + '\n]')
-    elif '"ros2:fish_rclcpp_action_execute_result",' in content:
-        anchor = '    "ros2:fish_rclcpp_action_execute_result",\n]'
-        content = content.replace(anchor,
-            '    "ros2:fish_rclcpp_action_execute_result",\n' + sched_entries + '\n]')
-    else:
-        anchor = "    tracepoints.rclcpp_executor_execute,\n]"
-        content = content.replace(anchor,
-            "    tracepoints.rclcpp_executor_execute,\n" + sched_entries + "\n]")
-    changed = True
-    print("  Added 4 scheduler events")
-elif do_scheduler:
-    print("  Scheduler events already present")
-
-if changed:
+if new_content != content:
     with open("$NAMES_PY", "w") as f:
-        f.write(content)
+        f.write(new_content)
+    print("  names.py regenerated: " + str(len(stock_lines)) + " stock + "
+          + str(len(fish_lines)) + " fish entries")
+else:
+    print("  names.py up-to-date (" + str(len(stock_lines)) + " stock + "
+          + str(len(fish_lines)) + " fish)")
 
 PATCHNAMES
 }
@@ -2708,14 +2781,14 @@ verify() {
 
     if $DO_ACTION; then
         local action_syms
-        action_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_rclcpp_action_" || true)
+        action_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_fish_rclcpp_action_" || true)
         log "Action symbols in libtracetools.so: $action_syms (expected: 4)"
     fi
 
     if $DO_CLIENT; then
         local client_syms
-        client_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_rclcpp_client_" || true)
-        log "Client symbols in libtracetools.so: $client_syms (expected: 2)"
+        client_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_fish_rclcpp_client_request_sent\|ros_trace_fish_rclcpp_client_response_received\|ros_trace_fish_rclcpp_timer_init" || true)
+        log "Client symbols in libtracetools.so: $client_syms (expected: 3)"
     fi
 
     if $DO_LINK; then
@@ -2745,7 +2818,7 @@ verify() {
 
     if $DO_RCLPY; then
         local rclpy_syms
-        rclpy_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_rclpy_" || true)
+        rclpy_syms=$(nm -D "$so" 2>/dev/null | grep -c "ros_trace_fish_rclpy_" || true)
         log "rclpy symbols in libtracetools.so: $rclpy_syms (expected: 5)"
 
         if python3 -c "from rclpy.fish_rclpy_trace import trace_sub_cb; print('  ctypes bridge: OK')" 2>/dev/null; then
@@ -2766,7 +2839,7 @@ print(len(DEFAULT_EVENTS_ROS))
     local expected=28
     $DO_ACTION    && expected=$((expected + 4))
     $DO_RCLPY     && expected=$((expected + 5))
-    $DO_CLIENT    && expected=$((expected + 2))
+    $DO_CLIENT    && expected=$((expected + 3))
     $DO_LINK      && expected=$((expected + 2))
     $DO_SCHEDULER && expected=$((expected + 4))
     log "Events in DEFAULT_EVENTS_ROS: $event_count (expected: $expected)"
