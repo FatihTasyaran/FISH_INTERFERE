@@ -1,0 +1,6615 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "type": "EX",
+      "label": "python3 (PID:5974)",
+      "level": 0,
+      "children": [
+        2,
+        3
+      ],
+      "pid": 5974,
+      "executor_addr": "0x7ABD21AD3910",
+      "executor_type": "SingleThreaded",
+      "num_threads": 1,
+      "cb_groups": [
+        {
+          "id": "0x7ABD23D5C3A0",
+          "type": "Unknown",
+          "automatic_add": null
+        },
+        {
+          "id": "0x7ABD21B1D390",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        }
+      ],
+      "extra_executors": [
+        {
+          "addr": "0x7ABD21B1F3D0",
+          "type": "SingleThreaded",
+          "num_threads": 1
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "N",
+      "label": "launch_ros_5974",
+      "level": 1,
+      "children": [
+        27,
+        28,
+        29,
+        30,
+        31,
+        32
+      ],
+      "full_name": "/launch_ros_5974"
+    },
+    {
+      "id": 3,
+      "type": "N",
+      "label": "Controller",
+      "level": 1,
+      "children": [
+        33,
+        34,
+        35,
+        36,
+        37,
+        38
+      ],
+      "full_name": "/r2b/Controller"
+    },
+    {
+      "id": 4,
+      "type": "EX",
+      "label": "component_conta (PID:6042)",
+      "level": 0,
+      "children": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "pid": 6042,
+      "executor_addr": "0x6212E75EB9B0",
+      "executor_type": "MultiThreaded",
+      "num_threads": 20,
+      "cb_groups": [
+        {
+          "id": "0x6212E7606F70",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        },
+        {
+          "id": "0x78C8186A2C90",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        },
+        {
+          "id": "0x78C76C0D8840",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        },
+        {
+          "id": "0x6212E755A4B0",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        },
+        {
+          "id": "0x6212E7701AC0",
+          "type": "Reentrant",
+          "automatic_add": true
+        },
+        {
+          "id": "0x78C820131990",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        },
+        {
+          "id": "0x6212E7736310",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        },
+        {
+          "id": "0x78C8180234D0",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        },
+        {
+          "id": "0x78C8202127D0",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        },
+        {
+          "id": "0x78C818B53680",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        },
+        {
+          "id": "0x78C76801C3D0",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "N",
+      "label": "MonitorNode",
+      "level": 1,
+      "children": [
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48
+      ],
+      "full_name": "/r2b/MonitorNode"
+    },
+    {
+      "id": 6,
+      "type": "N",
+      "label": "AprilTagNode",
+      "level": 1,
+      "children": [
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58
+      ],
+      "full_name": "/r2b/AprilTagNode"
+    },
+    {
+      "id": 7,
+      "type": "N",
+      "label": "container",
+      "level": 1,
+      "children": [
+        59,
+        60,
+        61,
+        62
+      ],
+      "full_name": "/r2b/container"
+    },
+    {
+      "id": 8,
+      "type": "N",
+      "label": "DataLoaderNode",
+      "level": 1,
+      "children": [
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73
+      ],
+      "full_name": "/r2b/DataLoaderNode"
+    },
+    {
+      "id": 9,
+      "type": "N",
+      "label": "PrepResizeNode",
+      "level": 1,
+      "children": [
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90
+      ],
+      "full_name": "/r2b/PrepResizeNode"
+    },
+    {
+      "id": 10,
+      "type": "N",
+      "label": "PlaybackNode",
+      "level": 1,
+      "children": [
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106
+      ],
+      "full_name": "/r2b/PlaybackNode"
+    },
+    {
+      "id": 11,
+      "type": "EX",
+      "label": "ros2 (PID:6487)",
+      "level": 0,
+      "children": [
+        12
+      ],
+      "pid": 6487,
+      "executor_addr": "0x7A035851B2B0",
+      "executor_type": "SingleThreaded",
+      "num_threads": 1,
+      "cb_groups": [
+        {
+          "id": "0x7A03614EB190",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "N",
+      "label": "_ros2cli_6487",
+      "level": 1,
+      "children": [
+        107,
+        108
+      ],
+      "full_name": "/_ros2cli_6487"
+    },
+    {
+      "id": 13,
+      "type": "EX",
+      "label": "ros2 (PID:6614)",
+      "level": 0,
+      "children": [
+        14
+      ],
+      "pid": 6614,
+      "executor_addr": "0x711F481032B0",
+      "executor_type": "SingleThreaded",
+      "num_threads": 1,
+      "cb_groups": [
+        {
+          "id": "0x711F50153190",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "N",
+      "label": "_ros2cli_6614",
+      "level": 1,
+      "children": [
+        109,
+        110
+      ],
+      "full_name": "/_ros2cli_6614"
+    },
+    {
+      "id": 15,
+      "type": "EX",
+      "label": "ros2 (PID:6644)",
+      "level": 0,
+      "children": [
+        16
+      ],
+      "pid": 6644,
+      "executor_addr": "0x7F38E455B2B0",
+      "executor_type": "SingleThreaded",
+      "num_threads": 1,
+      "cb_groups": [
+        {
+          "id": "0x7F38EC527190",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "N",
+      "label": "_ros2cli_6644",
+      "level": 1,
+      "children": [
+        111,
+        112
+      ],
+      "full_name": "/_ros2cli_6644"
+    },
+    {
+      "id": 17,
+      "type": "EX",
+      "label": "ros2 (PID:6157)",
+      "level": 0,
+      "children": [
+        18
+      ],
+      "pid": 6157,
+      "executor_addr": "0x7A79143C2980",
+      "executor_type": "SingleThreaded",
+      "num_threads": 1,
+      "cb_groups": [
+        {
+          "id": "0x7A791CF8A9E0",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "N",
+      "label": "_ros2cli_6157",
+      "level": 1,
+      "children": [
+        113,
+        114
+      ],
+      "full_name": "/_ros2cli_6157"
+    },
+    {
+      "id": 19,
+      "type": "EX",
+      "label": "ros2 (PID:6184)",
+      "level": 0,
+      "children": [
+        20
+      ],
+      "pid": 6184,
+      "executor_addr": "0x715E08F0A980",
+      "executor_type": "SingleThreaded",
+      "num_threads": 1,
+      "cb_groups": [
+        {
+          "id": "0x715E13236920",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "N",
+      "label": "_ros2cli_6184",
+      "level": 1,
+      "children": [
+        115,
+        116
+      ],
+      "full_name": "/_ros2cli_6184"
+    },
+    {
+      "id": 21,
+      "type": "EX",
+      "label": "ros2 (PID:6271)",
+      "level": 0,
+      "children": [
+        22
+      ],
+      "pid": 6271,
+      "executor_addr": "0x7E91E079F2B0",
+      "executor_type": "SingleThreaded",
+      "num_threads": 1,
+      "cb_groups": [
+        {
+          "id": "0x7E91E86CF190",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "N",
+      "label": "_ros2cli_6271",
+      "level": 1,
+      "children": [
+        117,
+        118
+      ],
+      "full_name": "/_ros2cli_6271"
+    },
+    {
+      "id": 23,
+      "type": "EX",
+      "label": "ros2 (PID:6592)",
+      "level": 0,
+      "children": [
+        24
+      ],
+      "pid": 6592,
+      "executor_addr": "0x797D7D3332B0",
+      "executor_type": "SingleThreaded",
+      "num_threads": 1,
+      "cb_groups": [
+        {
+          "id": "0x797D87393190",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "N",
+      "label": "_ros2cli_6592",
+      "level": 1,
+      "children": [
+        119,
+        120
+      ],
+      "full_name": "/_ros2cli_6592"
+    },
+    {
+      "id": 25,
+      "type": "EX",
+      "label": "ros2 (PID:6667)",
+      "level": 0,
+      "children": [
+        26
+      ],
+      "pid": 6667,
+      "executor_addr": "0x79337414B2B0",
+      "executor_type": "SingleThreaded",
+      "num_threads": 1,
+      "cb_groups": [
+        {
+          "id": "0x79337CA33190",
+          "type": "MutuallyExclusive",
+          "automatic_add": true
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "N",
+      "label": "_ros2cli_6667",
+      "level": 1,
+      "children": [
+        121,
+        122
+      ],
+      "full_name": "/_ros2cli_6667"
+    },
+    {
+      "id": 27,
+      "type": "E",
+      "label": "/launch_ros_5974/set_parameters_atomically",
+      "level": 2,
+      "children": [
+        123
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/launch_ros_5974/set_parameters_atomically"
+        },
+        {
+          "aspect": "pub",
+          "service": "/launch_ros_5974/set_parameters_atomically"
+        }
+      ],
+      "cb_addr": "0x7ABD23D28600"
+    },
+    {
+      "id": 28,
+      "type": "E",
+      "label": "/launch_ros_5974/set_parameters",
+      "level": 2,
+      "children": [
+        124
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/launch_ros_5974/set_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/launch_ros_5974/set_parameters"
+        }
+      ],
+      "cb_addr": "0x7ABD284E9280"
+    },
+    {
+      "id": 29,
+      "type": "E",
+      "label": "/launch_ros_5974/list_parameters",
+      "level": 2,
+      "children": [
+        125
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/launch_ros_5974/list_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/launch_ros_5974/list_parameters"
+        }
+      ],
+      "cb_addr": "0x7ABD23D6DF40"
+    },
+    {
+      "id": 30,
+      "type": "E",
+      "label": "/launch_ros_5974/get_parameter_types",
+      "level": 2,
+      "children": [
+        126
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/launch_ros_5974/get_parameter_types"
+        },
+        {
+          "aspect": "pub",
+          "service": "/launch_ros_5974/get_parameter_types"
+        }
+      ],
+      "cb_addr": "0x7ABD2BD6ACC0"
+    },
+    {
+      "id": 31,
+      "type": "E",
+      "label": "/launch_ros_5974/get_parameters",
+      "level": 2,
+      "children": [
+        127
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/launch_ros_5974/get_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/launch_ros_5974/get_parameters"
+        }
+      ],
+      "cb_addr": "0x7ABD28593180"
+    },
+    {
+      "id": 32,
+      "type": "E",
+      "label": "/launch_ros_5974/describe_parameters",
+      "level": 2,
+      "children": [
+        128
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/launch_ros_5974/describe_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/launch_ros_5974/describe_parameters"
+        }
+      ],
+      "cb_addr": "0x7ABD2BD6BC00"
+    },
+    {
+      "id": 33,
+      "type": "E",
+      "label": "/r2b/Controller/set_parameters_atomically",
+      "level": 2,
+      "children": [
+        129
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/Controller/set_parameters_atomically"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/Controller/set_parameters_atomically"
+        }
+      ],
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21B4C1C0"
+    },
+    {
+      "id": 34,
+      "type": "E",
+      "label": "/r2b/Controller/set_parameters",
+      "level": 2,
+      "children": [
+        130
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/Controller/set_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/Controller/set_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21B2EAC0"
+    },
+    {
+      "id": 35,
+      "type": "E",
+      "label": "/r2b/Controller/list_parameters",
+      "level": 2,
+      "children": [
+        131
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/Controller/list_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/Controller/list_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21B2F200"
+    },
+    {
+      "id": 36,
+      "type": "E",
+      "label": "/r2b/Controller/describe_parameters",
+      "level": 2,
+      "children": [
+        132
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/Controller/describe_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/Controller/describe_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21B2E800"
+    },
+    {
+      "id": 37,
+      "type": "E",
+      "label": "/r2b/Controller/get_parameters",
+      "level": 2,
+      "children": [
+        133
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/Controller/get_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/Controller/get_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21B2CA40"
+    },
+    {
+      "id": 38,
+      "type": "E",
+      "label": "/r2b/Controller/get_parameter_types",
+      "level": 2,
+      "children": [
+        134
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/Controller/get_parameter_types"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/Controller/get_parameter_types"
+        }
+      ],
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21AF8540"
+    },
+    {
+      "id": 39,
+      "type": "E",
+      "label": "/r2b/apriltag_detections",
+      "level": 2,
+      "children": [
+        135
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/apriltag_detections",
+          "msg_type": "isaac_ros_apriltag_interfaces/msg/AprilTagDetectionArray"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C0E78D8"
+    },
+    {
+      "id": 40,
+      "type": "E",
+      "label": "/parameter_events",
+      "level": 2,
+      "children": [
+        136
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/parameter_events",
+          "msg_type": "rcl_interfaces/msg/ParameterEvent"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C0A2A38"
+    },
+    {
+      "id": 41,
+      "type": "E",
+      "label": "/r2b/monitor_node0_stop_monitoring",
+      "level": 2,
+      "children": [
+        137
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/monitor_node0_stop_monitoring"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/monitor_node0_stop_monitoring"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76C0D8840",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C104C00"
+    },
+    {
+      "id": 42,
+      "type": "E",
+      "label": "/r2b/monitor_node0_start_monitoring",
+      "level": 2,
+      "children": [
+        138
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/monitor_node0_start_monitoring"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/monitor_node0_start_monitoring"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76C0D8840",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C12C990"
+    },
+    {
+      "id": 43,
+      "type": "E",
+      "label": "/r2b/MonitorNode/set_parameters",
+      "level": 2,
+      "children": [
+        139
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/MonitorNode/set_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/MonitorNode/set_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C03F6F0"
+    },
+    {
+      "id": 44,
+      "type": "E",
+      "label": "/r2b/MonitorNode/get_parameter_types",
+      "level": 2,
+      "children": [
+        140
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/MonitorNode/get_parameter_types"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/MonitorNode/get_parameter_types"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C019400"
+    },
+    {
+      "id": 45,
+      "type": "E",
+      "label": "/r2b/MonitorNode/get_parameters",
+      "level": 2,
+      "children": [
+        141
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/MonitorNode/get_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/MonitorNode/get_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C01AB70"
+    },
+    {
+      "id": 46,
+      "type": "E",
+      "label": "/r2b/MonitorNode/set_parameters_atomically",
+      "level": 2,
+      "children": [
+        142
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/MonitorNode/set_parameters_atomically"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/MonitorNode/set_parameters_atomically"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C061D30"
+    },
+    {
+      "id": 47,
+      "type": "E",
+      "label": "/r2b/MonitorNode/list_parameters",
+      "level": 2,
+      "children": [
+        143
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/MonitorNode/list_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/MonitorNode/list_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C0A4530"
+    },
+    {
+      "id": 48,
+      "type": "E",
+      "label": "/r2b/MonitorNode/describe_parameters",
+      "level": 2,
+      "children": [
+        144
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/MonitorNode/describe_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/MonitorNode/describe_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C061370"
+    },
+    {
+      "id": 49,
+      "type": "E",
+      "label": "/r2b/image",
+      "level": 2,
+      "children": [
+        145
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/image",
+          "msg_type": "sensor_msgs/msg/Image"
+        },
+        {
+          "aspect": "pub",
+          "topic": "/r2b/tf"
+        },
+        {
+          "aspect": "pub",
+          "topic": "/r2b/apriltag_detections"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C7681325F0"
+    },
+    {
+      "id": 50,
+      "type": "E",
+      "label": "/r2b/image/nitros",
+      "level": 2,
+      "children": [
+        146
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/image/nitros",
+          "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C7680DAA98"
+    },
+    {
+      "id": 51,
+      "type": "E",
+      "label": "/parameter_events",
+      "level": 2,
+      "children": [
+        147
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/parameter_events",
+          "msg_type": "rcl_interfaces/msg/ParameterEvent"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C7680A56C8"
+    },
+    {
+      "id": 52,
+      "type": "E",
+      "label": "/r2b/camera_info",
+      "level": 2,
+      "children": [
+        148
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/camera_info",
+          "msg_type": "sensor_msgs/msg/CameraInfo"
+        },
+        {
+          "aspect": "pub",
+          "topic": "/r2b/apriltag_detections"
+        },
+        {
+          "aspect": "pub",
+          "topic": "/r2b/tf"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C768159218"
+    },
+    {
+      "id": 53,
+      "type": "E",
+      "label": "/r2b/AprilTagNode/get_parameters",
+      "level": 2,
+      "children": [
+        149
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/AprilTagNode/get_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/AprilTagNode/get_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76801CDA0"
+    },
+    {
+      "id": 54,
+      "type": "E",
+      "label": "/r2b/AprilTagNode/list_parameters",
+      "level": 2,
+      "children": [
+        150
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/AprilTagNode/list_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/AprilTagNode/list_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C7680A7890"
+    },
+    {
+      "id": 55,
+      "type": "E",
+      "label": "/r2b/AprilTagNode/describe_parameters",
+      "level": 2,
+      "children": [
+        151
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/AprilTagNode/describe_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/AprilTagNode/describe_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C7680641B0"
+    },
+    {
+      "id": 56,
+      "type": "E",
+      "label": "/r2b/AprilTagNode/set_parameters_atomically",
+      "level": 2,
+      "children": [
+        152
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/AprilTagNode/set_parameters_atomically"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/AprilTagNode/set_parameters_atomically"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C768064E40"
+    },
+    {
+      "id": 57,
+      "type": "E",
+      "label": "/r2b/AprilTagNode/set_parameters",
+      "level": 2,
+      "children": [
+        153
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/AprilTagNode/set_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/AprilTagNode/set_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C768043150"
+    },
+    {
+      "id": 58,
+      "type": "E",
+      "label": "/r2b/AprilTagNode/get_parameter_types",
+      "level": 2,
+      "children": [
+        154
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/AprilTagNode/get_parameter_types"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/AprilTagNode/get_parameter_types"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76801B2F0"
+    },
+    {
+      "id": 59,
+      "type": "E",
+      "label": "/parameter_events",
+      "level": 2,
+      "children": [
+        155
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/parameter_events",
+          "msg_type": "rcl_interfaces/msg/ParameterEvent"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E755A4B0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E755FD48"
+    },
+    {
+      "id": 60,
+      "type": "E",
+      "label": "/r2b/container/_container/unload_node",
+      "level": 2,
+      "children": [
+        156
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/container/_container/unload_node"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/container/_container/unload_node"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E755A4B0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E75BF0A0"
+    },
+    {
+      "id": 61,
+      "type": "E",
+      "label": "/r2b/container/_container/list_nodes",
+      "level": 2,
+      "children": [
+        157
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/container/_container/list_nodes"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/container/_container/list_nodes"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E755A4B0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E75DF5C0"
+    },
+    {
+      "id": 62,
+      "type": "E",
+      "label": "/r2b/container/_container/load_node",
+      "level": 2,
+      "children": [
+        158
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/container/_container/load_node"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/container/_container/load_node"
+        },
+        {
+          "aspect": "pub",
+          "topic": "/parameter_events"
+        },
+        {
+          "aspect": "pub",
+          "topic": "/r2b/image/nitros/_supported_types"
+        },
+        {
+          "aspect": "pub",
+          "topic": "/r2b/data_loader/camera_info/nitros/_supported_types"
+        },
+        {
+          "aspect": "pub",
+          "topic": "/r2b/data_loader/image/nitros/_supported_types"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E755A4B0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E7598B10"
+    },
+    {
+      "id": 63,
+      "type": "E",
+      "label": "/parameter_events",
+      "level": 2,
+      "children": [
+        159
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/parameter_events",
+          "msg_type": "rcl_interfaces/msg/ParameterEvent"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E76E0598"
+    },
+    {
+      "id": 64,
+      "type": "E",
+      "label": "/r2b/get_topic_message_timestamps",
+      "level": 2,
+      "children": [
+        160
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/get_topic_message_timestamps"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/get_topic_message_timestamps"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7701AC0",
+        "type": "Reentrant",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E7729930"
+    },
+    {
+      "id": 65,
+      "type": "E",
+      "label": "/r2b/stop_loading",
+      "level": 2,
+      "children": [
+        161
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/stop_loading"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/stop_loading"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7701AC0",
+        "type": "Reentrant",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E771C330"
+    },
+    {
+      "id": 66,
+      "type": "E",
+      "label": "/r2b/start_loading",
+      "level": 2,
+      "children": [
+        162
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/start_loading"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/start_loading"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7701AC0",
+        "type": "Reentrant",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E770F360"
+    },
+    {
+      "id": 67,
+      "type": "E",
+      "label": "/r2b/set_data",
+      "level": 2,
+      "children": [
+        163
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/set_data"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/set_data"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7701AC0",
+        "type": "Reentrant",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E7701C70"
+    },
+    {
+      "id": 68,
+      "type": "E",
+      "label": "/r2b/DataLoaderNode/list_parameters",
+      "level": 2,
+      "children": [
+        164
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/DataLoaderNode/list_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/DataLoaderNode/list_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E76AB6D0"
+    },
+    {
+      "id": 69,
+      "type": "E",
+      "label": "/r2b/DataLoaderNode/describe_parameters",
+      "level": 2,
+      "children": [
+        165
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/DataLoaderNode/describe_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/DataLoaderNode/describe_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E768AA70"
+    },
+    {
+      "id": 70,
+      "type": "E",
+      "label": "/r2b/DataLoaderNode/set_parameters_atomically",
+      "level": 2,
+      "children": [
+        166
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/DataLoaderNode/set_parameters_atomically"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/DataLoaderNode/set_parameters_atomically"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E76694E0"
+    },
+    {
+      "id": 71,
+      "type": "E",
+      "label": "/r2b/DataLoaderNode/get_parameters",
+      "level": 2,
+      "children": [
+        167
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/DataLoaderNode/get_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/DataLoaderNode/get_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E76074C0"
+    },
+    {
+      "id": 72,
+      "type": "E",
+      "label": "/r2b/DataLoaderNode/get_parameter_types",
+      "level": 2,
+      "children": [
+        168
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/DataLoaderNode/get_parameter_types"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/DataLoaderNode/get_parameter_types"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E7627980"
+    },
+    {
+      "id": 73,
+      "type": "E",
+      "label": "/r2b/DataLoaderNode/set_parameters",
+      "level": 2,
+      "children": [
+        169
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/DataLoaderNode/set_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/DataLoaderNode/set_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E76485A0"
+    },
+    {
+      "id": 74,
+      "type": "E",
+      "label": "/parameter_events",
+      "level": 2,
+      "children": [
+        170
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/parameter_events",
+          "msg_type": "rcl_interfaces/msg/ParameterEvent"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8180CF128"
+    },
+    {
+      "id": 75,
+      "type": "E",
+      "label": "/r2b/buffer/image/nitros/_supported_types",
+      "level": 2,
+      "children": [
+        171
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/buffer/image/nitros/_supported_types",
+          "msg_type": "?"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C818910878"
+    },
+    {
+      "id": 76,
+      "type": "E",
+      "label": "/r2b/buffer/camera_info/nitros/_supported_types",
+      "level": 2,
+      "children": [
+        172
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/buffer/camera_info/nitros/_supported_types",
+          "msg_type": "?"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C818950CF8"
+    },
+    {
+      "id": 77,
+      "type": "E",
+      "label": "/r2b/data_loader/image/nitros",
+      "level": 2,
+      "children": [
+        173
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/data_loader/image/nitros",
+          "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C81863DA18"
+    },
+    {
+      "id": 78,
+      "type": "E",
+      "label": "/r2b/data_loader/image",
+      "level": 2,
+      "children": [
+        174
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/data_loader/image",
+          "msg_type": "sensor_msgs/msg/Image"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C818B53680",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8181918C0"
+    },
+    {
+      "id": 79,
+      "type": "E",
+      "label": "/r2b/data_loader/camera_info",
+      "level": 2,
+      "children": [
+        175
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/data_loader/camera_info",
+          "msg_type": "sensor_msgs/msg/CameraInfo"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8186A2C90",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8181A6CC0"
+    },
+    {
+      "id": 80,
+      "type": "E",
+      "label": "/r2b/data_loader/camera_info/nitros",
+      "level": 2,
+      "children": [
+        176
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/data_loader/camera_info/nitros",
+          "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8187E6F48"
+    },
+    {
+      "id": 81,
+      "type": "E",
+      "label": "/r2b/PrepResizeNode/set_parameters_atomically",
+      "level": 2,
+      "children": [
+        177
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PrepResizeNode/set_parameters_atomically"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PrepResizeNode/set_parameters_atomically"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C81806D180"
+    },
+    {
+      "id": 82,
+      "type": "E",
+      "label": "/r2b/PrepResizeNode/describe_parameters",
+      "level": 2,
+      "children": [
+        178
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PrepResizeNode/describe_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PrepResizeNode/describe_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C81806C1F0"
+    },
+    {
+      "id": 83,
+      "type": "E",
+      "label": "/r2b/PrepResizeNode/list_parameters",
+      "level": 2,
+      "children": [
+        179
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PrepResizeNode/list_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PrepResizeNode/list_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8180AF680"
+    },
+    {
+      "id": 84,
+      "type": "E",
+      "label": "/r2b/PrepResizeNode/set_parameters",
+      "level": 2,
+      "children": [
+        180
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PrepResizeNode/set_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PrepResizeNode/set_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C81804B260"
+    },
+    {
+      "id": 85,
+      "type": "E",
+      "label": "/r2b/PrepResizeNode/get_parameter_types",
+      "level": 2,
+      "children": [
+        181
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PrepResizeNode/get_parameter_types"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PrepResizeNode/get_parameter_types"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C818021BA0"
+    },
+    {
+      "id": 86,
+      "type": "E",
+      "label": "/r2b/PrepResizeNode/get_parameters",
+      "level": 2,
+      "children": [
+        182
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PrepResizeNode/get_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PrepResizeNode/get_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C818024360"
+    },
+    {
+      "id": 87,
+      "type": "E",
+      "label": "timer_1000000000ns",
+      "level": 2,
+      "children": [
+        183
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 1000000000,
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E85E1A90"
+    },
+    {
+      "id": 88,
+      "type": "E",
+      "label": "timer_100000000ns",
+      "level": 2,
+      "children": [
+        184
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 100000000,
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8186323A0"
+    },
+    {
+      "id": 89,
+      "type": "E",
+      "label": "timer_100000000ns",
+      "level": 2,
+      "children": [
+        185
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 100000000,
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C818999E50"
+    },
+    {
+      "id": 90,
+      "type": "E",
+      "label": "timer_1000000000ns",
+      "level": 2,
+      "children": [
+        186
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 1000000000,
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8189950E0"
+    },
+    {
+      "id": 91,
+      "type": "E",
+      "label": "/r2b/camera_info/nitros/_supported_types",
+      "level": 2,
+      "children": [
+        187
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/camera_info/nitros/_supported_types",
+          "msg_type": "?"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C820408BC8"
+    },
+    {
+      "id": 92,
+      "type": "E",
+      "label": "/r2b/buffer/camera_info",
+      "level": 2,
+      "children": [
+        188
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/buffer/camera_info",
+          "msg_type": "sensor_msgs/msg/CameraInfo"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8204EE418"
+    },
+    {
+      "id": 93,
+      "type": "E",
+      "label": "/r2b/buffer/image",
+      "level": 2,
+      "children": [
+        189
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/buffer/image",
+          "msg_type": "sensor_msgs/msg/Image"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8203A6440"
+    },
+    {
+      "id": 94,
+      "type": "E",
+      "label": "/parameter_events",
+      "level": 2,
+      "children": [
+        190
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/parameter_events",
+          "msg_type": "rcl_interfaces/msg/ParameterEvent"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E77369D8"
+    },
+    {
+      "id": 95,
+      "type": "E",
+      "label": "/r2b/image/nitros/_supported_types",
+      "level": 2,
+      "children": [
+        191
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/image/nitros/_supported_types",
+          "msg_type": "?"
+        },
+        {
+          "aspect": "pub",
+          "topic": "/r2b/image/nitros"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C82039D068"
+    },
+    {
+      "id": 96,
+      "type": "E",
+      "label": "/r2b/PlaybackNode/describe_parameters",
+      "level": 2,
+      "children": [
+        192
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PlaybackNode/describe_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PlaybackNode/describe_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8201B9DD0"
+    },
+    {
+      "id": 97,
+      "type": "E",
+      "label": "/r2b/PlaybackNode/list_parameters",
+      "level": 2,
+      "children": [
+        193
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PlaybackNode/list_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PlaybackNode/list_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8201B8D70"
+    },
+    {
+      "id": 98,
+      "type": "E",
+      "label": "/r2b/PlaybackNode/set_parameters_atomically",
+      "level": 2,
+      "children": [
+        194
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PlaybackNode/set_parameters_atomically"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PlaybackNode/set_parameters_atomically"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8201BA770"
+    },
+    {
+      "id": 99,
+      "type": "E",
+      "label": "/r2b/PlaybackNode/set_parameters",
+      "level": 2,
+      "children": [
+        195
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PlaybackNode/set_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PlaybackNode/set_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C820197C10"
+    },
+    {
+      "id": 100,
+      "type": "E",
+      "label": "/r2b/PlaybackNode/get_parameter_types",
+      "level": 2,
+      "children": [
+        196
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PlaybackNode/get_parameter_types"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PlaybackNode/get_parameter_types"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8201774A0"
+    },
+    {
+      "id": 101,
+      "type": "E",
+      "label": "/r2b/PlaybackNode/get_parameters",
+      "level": 2,
+      "children": [
+        197
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/PlaybackNode/get_parameters"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/PlaybackNode/get_parameters"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C820132630"
+    },
+    {
+      "id": 102,
+      "type": "E",
+      "label": "/r2b/start_recording",
+      "level": 2,
+      "children": [
+        198
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/start_recording"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/start_recording"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8202127D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C82025C4A0"
+    },
+    {
+      "id": 103,
+      "type": "E",
+      "label": "/r2b/stop_recording",
+      "level": 2,
+      "children": [
+        199
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/stop_recording"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/stop_recording"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8202127D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8202383A0"
+    },
+    {
+      "id": 104,
+      "type": "E",
+      "label": "/r2b/play_messages",
+      "level": 2,
+      "children": [
+        200
+      ],
+      "etype": "serv",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "service": "/r2b/play_messages"
+        },
+        {
+          "aspect": "pub",
+          "service": "/r2b/play_messages"
+        },
+        {
+          "aspect": "pub",
+          "topic": "/r2b/camera_info"
+        }
+      ],
+      "callback_group": {
+        "id": "0x78C8202127D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C82026A610"
+    },
+    {
+      "id": 105,
+      "type": "E",
+      "label": "timer_100000000ns",
+      "level": 2,
+      "children": [
+        201
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 100000000,
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C82052F740"
+    },
+    {
+      "id": 106,
+      "type": "E",
+      "label": "timer_100000000ns",
+      "level": 2,
+      "children": [
+        202
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 100000000,
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C820284510"
+    },
+    {
+      "id": 107,
+      "type": "E",
+      "label": "/r2b/apriltag_detections",
+      "level": 2,
+      "children": [
+        203
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/apriltag_detections",
+          "msg_type": "?"
+        }
+      ],
+      "callback_group": {
+        "id": "0x7A03614EB190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7A03633F7790"
+    },
+    {
+      "id": 108,
+      "type": "E",
+      "label": "timer_500000000ns",
+      "level": 2,
+      "children": [
+        204
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 500000000,
+      "callback_group": {
+        "id": "0x7A03614EB190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7A03633AED40"
+    },
+    {
+      "id": 109,
+      "type": "E",
+      "label": "/r2b/buffer/camera_info/nitros",
+      "level": 2,
+      "children": [
+        205
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/buffer/camera_info/nitros",
+          "msg_type": "?"
+        }
+      ],
+      "callback_group": {
+        "id": "0x711F50153190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x711F50D1E2A0"
+    },
+    {
+      "id": 110,
+      "type": "E",
+      "label": "timer_500000000ns",
+      "level": 2,
+      "children": [
+        206
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 500000000,
+      "callback_group": {
+        "id": "0x711F50153190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x711F52012D40"
+    },
+    {
+      "id": 111,
+      "type": "E",
+      "label": "/r2b/buffer/image",
+      "level": 2,
+      "children": [
+        207
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/buffer/image",
+          "msg_type": "?"
+        }
+      ],
+      "callback_group": {
+        "id": "0x7F38EC527190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7F38EE4022A0"
+    },
+    {
+      "id": 112,
+      "type": "E",
+      "label": "timer_500000000ns",
+      "level": 2,
+      "children": [
+        208
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 500000000,
+      "callback_group": {
+        "id": "0x7F38EC527190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7F38EE3EAD40"
+    },
+    {
+      "id": 113,
+      "type": "E",
+      "label": "timer_100000000ns",
+      "level": 2,
+      "children": [
+        209
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 100000000,
+      "callback_group": {
+        "id": "0x7A791CF8A9E0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7A79143D17E0"
+    },
+    {
+      "id": 114,
+      "type": "E",
+      "label": "timer_500000000ns",
+      "level": 2,
+      "children": [
+        210
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 500000000,
+      "callback_group": {
+        "id": "0x7A791CF8A9E0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7A791CFB1360"
+    },
+    {
+      "id": 115,
+      "type": "E",
+      "label": "timer_500000000ns",
+      "level": 2,
+      "children": [
+        211
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 500000000,
+      "callback_group": {
+        "id": "0x715E13236920",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x715E1325D360"
+    },
+    {
+      "id": 116,
+      "type": "E",
+      "label": "timer_100000000ns",
+      "level": 2,
+      "children": [
+        212
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 100000000,
+      "callback_group": {
+        "id": "0x715E13236920",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x715E08F197E0"
+    },
+    {
+      "id": 117,
+      "type": "E",
+      "label": "/parameter_events",
+      "level": 2,
+      "children": [
+        213
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/parameter_events",
+          "msg_type": "?"
+        }
+      ],
+      "callback_group": {
+        "id": "0x7E91E86CF190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7E91EA5BD350"
+    },
+    {
+      "id": 118,
+      "type": "E",
+      "label": "timer_500000000ns",
+      "level": 2,
+      "children": [
+        214
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 500000000,
+      "callback_group": {
+        "id": "0x7E91E86CF190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7E91EA592D40"
+    },
+    {
+      "id": 119,
+      "type": "E",
+      "label": "/r2b/buffer/camera_info",
+      "level": 2,
+      "children": [
+        215
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/buffer/camera_info",
+          "msg_type": "?"
+        }
+      ],
+      "callback_group": {
+        "id": "0x797D87393190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x797D8D253F10"
+    },
+    {
+      "id": 120,
+      "type": "E",
+      "label": "timer_500000000ns",
+      "level": 2,
+      "children": [
+        216
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 500000000,
+      "callback_group": {
+        "id": "0x797D87393190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x797D8D256D40"
+    },
+    {
+      "id": 121,
+      "type": "E",
+      "label": "/r2b/buffer/image/nitros",
+      "level": 2,
+      "children": [
+        217
+      ],
+      "etype": "sub",
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/buffer/image/nitros",
+          "msg_type": "?"
+        }
+      ],
+      "callback_group": {
+        "id": "0x79337CA33190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x79337D5A9080"
+    },
+    {
+      "id": 122,
+      "type": "E",
+      "label": "timer_500000000ns",
+      "level": 2,
+      "children": [
+        218
+      ],
+      "etype": "tmr",
+      "aspects": [],
+      "period_ns": 500000000,
+      "callback_group": {
+        "id": "0x79337CA33190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x79337E8F6D40"
+    },
+    {
+      "id": 123,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._set_parameters_atomically_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "cb_addr": "0x7ABD23D28600"
+    },
+    {
+      "id": 124,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._set_parameters_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "cb_addr": "0x7ABD284E9280"
+    },
+    {
+      "id": 125,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._list_parameters_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "cb_addr": "0x7ABD23D6DF40"
+    },
+    {
+      "id": 126,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._get_parameter_types_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "cb_addr": "0x7ABD2BD6ACC0"
+    },
+    {
+      "id": 127,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._get_parameters_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "cb_addr": "0x7ABD28593180"
+    },
+    {
+      "id": 128,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._describe_parameters_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "cb_addr": "0x7ABD2BD6BC00"
+    },
+    {
+      "id": 129,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._set_parameters_atomically_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21B4C1C0"
+    },
+    {
+      "id": 130,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._set_parameters_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21B2EAC0"
+    },
+    {
+      "id": 131,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._list_parameters_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21B2F200"
+    },
+    {
+      "id": 132,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._describe_parameters_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21B2E800"
+    },
+    {
+      "id": 133,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._get_parameters_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21B2CA40"
+    },
+    {
+      "id": 134,
+      "type": "F",
+      "label": "rclpy.parameter_service.ParameterService._get_parameter_types_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7ABD21B1D390",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7ABD21AF8540"
+    },
+    {
+      "id": 135,
+      "type": "F",
+      "label": "std::_Bind<void (ros2_benchmark::MonitorNode::*(ros2_benchmark::MonitorNode*, std::_Placeholder<1>))(std::shared_ptr<rclcpp::SerializedMessage>)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C0E78D8"
+    },
+    {
+      "id": 136,
+      "type": "F",
+      "label": "rclcpp::TimeSource::NodeState::attachNode(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeGraphInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeLoggingInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeClockInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeParametersInterface>)::{lambda(std::shared_ptr<rcl_interfaces::msg::ParameterEvent_<std::allocator<void> > const>)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C0A2A38"
+    },
+    {
+      "id": 137,
+      "type": "F",
+      "label": "std::_Bind<void (ros2_benchmark::MonitorNode::*(ros2_benchmark::MonitorNode*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<ros2_benchmark_interfaces::srv::StopMonitoring_Request_<std::allocator<void> > >, std::shared_ptr<ros2_benchmark_interfaces::srv::StopMonitoring_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76C0D8840",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C104C00"
+    },
+    {
+      "id": 138,
+      "type": "F",
+      "label": "std::_Bind<void (ros2_benchmark::MonitorNode::*(ros2_benchmark::MonitorNode*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<ros2_benchmark_interfaces::srv::StartMonitoring_Request_<std::allocator<void> > >, std::shared_ptr<ros2_benchmark_interfaces::srv::StartMonitoring_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76C0D8840",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C12C990"
+    },
+    {
+      "id": 139,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::SetParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::SetParameters_Response_<std::allocator<void> > >)#3}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C03F6F0"
+    },
+    {
+      "id": 140,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::GetParameterTypes_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::GetParameterTypes_Response_<std::allocator<void> > >)#2}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C019400"
+    },
+    {
+      "id": 141,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::GetParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::GetParameters_Response_<std::allocator<void> > >)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C01AB70"
+    },
+    {
+      "id": 142,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically_Response_<std::allocator<void> > >)#4}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C061D30"
+    },
+    {
+      "id": 143,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::ListParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::ListParameters_Response_<std::allocator<void> > >)#6}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C0A4530"
+    },
+    {
+      "id": 144,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::DescribeParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::DescribeParameters_Response_<std::allocator<void> > >)#5}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7736310",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76C061370"
+    },
+    {
+      "id": 145,
+      "type": "F",
+      "label": "std::_Bind<void (*(std::_Placeholder<1>, std::function<void (nvidia::isaac_ros::nitros::NitrosTypeBase&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)>))(std::shared_ptr<nvidia::isaac_ros::nitros::NitrosImage const>, std::function<void (nvidia::isaac_ros::nitros::NitrosTypeBase&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)>)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C7681325F0"
+    },
+    {
+      "id": 146,
+      "type": "F",
+      "label": "std::_Bind<void (negotiated::NegotiatedSubscription::*(negotiated::NegotiatedSubscription*, std::_Placeholder<1>))(negotiated_interfaces::msg::NegotiatedTopicsInfo_<std::allocator<void> > const&)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C7680DAA98"
+    },
+    {
+      "id": 147,
+      "type": "F",
+      "label": "rclcpp::TimeSource::NodeState::attachNode(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeGraphInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeLoggingInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeClockInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeParametersInterface>)::{lambda(std::shared_ptr<rcl_interfaces::msg::ParameterEvent_<std::allocator<void> > const>)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C7680A56C8"
+    },
+    {
+      "id": 148,
+      "type": "F",
+      "label": "message_filters::Subscriber<sensor_msgs::msg::CameraInfo_<std::allocator<void> >, rclcpp::Node>::subscribe(rclcpp::Node*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, rmw_qos_profile_s, rclcpp::SubscriptionOptionsWithAllocator<std::allocator<void> >)::{lambda(std::shared_ptr<sensor_msgs::msg::CameraInfo_<std::allocator<void> > const>)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C768159218"
+    },
+    {
+      "id": 149,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::GetParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::GetParameters_Response_<std::allocator<void> > >)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76801CDA0"
+    },
+    {
+      "id": 150,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::ListParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::ListParameters_Response_<std::allocator<void> > >)#6}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C7680A7890"
+    },
+    {
+      "id": 151,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::DescribeParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::DescribeParameters_Response_<std::allocator<void> > >)#5}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C7680641B0"
+    },
+    {
+      "id": 152,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically_Response_<std::allocator<void> > >)#4}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C768064E40"
+    },
+    {
+      "id": 153,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::SetParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::SetParameters_Response_<std::allocator<void> > >)#3}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C768043150"
+    },
+    {
+      "id": 154,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::GetParameterTypes_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::GetParameterTypes_Response_<std::allocator<void> > >)#2}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C76801C3D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C76801B2F0"
+    },
+    {
+      "id": 155,
+      "type": "F",
+      "label": "rclcpp::TimeSource::NodeState::attachNode(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeGraphInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeLoggingInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeClockInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeParametersInterface>)::{lambda(std::shared_ptr<rcl_interfaces::msg::ParameterEvent_<std::allocator<void> > const>)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E755A4B0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E755FD48"
+    },
+    {
+      "id": 156,
+      "type": "F",
+      "label": "std::_Bind<void (rclcpp_components::ComponentManager::*(rclcpp_components::ComponentManager*, std::_Placeholder<1>, std::_Placeholder<2>, std::_Placeholder<3>))(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<composition_interfaces::srv::UnloadNode_Request_<std::allocator<void> > >, std::shared_ptr<composition_interfaces::srv::UnloadNode_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E755A4B0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E75BF0A0"
+    },
+    {
+      "id": 157,
+      "type": "F",
+      "label": "std::_Bind<void (rclcpp_components::ComponentManager::*(rclcpp_components::ComponentManager*, std::_Placeholder<1>, std::_Placeholder<2>, std::_Placeholder<3>))(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<composition_interfaces::srv::ListNodes_Request_<std::allocator<void> > >, std::shared_ptr<composition_interfaces::srv::ListNodes_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E755A4B0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E75DF5C0"
+    },
+    {
+      "id": 158,
+      "type": "F",
+      "label": "std::_Bind<void (rclcpp_components::ComponentManager::*(rclcpp_components::ComponentManager*, std::_Placeholder<1>, std::_Placeholder<2>, std::_Placeholder<3>))(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<composition_interfaces::srv::LoadNode_Request_<std::allocator<void> > >, std::shared_ptr<composition_interfaces::srv::LoadNode_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E755A4B0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E7598B10"
+    },
+    {
+      "id": 159,
+      "type": "F",
+      "label": "rclcpp::TimeSource::NodeState::attachNode(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeGraphInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeLoggingInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeClockInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeParametersInterface>)::{lambda(std::shared_ptr<rcl_interfaces::msg::ParameterEvent_<std::allocator<void> > const>)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E76E0598"
+    },
+    {
+      "id": 160,
+      "type": "F",
+      "label": "std::_Bind<void (ros2_benchmark::DataLoaderNode::*(ros2_benchmark::DataLoaderNode*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<ros2_benchmark_interfaces::srv::GetTopicMessageTimestamps_Request_<std::allocator<void> > >, std::shared_ptr<ros2_benchmark_interfaces::srv::GetTopicMessageTimestamps_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7701AC0",
+        "type": "Reentrant",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E7729930"
+    },
+    {
+      "id": 161,
+      "type": "F",
+      "label": "std::_Bind<void (ros2_benchmark::DataLoaderNode::*(ros2_benchmark::DataLoaderNode*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<ros2_benchmark_interfaces::srv::StopLoading_Request_<std::allocator<void> > >, std::shared_ptr<ros2_benchmark_interfaces::srv::StopLoading_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7701AC0",
+        "type": "Reentrant",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E771C330"
+    },
+    {
+      "id": 162,
+      "type": "F",
+      "label": "std::_Bind<void (ros2_benchmark::DataLoaderNode::*(ros2_benchmark::DataLoaderNode*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<ros2_benchmark_interfaces::srv::StartLoading_Request_<std::allocator<void> > >, std::shared_ptr<ros2_benchmark_interfaces::srv::StartLoading_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7701AC0",
+        "type": "Reentrant",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E770F360"
+    },
+    {
+      "id": 163,
+      "type": "F",
+      "label": "std::_Bind<void (ros2_benchmark::DataLoaderNode::*(ros2_benchmark::DataLoaderNode*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<ros2_benchmark_interfaces::srv::SetData_Request_<std::allocator<void> > >, std::shared_ptr<ros2_benchmark_interfaces::srv::SetData_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7701AC0",
+        "type": "Reentrant",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E7701C70"
+    },
+    {
+      "id": 164,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::ListParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::ListParameters_Response_<std::allocator<void> > >)#6}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E76AB6D0"
+    },
+    {
+      "id": 165,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::DescribeParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::DescribeParameters_Response_<std::allocator<void> > >)#5}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E768AA70"
+    },
+    {
+      "id": 166,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically_Response_<std::allocator<void> > >)#4}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E76694E0"
+    },
+    {
+      "id": 167,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::GetParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::GetParameters_Response_<std::allocator<void> > >)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E76074C0"
+    },
+    {
+      "id": 168,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::GetParameterTypes_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::GetParameterTypes_Response_<std::allocator<void> > >)#2}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E7627980"
+    },
+    {
+      "id": 169,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::SetParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::SetParameters_Response_<std::allocator<void> > >)#3}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x6212E7606F70",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E76485A0"
+    },
+    {
+      "id": 170,
+      "type": "F",
+      "label": "rclcpp::TimeSource::NodeState::attachNode(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeGraphInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeLoggingInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeClockInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeParametersInterface>)::{lambda(std::shared_ptr<rcl_interfaces::msg::ParameterEvent_<std::allocator<void> > const>)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8180CF128"
+    },
+    {
+      "id": 171,
+      "type": "F",
+      "label": "std::_Bind<void (negotiated::NegotiatedPublisher::*(negotiated::NegotiatedPublisher*, std::_Placeholder<1>, std::_Placeholder<2>))(negotiated_interfaces::msg::SupportedTypes_<std::allocator<void> > const&, rclcpp::MessageInfo const&)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C818910878"
+    },
+    {
+      "id": 172,
+      "type": "F",
+      "label": "std::_Bind<void (negotiated::NegotiatedPublisher::*(negotiated::NegotiatedPublisher*, std::_Placeholder<1>, std::_Placeholder<2>))(negotiated_interfaces::msg::SupportedTypes_<std::allocator<void> > const&, rclcpp::MessageInfo const&)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C818950CF8"
+    },
+    {
+      "id": 173,
+      "type": "F",
+      "label": "std::_Bind<void (negotiated::NegotiatedSubscription::*(negotiated::NegotiatedSubscription*, std::_Placeholder<1>))(negotiated_interfaces::msg::NegotiatedTopicsInfo_<std::allocator<void> > const&)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C81863DA18"
+    },
+    {
+      "id": 174,
+      "type": "F",
+      "label": "std::_Bind<void (*(std::_Placeholder<1>, std::function<void (nvidia::isaac_ros::nitros::NitrosTypeBase&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)>))(std::shared_ptr<nvidia::isaac_ros::nitros::NitrosImage const>, std::function<void (nvidia::isaac_ros::nitros::NitrosTypeBase&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)>)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C818B53680",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8181918C0"
+    },
+    {
+      "id": 175,
+      "type": "F",
+      "label": "std::_Bind<void (*(std::_Placeholder<1>, std::function<void (nvidia::isaac_ros::nitros::NitrosTypeBase&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)>))(std::shared_ptr<nvidia::isaac_ros::nitros::NitrosCameraInfo const>, std::function<void (nvidia::isaac_ros::nitros::NitrosTypeBase&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)>)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8186A2C90",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8181A6CC0"
+    },
+    {
+      "id": 176,
+      "type": "F",
+      "label": "std::_Bind<void (negotiated::NegotiatedSubscription::*(negotiated::NegotiatedSubscription*, std::_Placeholder<1>))(negotiated_interfaces::msg::NegotiatedTopicsInfo_<std::allocator<void> > const&)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8187E6F48"
+    },
+    {
+      "id": 177,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically_Response_<std::allocator<void> > >)#4}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C81806D180"
+    },
+    {
+      "id": 178,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::DescribeParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::DescribeParameters_Response_<std::allocator<void> > >)#5}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C81806C1F0"
+    },
+    {
+      "id": 179,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::ListParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::ListParameters_Response_<std::allocator<void> > >)#6}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8180AF680"
+    },
+    {
+      "id": 180,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::SetParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::SetParameters_Response_<std::allocator<void> > >)#3}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C81804B260"
+    },
+    {
+      "id": 181,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::GetParameterTypes_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::GetParameterTypes_Response_<std::allocator<void> > >)#2}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C818021BA0"
+    },
+    {
+      "id": 182,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::GetParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::GetParameters_Response_<std::allocator<void> > >)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C818024360"
+    },
+    {
+      "id": 183,
+      "type": "F",
+      "label": "nvidia::isaac_ros::nitros::NitrosNode::postNegotiationCallback()::{lambda()#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E85E1A90"
+    },
+    {
+      "id": 184,
+      "type": "F",
+      "label": "std::_Bind<void (negotiated::NegotiatedPublisher::*(negotiated::NegotiatedPublisher*))()>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8186323A0"
+    },
+    {
+      "id": 185,
+      "type": "F",
+      "label": "std::_Bind<void (negotiated::NegotiatedPublisher::*(negotiated::NegotiatedPublisher*))()>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C818999E50"
+    },
+    {
+      "id": 186,
+      "type": "F",
+      "label": "nvidia::isaac_ros::nitros::NitrosNode::startNitrosNode()::{lambda()#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8180234D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8189950E0"
+    },
+    {
+      "id": 187,
+      "type": "F",
+      "label": "std::_Bind<void (negotiated::NegotiatedPublisher::*(negotiated::NegotiatedPublisher*, std::_Placeholder<1>, std::_Placeholder<2>))(negotiated_interfaces::msg::SupportedTypes_<std::allocator<void> > const&, rclcpp::MessageInfo const&)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C820408BC8"
+    },
+    {
+      "id": 188,
+      "type": "F",
+      "label": "std::_Bind<void (*(std::_Placeholder<1>, std::function<void (nvidia::isaac_ros::nitros::NitrosTypeBase&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)>))(std::shared_ptr<nvidia::isaac_ros::nitros::NitrosCameraInfo const>, std::function<void (nvidia::isaac_ros::nitros::NitrosTypeBase&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)>)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8204EE418"
+    },
+    {
+      "id": 189,
+      "type": "F",
+      "label": "std::_Bind<void (*(std::_Placeholder<1>, std::function<void (nvidia::isaac_ros::nitros::NitrosTypeBase&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)>))(std::shared_ptr<nvidia::isaac_ros::nitros::NitrosImage const>, std::function<void (nvidia::isaac_ros::nitros::NitrosTypeBase&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)>)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8203A6440"
+    },
+    {
+      "id": 190,
+      "type": "F",
+      "label": "rclcpp::TimeSource::NodeState::attachNode(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeGraphInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeLoggingInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeClockInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeParametersInterface>)::{lambda(std::shared_ptr<rcl_interfaces::msg::ParameterEvent_<std::allocator<void> > const>)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x6212E77369D8"
+    },
+    {
+      "id": 191,
+      "type": "F",
+      "label": "std::_Bind<void (negotiated::NegotiatedPublisher::*(negotiated::NegotiatedPublisher*, std::_Placeholder<1>, std::_Placeholder<2>))(negotiated_interfaces::msg::SupportedTypes_<std::allocator<void> > const&, rclcpp::MessageInfo const&)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C82039D068"
+    },
+    {
+      "id": 192,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::DescribeParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::DescribeParameters_Response_<std::allocator<void> > >)#5}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8201B9DD0"
+    },
+    {
+      "id": 193,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::ListParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::ListParameters_Response_<std::allocator<void> > >)#6}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8201B8D70"
+    },
+    {
+      "id": 194,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically_Response_<std::allocator<void> > >)#4}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8201BA770"
+    },
+    {
+      "id": 195,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::SetParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::SetParameters_Response_<std::allocator<void> > >)#3}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C820197C10"
+    },
+    {
+      "id": 196,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::GetParameterTypes_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::GetParameterTypes_Response_<std::allocator<void> > >)#2}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8201774A0"
+    },
+    {
+      "id": 197,
+      "type": "F",
+      "label": "rclcpp::ParameterService::ParameterService(std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface>, std::shared_ptr<rclcpp::node_interfaces::NodeServicesInterface>, rclcpp::node_interfaces::NodeParametersInterface*, rmw_qos_profile_s const&)::{lambda(std::shared_ptr<rmw_request_id_s>, std::shared_ptr<rcl_interfaces::srv::GetParameters_Request_<std::allocator<void> > >, std::shared_ptr<rcl_interfaces::srv::GetParameters_Response_<std::allocator<void> > >)#1}",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C820132630"
+    },
+    {
+      "id": 198,
+      "type": "F",
+      "label": "std::_Bind<void (ros2_benchmark::PlaybackNode::*(ros2_benchmark::PlaybackNode*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<ros2_benchmark_interfaces::srv::StartRecording_Request_<std::allocator<void> > >, std::shared_ptr<ros2_benchmark_interfaces::srv::StartRecording_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8202127D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C82025C4A0"
+    },
+    {
+      "id": 199,
+      "type": "F",
+      "label": "std::_Bind<void (ros2_benchmark::PlaybackNode::*(ros2_benchmark::PlaybackNode*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<ros2_benchmark_interfaces::srv::StopRecording_Request_<std::allocator<void> > >, std::shared_ptr<ros2_benchmark_interfaces::srv::StopRecording_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8202127D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C8202383A0"
+    },
+    {
+      "id": 200,
+      "type": "F",
+      "label": "std::_Bind<void (ros2_benchmark::PlaybackNode::*(ros2_benchmark::PlaybackNode*, std::_Placeholder<1>, std::_Placeholder<2>))(std::shared_ptr<ros2_benchmark_interfaces::srv::PlayMessages_Request_<std::allocator<void> > >, std::shared_ptr<ros2_benchmark_interfaces::srv::PlayMessages_Response_<std::allocator<void> > >)>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C8202127D0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C82026A610"
+    },
+    {
+      "id": 201,
+      "type": "F",
+      "label": "std::_Bind<void (negotiated::NegotiatedPublisher::*(negotiated::NegotiatedPublisher*))()>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C82052F740"
+    },
+    {
+      "id": 202,
+      "type": "F",
+      "label": "std::_Bind<void (negotiated::NegotiatedPublisher::*(negotiated::NegotiatedPublisher*))()>",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x78C820131990",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x78C820284510"
+    },
+    {
+      "id": 203,
+      "type": "F",
+      "label": "functools.partial(<bound method ROSTopicHz.callback_hz of <ros2topic.verb.hz.ROSTopicHz object at 0x7a035851b520>>, topic=\\'/r2b/apriltag_detections\\')",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7A03614EB190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7A03633F7790"
+    },
+    {
+      "id": 204,
+      "type": "F",
+      "label": "ros2cli.node.direct.DirectNode.__init__.<locals>.timer_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7A03614EB190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7A03633AED40"
+    },
+    {
+      "id": 205,
+      "type": "F",
+      "label": "functools.partial(<bound method ROSTopicHz.callback_hz of <ros2topic.verb.hz.ROSTopicHz object at 0x711f48103520>>, topic=\\'/r2b/buffer/camera_info/nitros\\')",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x711F50153190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x711F50D1E2A0"
+    },
+    {
+      "id": 206,
+      "type": "F",
+      "label": "ros2cli.node.direct.DirectNode.__init__.<locals>.timer_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x711F50153190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x711F52012D40"
+    },
+    {
+      "id": 207,
+      "type": "F",
+      "label": "functools.partial(<bound method ROSTopicHz.callback_hz of <ros2topic.verb.hz.ROSTopicHz object at 0x7f38e455b520>>, topic=\\'/r2b/buffer/image\\')",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7F38EC527190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7F38EE4022A0"
+    },
+    {
+      "id": 208,
+      "type": "F",
+      "label": "ros2cli.node.direct.DirectNode.__init__.<locals>.timer_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7F38EC527190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7F38EE3EAD40"
+    },
+    {
+      "id": 209,
+      "type": "F",
+      "label": "ros2component.api.get_components_in_containers.<locals>.async_run.<locals>._resume",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7A791CF8A9E0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7A79143D17E0"
+    },
+    {
+      "id": 210,
+      "type": "F",
+      "label": "ros2cli.node.direct.DirectNode.__init__.<locals>.timer_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7A791CF8A9E0",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7A791CFB1360"
+    },
+    {
+      "id": 211,
+      "type": "F",
+      "label": "ros2cli.node.direct.DirectNode.__init__.<locals>.timer_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x715E13236920",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x715E1325D360"
+    },
+    {
+      "id": 212,
+      "type": "F",
+      "label": "ros2component.api.get_components_in_containers.<locals>.async_run.<locals>._resume",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x715E13236920",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x715E08F197E0"
+    },
+    {
+      "id": 213,
+      "type": "F",
+      "label": "functools.partial(<bound method ROSTopicHz.callback_hz of <ros2topic.verb.hz.ROSTopicHz object at 0x7e91e079f520>>, topic=\\'/parameter_events\\')",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7E91E86CF190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7E91EA5BD350"
+    },
+    {
+      "id": 214,
+      "type": "F",
+      "label": "ros2cli.node.direct.DirectNode.__init__.<locals>.timer_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x7E91E86CF190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x7E91EA592D40"
+    },
+    {
+      "id": 215,
+      "type": "F",
+      "label": "functools.partial(<bound method ROSTopicHz.callback_hz of <ros2topic.verb.hz.ROSTopicHz object at 0x797d7d333520>>, topic=\\'/r2b/buffer/camera_info\\')",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x797D87393190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x797D8D253F10"
+    },
+    {
+      "id": 216,
+      "type": "F",
+      "label": "ros2cli.node.direct.DirectNode.__init__.<locals>.timer_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x797D87393190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x797D8D256D40"
+    },
+    {
+      "id": 217,
+      "type": "F",
+      "label": "functools.partial(<bound method ROSTopicHz.callback_hz of <ros2topic.verb.hz.ROSTopicHz object at 0x79337414b520>>, topic=\\'/r2b/buffer/image/nitros\\')",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x79337CA33190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x79337D5A9080"
+    },
+    {
+      "id": 218,
+      "type": "F",
+      "label": "ros2cli.node.direct.DirectNode.__init__.<locals>.timer_callback",
+      "level": 3,
+      "children": [],
+      "ptype": "cpu",
+      "callback_group": {
+        "id": "0x79337CA33190",
+        "type": "MutuallyExclusive",
+        "automatic_add": true
+      },
+      "cb_addr": "0x79337E8F6D40"
+    },
+    {
+      "id": 219,
+      "type": "CN",
+      "label": "container",
+      "level": -1,
+      "children": [
+        1,
+        4,
+        11,
+        13,
+        15,
+        17,
+        19,
+        21,
+        23,
+        25
+      ]
+    },
+    {
+      "id": 220,
+      "type": "E",
+      "label": "ext:/r2b/image",
+      "level": 2,
+      "children": [
+        221
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/image"
+        }
+      ]
+    },
+    {
+      "id": 221,
+      "type": "F",
+      "label": "ext:/r2b/image",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 222,
+      "type": "E",
+      "label": "ext:/r2b/buffer/image/nitros/_supported_types",
+      "level": 2,
+      "children": [
+        223
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/buffer/image/nitros/_supported_types"
+        }
+      ]
+    },
+    {
+      "id": 223,
+      "type": "F",
+      "label": "ext:/r2b/buffer/image/nitros/_supported_types",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 224,
+      "type": "E",
+      "label": "ext:/r2b/buffer/camera_info/nitros/_supported_types",
+      "level": 2,
+      "children": [
+        225
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/buffer/camera_info/nitros/_supported_types"
+        }
+      ]
+    },
+    {
+      "id": 225,
+      "type": "F",
+      "label": "ext:/r2b/buffer/camera_info/nitros/_supported_types",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 226,
+      "type": "E",
+      "label": "ext:/r2b/data_loader/image/nitros",
+      "level": 2,
+      "children": [
+        227
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/data_loader/image/nitros"
+        }
+      ]
+    },
+    {
+      "id": 227,
+      "type": "F",
+      "label": "ext:/r2b/data_loader/image/nitros",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 228,
+      "type": "E",
+      "label": "ext:/r2b/data_loader/image",
+      "level": 2,
+      "children": [
+        229
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/data_loader/image"
+        }
+      ]
+    },
+    {
+      "id": 229,
+      "type": "F",
+      "label": "ext:/r2b/data_loader/image",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 230,
+      "type": "E",
+      "label": "ext:/r2b/data_loader/camera_info",
+      "level": 2,
+      "children": [
+        231
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/data_loader/camera_info"
+        }
+      ]
+    },
+    {
+      "id": 231,
+      "type": "F",
+      "label": "ext:/r2b/data_loader/camera_info",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 232,
+      "type": "E",
+      "label": "ext:/r2b/data_loader/camera_info/nitros",
+      "level": 2,
+      "children": [
+        233
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/data_loader/camera_info/nitros"
+        }
+      ]
+    },
+    {
+      "id": 233,
+      "type": "F",
+      "label": "ext:/r2b/data_loader/camera_info/nitros",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 234,
+      "type": "E",
+      "label": "ext:/r2b/camera_info/nitros/_supported_types",
+      "level": 2,
+      "children": [
+        235
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/camera_info/nitros/_supported_types"
+        }
+      ]
+    },
+    {
+      "id": 235,
+      "type": "F",
+      "label": "ext:/r2b/camera_info/nitros/_supported_types",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 236,
+      "type": "E",
+      "label": "ext:/r2b/buffer/camera_info",
+      "level": 2,
+      "children": [
+        237
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/buffer/camera_info"
+        }
+      ]
+    },
+    {
+      "id": 237,
+      "type": "F",
+      "label": "ext:/r2b/buffer/camera_info",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 238,
+      "type": "E",
+      "label": "ext:/r2b/buffer/image",
+      "level": 2,
+      "children": [
+        239
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/buffer/image"
+        }
+      ]
+    },
+    {
+      "id": 239,
+      "type": "F",
+      "label": "ext:/r2b/buffer/image",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 240,
+      "type": "E",
+      "label": "ext:/r2b/buffer/camera_info/nitros",
+      "level": 2,
+      "children": [
+        241
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/buffer/camera_info/nitros"
+        }
+      ]
+    },
+    {
+      "id": 241,
+      "type": "F",
+      "label": "ext:/r2b/buffer/camera_info/nitros",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 242,
+      "type": "E",
+      "label": "ext:/r2b/buffer/image/nitros",
+      "level": 2,
+      "children": [
+        243
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "pub",
+          "topic": "/r2b/buffer/image/nitros"
+        }
+      ]
+    },
+    {
+      "id": 243,
+      "type": "F",
+      "label": "ext:/r2b/buffer/image/nitros",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 244,
+      "type": "E",
+      "label": "ext:/r2b/tf",
+      "level": 2,
+      "children": [
+        245
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/tf"
+        }
+      ]
+    },
+    {
+      "id": 245,
+      "type": "F",
+      "label": "ext:/r2b/tf",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 246,
+      "type": "E",
+      "label": "ext:/r2b/data_loader/camera_info/nitros/_supported_types",
+      "level": 2,
+      "children": [
+        247
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/data_loader/camera_info/nitros/_supported_types"
+        }
+      ]
+    },
+    {
+      "id": 247,
+      "type": "F",
+      "label": "ext:/r2b/data_loader/camera_info/nitros/_supported_types",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    },
+    {
+      "id": 248,
+      "type": "E",
+      "label": "ext:/r2b/data_loader/image/nitros/_supported_types",
+      "level": 2,
+      "children": [
+        249
+      ],
+      "etype": "sub",
+      "external": true,
+      "aspects": [
+        {
+          "aspect": "sub",
+          "topic": "/r2b/data_loader/image/nitros/_supported_types"
+        }
+      ]
+    },
+    {
+      "id": 249,
+      "type": "F",
+      "label": "ext:/r2b/data_loader/image/nitros/_supported_types",
+      "level": 3,
+      "children": [],
+      "ptype": "ext"
+    }
+  ],
+  "edges": [
+    {
+      "source": 1,
+      "target": 2,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 1,
+      "target": 3,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 2,
+      "target": 27,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 2,
+      "target": 28,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 2,
+      "target": 29,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 2,
+      "target": 30,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 2,
+      "target": 31,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 2,
+      "target": 32,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 3,
+      "target": 33,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 3,
+      "target": 34,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 3,
+      "target": 35,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 3,
+      "target": 36,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 3,
+      "target": 37,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 3,
+      "target": 38,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 4,
+      "target": 5,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 4,
+      "target": 6,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 4,
+      "target": 7,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 4,
+      "target": 8,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 4,
+      "target": 9,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 4,
+      "target": 10,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 4,
+      "target": 11,
+      "rel": "comm",
+      "level": "L0",
+      "comm_count": 2,
+      "tau": "InterP"
+    },
+    {
+      "source": 4,
+      "target": 21,
+      "rel": "comm",
+      "level": "L0",
+      "comm_count": 1,
+      "tau": "InterP"
+    },
+    {
+      "source": 5,
+      "target": 39,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 5,
+      "target": 40,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 5,
+      "target": 41,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 5,
+      "target": 42,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 5,
+      "target": 43,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 5,
+      "target": 44,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 5,
+      "target": 45,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 5,
+      "target": 46,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 5,
+      "target": 47,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 5,
+      "target": 48,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 6,
+      "target": 5,
+      "rel": "comm",
+      "level": "L1",
+      "topics": [
+        "/r2b/apriltag_detections",
+        "/r2b/apriltag_detections"
+      ],
+      "comm_count": 2
+    },
+    {
+      "source": 6,
+      "target": 12,
+      "rel": "comm",
+      "level": "L1",
+      "topics": [
+        "/r2b/apriltag_detections",
+        "/r2b/apriltag_detections"
+      ],
+      "comm_count": 2
+    },
+    {
+      "source": 6,
+      "target": 49,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 6,
+      "target": 50,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 6,
+      "target": 51,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 6,
+      "target": 52,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 6,
+      "target": 53,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 6,
+      "target": 54,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 6,
+      "target": 55,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 6,
+      "target": 56,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 6,
+      "target": 57,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 6,
+      "target": 58,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 7,
+      "target": 5,
+      "rel": "comm",
+      "level": "L1",
+      "topics": [
+        "/parameter_events"
+      ],
+      "comm_count": 1
+    },
+    {
+      "source": 7,
+      "target": 6,
+      "rel": "comm",
+      "level": "L1",
+      "topics": [
+        "/parameter_events"
+      ],
+      "comm_count": 1
+    },
+    {
+      "source": 7,
+      "target": 8,
+      "rel": "comm",
+      "level": "L1",
+      "topics": [
+        "/parameter_events"
+      ],
+      "comm_count": 1
+    },
+    {
+      "source": 7,
+      "target": 9,
+      "rel": "comm",
+      "level": "L1",
+      "topics": [
+        "/parameter_events"
+      ],
+      "comm_count": 1
+    },
+    {
+      "source": 7,
+      "target": 10,
+      "rel": "comm",
+      "level": "L1",
+      "topics": [
+        "/parameter_events",
+        "/r2b/image/nitros/_supported_types"
+      ],
+      "comm_count": 2
+    },
+    {
+      "source": 7,
+      "target": 22,
+      "rel": "comm",
+      "level": "L1",
+      "topics": [
+        "/parameter_events"
+      ],
+      "comm_count": 1
+    },
+    {
+      "source": 7,
+      "target": 59,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 7,
+      "target": 60,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 7,
+      "target": 61,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 7,
+      "target": 62,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 8,
+      "target": 63,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 8,
+      "target": 64,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 8,
+      "target": 65,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 8,
+      "target": 66,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 8,
+      "target": 67,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 8,
+      "target": 68,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 8,
+      "target": 69,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 8,
+      "target": 70,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 8,
+      "target": 71,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 8,
+      "target": 72,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 8,
+      "target": 73,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 74,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 75,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 76,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 77,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 78,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 79,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 80,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 81,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 82,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 83,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 84,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 85,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 86,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 87,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 88,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 89,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 9,
+      "target": 90,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 6,
+      "rel": "comm",
+      "level": "L1",
+      "topics": [
+        "/r2b/image/nitros",
+        "/r2b/camera_info"
+      ],
+      "comm_count": 2
+    },
+    {
+      "source": 10,
+      "target": 91,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 92,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 93,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 94,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 95,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 96,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 97,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 98,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 99,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 100,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 101,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 102,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 103,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 104,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 105,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 10,
+      "target": 106,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 11,
+      "target": 12,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 12,
+      "target": 107,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 12,
+      "target": 108,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 13,
+      "target": 14,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 14,
+      "target": 109,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 14,
+      "target": 110,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 15,
+      "target": 16,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 16,
+      "target": 111,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 16,
+      "target": 112,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 17,
+      "target": 18,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 18,
+      "target": 113,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 18,
+      "target": 114,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 19,
+      "target": 20,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 20,
+      "target": 115,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 20,
+      "target": 116,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 21,
+      "target": 22,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 22,
+      "target": 117,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 22,
+      "target": 118,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 23,
+      "target": 24,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 24,
+      "target": 119,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 24,
+      "target": 120,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 25,
+      "target": 26,
+      "rel": "contains",
+      "level": "L0_L1"
+    },
+    {
+      "source": 26,
+      "target": 121,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 26,
+      "target": 122,
+      "rel": "contains",
+      "level": "L1_L2"
+    },
+    {
+      "source": 27,
+      "target": 123,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 28,
+      "target": 124,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 29,
+      "target": 125,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 30,
+      "target": 126,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 31,
+      "target": 127,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 32,
+      "target": 128,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 33,
+      "target": 129,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 34,
+      "target": 130,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 35,
+      "target": 131,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 36,
+      "target": 132,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 37,
+      "target": 133,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 38,
+      "target": 134,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 39,
+      "target": 135,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 40,
+      "target": 136,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 41,
+      "target": 137,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 42,
+      "target": 138,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 43,
+      "target": 139,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 44,
+      "target": 140,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 45,
+      "target": 141,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 46,
+      "target": 142,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 47,
+      "target": 143,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 48,
+      "target": 144,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 49,
+      "target": 39,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/apriltag_detections",
+      "msg_type": "isaac_ros_apriltag_interfaces/msg/AprilTagDetectionArray",
+      "avg_rate_hz": 156.658
+    },
+    {
+      "source": 49,
+      "target": 107,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/apriltag_detections",
+      "msg_type": "isaac_ros_apriltag_interfaces/msg/AprilTagDetectionArray",
+      "avg_rate_hz": 156.658
+    },
+    {
+      "source": 49,
+      "target": 145,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 49,
+      "target": 244,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/tf",
+      "external": true
+    },
+    {
+      "source": 50,
+      "target": 146,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 51,
+      "target": 147,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 52,
+      "target": 39,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/apriltag_detections",
+      "msg_type": "isaac_ros_apriltag_interfaces/msg/AprilTagDetectionArray",
+      "avg_rate_hz": 156.658
+    },
+    {
+      "source": 52,
+      "target": 107,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/apriltag_detections",
+      "msg_type": "isaac_ros_apriltag_interfaces/msg/AprilTagDetectionArray",
+      "avg_rate_hz": 156.658
+    },
+    {
+      "source": 52,
+      "target": 148,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 52,
+      "target": 244,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/tf",
+      "external": true
+    },
+    {
+      "source": 53,
+      "target": 149,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 54,
+      "target": 150,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 55,
+      "target": 151,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 56,
+      "target": 152,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 57,
+      "target": 153,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 58,
+      "target": 154,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 59,
+      "target": 155,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 60,
+      "target": 156,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 61,
+      "target": 157,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 62,
+      "target": 40,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 62,
+      "target": 51,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 62,
+      "target": 63,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 62,
+      "target": 74,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 62,
+      "target": 94,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 62,
+      "target": 95,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/image/nitros/_supported_types"
+    },
+    {
+      "source": 62,
+      "target": 117,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 62,
+      "target": 158,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 62,
+      "target": 246,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/camera_info/nitros/_supported_types",
+      "external": true
+    },
+    {
+      "source": 62,
+      "target": 248,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/image/nitros/_supported_types",
+      "external": true
+    },
+    {
+      "source": 63,
+      "target": 159,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 64,
+      "target": 160,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 65,
+      "target": 161,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 66,
+      "target": 162,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 67,
+      "target": 163,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 68,
+      "target": 164,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 69,
+      "target": 165,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 70,
+      "target": 166,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 71,
+      "target": 167,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 72,
+      "target": 168,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 73,
+      "target": 169,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 74,
+      "target": 170,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 75,
+      "target": 171,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 76,
+      "target": 172,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 77,
+      "target": 173,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 78,
+      "target": 174,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 79,
+      "target": 175,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 80,
+      "target": 176,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 81,
+      "target": 177,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 82,
+      "target": 178,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 83,
+      "target": 179,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 84,
+      "target": 180,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 85,
+      "target": 181,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 86,
+      "target": 182,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 87,
+      "target": 183,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 88,
+      "target": 184,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 89,
+      "target": 185,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 90,
+      "target": 186,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 91,
+      "target": 187,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 92,
+      "target": 188,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 93,
+      "target": 189,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 94,
+      "target": 190,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 95,
+      "target": 50,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/image/nitros",
+      "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo"
+    },
+    {
+      "source": 95,
+      "target": 191,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 96,
+      "target": 192,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 97,
+      "target": 193,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 98,
+      "target": 194,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 99,
+      "target": 195,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 100,
+      "target": 196,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 101,
+      "target": 197,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 102,
+      "target": 198,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 103,
+      "target": 199,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 104,
+      "target": 52,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/camera_info",
+      "msg_type": "sensor_msgs/msg/CameraInfo"
+    },
+    {
+      "source": 104,
+      "target": 200,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 105,
+      "target": 201,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 106,
+      "target": 202,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 107,
+      "target": 203,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 108,
+      "target": 204,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 109,
+      "target": 205,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 110,
+      "target": 206,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 111,
+      "target": 207,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 112,
+      "target": 208,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 113,
+      "target": 209,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 114,
+      "target": 210,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 115,
+      "target": 211,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 116,
+      "target": 212,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 117,
+      "target": 213,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 118,
+      "target": 214,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 119,
+      "target": 215,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 120,
+      "target": 216,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 121,
+      "target": 217,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 122,
+      "target": 218,
+      "rel": "contains",
+      "level": "L2_L3"
+    },
+    {
+      "source": 145,
+      "target": 135,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/apriltag_detections",
+      "msg_type": "isaac_ros_apriltag_interfaces/msg/AprilTagDetectionArray",
+      "avg_rate_hz": 156.658
+    },
+    {
+      "source": 145,
+      "target": 203,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/apriltag_detections",
+      "msg_type": "isaac_ros_apriltag_interfaces/msg/AprilTagDetectionArray",
+      "avg_rate_hz": 156.658
+    },
+    {
+      "source": 145,
+      "target": 245,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/tf",
+      "external": true
+    },
+    {
+      "source": 148,
+      "target": 135,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/apriltag_detections",
+      "msg_type": "isaac_ros_apriltag_interfaces/msg/AprilTagDetectionArray",
+      "avg_rate_hz": 156.658
+    },
+    {
+      "source": 148,
+      "target": 203,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/apriltag_detections",
+      "msg_type": "isaac_ros_apriltag_interfaces/msg/AprilTagDetectionArray",
+      "avg_rate_hz": 156.658
+    },
+    {
+      "source": 148,
+      "target": 245,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/tf",
+      "external": true
+    },
+    {
+      "source": 158,
+      "target": 136,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 158,
+      "target": 147,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 158,
+      "target": 159,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 158,
+      "target": 170,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 158,
+      "target": 190,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 158,
+      "target": 191,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/image/nitros/_supported_types"
+    },
+    {
+      "source": 158,
+      "target": 213,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/parameter_events",
+      "msg_type": "rcl_interfaces/msg/ParameterEvent"
+    },
+    {
+      "source": 158,
+      "target": 247,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/camera_info/nitros/_supported_types",
+      "external": true
+    },
+    {
+      "source": 158,
+      "target": 249,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/image/nitros/_supported_types",
+      "external": true
+    },
+    {
+      "source": 191,
+      "target": 146,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/image/nitros",
+      "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo"
+    },
+    {
+      "source": 200,
+      "target": 148,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/camera_info",
+      "msg_type": "sensor_msgs/msg/CameraInfo"
+    },
+    {
+      "source": 219,
+      "target": 1,
+      "rel": "contains",
+      "level": "L-1_L0"
+    },
+    {
+      "source": 219,
+      "target": 4,
+      "rel": "contains",
+      "level": "L-1_L0"
+    },
+    {
+      "source": 219,
+      "target": 11,
+      "rel": "contains",
+      "level": "L-1_L0"
+    },
+    {
+      "source": 219,
+      "target": 13,
+      "rel": "contains",
+      "level": "L-1_L0"
+    },
+    {
+      "source": 219,
+      "target": 15,
+      "rel": "contains",
+      "level": "L-1_L0"
+    },
+    {
+      "source": 219,
+      "target": 17,
+      "rel": "contains",
+      "level": "L-1_L0"
+    },
+    {
+      "source": 219,
+      "target": 19,
+      "rel": "contains",
+      "level": "L-1_L0"
+    },
+    {
+      "source": 219,
+      "target": 21,
+      "rel": "contains",
+      "level": "L-1_L0"
+    },
+    {
+      "source": 219,
+      "target": 23,
+      "rel": "contains",
+      "level": "L-1_L0"
+    },
+    {
+      "source": 219,
+      "target": 25,
+      "rel": "contains",
+      "level": "L-1_L0"
+    },
+    {
+      "source": 220,
+      "target": 49,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/image",
+      "msg_type": "sensor_msgs/msg/Image",
+      "external": true
+    },
+    {
+      "source": 220,
+      "target": 221,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 221,
+      "target": 145,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/image",
+      "msg_type": "sensor_msgs/msg/Image",
+      "external": true
+    },
+    {
+      "source": 222,
+      "target": 75,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/buffer/image/nitros/_supported_types",
+      "external": true
+    },
+    {
+      "source": 222,
+      "target": 223,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 223,
+      "target": 171,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/buffer/image/nitros/_supported_types",
+      "external": true
+    },
+    {
+      "source": 224,
+      "target": 76,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/buffer/camera_info/nitros/_supported_types",
+      "external": true
+    },
+    {
+      "source": 224,
+      "target": 225,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 225,
+      "target": 172,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/buffer/camera_info/nitros/_supported_types",
+      "external": true
+    },
+    {
+      "source": 226,
+      "target": 77,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/image/nitros",
+      "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo",
+      "external": true
+    },
+    {
+      "source": 226,
+      "target": 227,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 227,
+      "target": 173,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/image/nitros",
+      "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo",
+      "external": true
+    },
+    {
+      "source": 228,
+      "target": 78,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/image",
+      "msg_type": "sensor_msgs/msg/Image",
+      "external": true
+    },
+    {
+      "source": 228,
+      "target": 229,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 229,
+      "target": 174,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/image",
+      "msg_type": "sensor_msgs/msg/Image",
+      "external": true
+    },
+    {
+      "source": 230,
+      "target": 79,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/camera_info",
+      "msg_type": "sensor_msgs/msg/CameraInfo",
+      "external": true
+    },
+    {
+      "source": 230,
+      "target": 231,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 231,
+      "target": 175,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/camera_info",
+      "msg_type": "sensor_msgs/msg/CameraInfo",
+      "external": true
+    },
+    {
+      "source": 232,
+      "target": 80,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/camera_info/nitros",
+      "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo",
+      "external": true
+    },
+    {
+      "source": 232,
+      "target": 233,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 233,
+      "target": 176,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/data_loader/camera_info/nitros",
+      "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo",
+      "external": true
+    },
+    {
+      "source": 234,
+      "target": 91,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/camera_info/nitros/_supported_types",
+      "external": true
+    },
+    {
+      "source": 234,
+      "target": 235,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 235,
+      "target": 187,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/camera_info/nitros/_supported_types",
+      "external": true
+    },
+    {
+      "source": 236,
+      "target": 92,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/buffer/camera_info",
+      "msg_type": "sensor_msgs/msg/CameraInfo",
+      "external": true
+    },
+    {
+      "source": 236,
+      "target": 119,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/buffer/camera_info",
+      "msg_type": "sensor_msgs/msg/CameraInfo",
+      "external": true
+    },
+    {
+      "source": 236,
+      "target": 237,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 237,
+      "target": 188,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/buffer/camera_info",
+      "msg_type": "sensor_msgs/msg/CameraInfo",
+      "external": true
+    },
+    {
+      "source": 237,
+      "target": 215,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/buffer/camera_info",
+      "msg_type": "sensor_msgs/msg/CameraInfo",
+      "external": true
+    },
+    {
+      "source": 238,
+      "target": 93,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/buffer/image",
+      "msg_type": "sensor_msgs/msg/Image",
+      "external": true
+    },
+    {
+      "source": 238,
+      "target": 111,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/buffer/image",
+      "msg_type": "sensor_msgs/msg/Image",
+      "external": true
+    },
+    {
+      "source": 238,
+      "target": 239,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 239,
+      "target": 189,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/buffer/image",
+      "msg_type": "sensor_msgs/msg/Image",
+      "external": true
+    },
+    {
+      "source": 239,
+      "target": 207,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/buffer/image",
+      "msg_type": "sensor_msgs/msg/Image",
+      "external": true
+    },
+    {
+      "source": 240,
+      "target": 109,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/buffer/camera_info/nitros",
+      "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo",
+      "external": true
+    },
+    {
+      "source": 240,
+      "target": 241,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 241,
+      "target": 205,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/buffer/camera_info/nitros",
+      "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo",
+      "external": true
+    },
+    {
+      "source": 242,
+      "target": 121,
+      "rel": "comm",
+      "level": "L2",
+      "nature": "msg",
+      "topic": "/r2b/buffer/image/nitros",
+      "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo",
+      "external": true
+    },
+    {
+      "source": 242,
+      "target": 243,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 243,
+      "target": 217,
+      "rel": "comm",
+      "level": "L3",
+      "nature": "msg",
+      "topic": "/r2b/buffer/image/nitros",
+      "msg_type": "negotiated_interfaces/msg/NegotiatedTopicsInfo",
+      "external": true
+    },
+    {
+      "source": 244,
+      "target": 245,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 246,
+      "target": 247,
+      "rel": "contains",
+      "level": "V"
+    },
+    {
+      "source": 248,
+      "target": 249,
+      "rel": "contains",
+      "level": "V"
+    }
+  ]
+}

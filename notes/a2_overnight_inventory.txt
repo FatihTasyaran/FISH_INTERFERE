@@ -1,0 +1,96 @@
+# A2 overnight verification — inventory + results
+# Date: 2026-06-09 (overnight 03:00-07:00 ish)
+# User asked: birer birer verified, full source-review, no TBD, FISH-patched
+
+## Verified benchmarks (17/22 attempted, 15 fully 100% match, 2 partial)
+
+Each spreadsheet lives in Google Drive "FISH Sheets" folder.
+Format: REFERENCE + bench_node + expected_vertex + actual_vertex + ros2cli_helpers + per-node tabs (file:line + exact code + VCC code, no TBD).
+
+| # | Benchmark              | E_actual/E_exp  F_actual/F_exp  | Match  | Sheet ID                                       |
+|--:|------------------------|----------------------------------|--------|------------------------------------------------|
+|  1| apriltag               | 80/80     80/80                  | 100%   | 1l6QG5pkZWOP2P6Ya1kP5-UNyxZR46GB976PDoxAepas   |
+|  2| image_proc             | 71/71     71/71                  | 100%   | 1ZwErVZTf_B7fnasql7ac98uua1C1Joym-cg7WHX-rtc   |
+|  3| stereo_image_proc      | 113/113   113/113                | 100%   | 1lOexNCEDDprYXfY2z_FEDN_OT-LHXG-x4SjPoyJ_3s4   |
+|  4| dnn_image_encoder      | 149/149   149/149                | 100%   | 1s5NFe5OmOc8pyG3Xcemq9Glfi-tBcK5WkmXfreBC1_g   |
+|  5| visual_slam            | 82/82     82/82                  | 100%   | 1ZTy8b3HNmpO_zO5WLorfNOxdYTo8m7mnmd2t7hurwgI   |
+|  6| nvblox                 | 137/137   137/137                | 100%   | 10oI0z2JvDepAvW119ibYnh2ex3aYhiq1SxkZFddRPFo   |
+|  7| detectnet              | 172/175   172/175                | PARTIAL| 1uIKovUQtF9d_I2O-JUjl-xeHtM8HEwH_MbouIrL6DUI   |
+|  8| bi3d                   | 113/113   113/113                | 100%   | 1gygp8EdJB1nqVlBiSZoeSQf_1Gia7YOoxp2zwW03aa4   |
+|  9| ess                    | 81/81     81/81                  | 100%   | 1XjLRIGoypoaspi8Mpko0i7TYbvCREBuUo02D7Yz2hkU   |
+| 10| segformer              | 177/177   177/177                | 100%   | 11M0c6nXx4wpRnCXh7-PYVBLz3YiIoIjxmju7iOud0kQ   |
+| 11| unet                   | 147/147   147/147                | 100%   | 1HPByMWbmEc1yMy0rnQ6iA2vM2PVbKicuPzseOJ-WlVA   |
+| 12| tensor_rt              | 129/129   129/129                | 100%   | 1PBf16XOhNbPtWSqLmc1d7Z83azGqYRswCw8maw0S6hc   |
+| 13| triton                 | 129/129   129/129                | 100%   | 1KwGxz46t6t27cufkbRVYgi6ZXvhsPm1naqmXgt41lII   |
+| 14| bi3d_freespace         | 127/127   127/127                | 100%   | 1ds2-dRda2m-LRs-ZCXYV4Y0w7zDHhSUjeNzTX_T-f-c   |
+| 15| rtdetr                 | 164/172   164/172                | PARTIAL| 1UwaMBvFlDFh-kr2gVfNXxDilOYxVlFZtYzAoyPwq4UY   |
+| 16| nitros_bridge          | 68/68     68/68                  | 100%   | 16kT9uTpBCIw0sCV5tYPnPQeMJWHuu3HFKlXITzPr_jk   |
+| 17| dope                   | 173/173   173/173                | 100%   | 1Hsrai5lqdkXHt0dmUqB_mG6hfBP_bsMnKW0XyUOE2LE   |
+
+## Skipped / failed setup
+
+| benchmark              | reason                                                                  |
+|------------------------|-------------------------------------------------------------------------|
+| centerpose             | Triton backend library load failed ("unable to find backend library for backend 'tensorrt', try specifying runtime on the model configuration"). Setup needed; sheet not built. |
+| pynitros               | 2 containers + standalone Python rclpy node — complex attribution; deferred |
+| foundationpose         | 12+ nodes, complex pipeline; deferred to follow-up                     |
+| segment_anything       | 25 nodes (mobile SAM); deferred to follow-up                           |
+| h264_decoder / encoder | no fish-r2b-* image available                                          |
+
+## Partial matches — what's not OK
+
+### detectnet (3 nodes Δ=-1,-1 each)
+DetectNetDecoderNode, interleaved_to_planar_node, reshape_node each missing 1 gxf_heartbeat_timer.
+Cause: Triton model load fails at runtime → pipeline never reaches post-negotiation
+state → VCC_GHB never fires for the downstream chain.
+
+### rtdetr (3 nodes Δ=-2/-2/-4)
+PadNode -2, RtdetrPreprocessor -2, RtdetrDecoder -4.
+Cause: similar downstream pipeline halt; some runtime timers never fire.
+RtdetrDecoder loses 4 (neg timer + 2 graph_change timers + heartbeat) because
+its negotiation never completes.
+
+## Methodology
+
+1. Fresh fish-r2b-<bench>:latest container per benchmark
+2. Mount host /home/tue037807/fish_interfere → /host/fish_src
+3. Run setup_fish.sh inside — picks up latest fish_tracepoints/install_fish_tracepoints
+   (includes the GenericSubscription patch commit 0743b32 that emits rclcpp_subscription_init
+   + rclcpp_subscription_callback_added + rclcpp_callback_register)
+4. Rebuild ros2_benchmark + isaac_ros_benchmark in container to compile against patched headers
+5. Install missing deps (trtexec, dcgm, mcap) per benchmark
+6. Wire datasets + models from /host
+7. launch_test the bench script with FISH_ENABLED=1
+8. Postprocess trace via fish_compose.ingest_session + extract_container_model
+9. Compare actual node counts to expected formula composed from:
+   - container_expected() = 4 E/F (ComponentManager + 3 _container svcs)
+   - launch_ros_expected() = 6/6 (rclpy launch agent)
+   - controller_expected() = 6/6 (rclpy benchmark Controller)
+   - data_loader_expected() = 11/11 (VCC1 + 4 user svcs)
+   - nitros_node(N_in, N_out, runtime_extra=1) = 7 + 1 + 2·N_in + 2·N_out + 1
+   - nitros_playback_node(N_formats) = 7 + 3 + 3·N_formats
+   - nitros_playback_node_generic(N_formats) = 7 + 3 + N_formats
+   - nitros_monitor_node_nitros_sub() = 11/11 (uses NITROS NEGOTIATED sub)
+   - nitros_monitor_node_generic(format) = 10/10 (uses create_generic_subscription)
+   - managed_nitros_node(n_in=1, n_out=1) = 11/11 (plain rclcpp Node + ManagedNitrosSub/Pub)
+   - transform_listener_impl() = 3/3
+   - static_transform_publisher() = 7/7
+10. Build A2 spreadsheet via direct Google Sheets API (OAuth):
+    REFERENCE + bench_node + expected_vertex + actual_vertex + ros2cli_helpers + per-node tabs
+
+## File index (under /home/tue037807/fish_interfere/scripts/)
+
+a2_lib.py           — per-node-type expected formulas
+a2_shared.py        — shared reviews (CONTAINER, LAUNCH_ROS, CONTROLLER, DATALOADER, PLAYBACK_PARENT, MONITOR_PARENT) + make_nitros_playback_review / make_nitros_monitor_review
+a2_build.py         — unified A2 sheet builder (write_bench)
+a2_apriltag_data.py — apriltag per-node source reviews + REFERENCE_VCC catalog (used by all)
+a2_apriltag_sheet.py — first A2 builder (apriltag-specific, superseded by a2_build.py)
+a2_misc_data.py     — generic 1-in/1-out NITROS review templates
+a2_dnn_image_encoder_data.py — Resize/IFC/Crop/ImageToTensor/Normalize/Interleaved/Reshape reviews
+a2_visual_slam_data.py — VisualSlamNode + transform_listener + static_transform_publisher reviews
+a2_nvblox_data.py   — NvbloxNode + ImageFormatConverter reviews
+a2_stereo_image_proc_data.py — DisparityNode review
+a2_bi3d_spec.py     — Bi3DNode review + spec
+a2_image_proc_data.py — RectifyNode + NitrosMonitorImage review
+
+a2_<bench>_spec.py  — one SPEC dict per benchmark (composes EXPECTED + per_node_reviews)

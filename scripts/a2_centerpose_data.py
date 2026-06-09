@@ -1,0 +1,1 @@
+"""Shared CenterPose/Dope data placeholder (none needed beyond a2_misc_data)."""
