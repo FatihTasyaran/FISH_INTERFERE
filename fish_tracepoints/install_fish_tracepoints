@@ -1504,9 +1504,10 @@ with open(path) as f:
 if "FISH: GenericSubscription attribution" in content:
     print("    generic_subscription.hpp already patched, skipping")
 else:
+    # Two extra includes: tracetools.h for TRACEPOINT macro, utils.hpp for get_symbol()
     if "tracetools/tracetools.h" not in content:
         old_inc = '#include "rclcpp/visibility_control.hpp"'
-        new_inc = old_inc + '\n#include "tracetools/tracetools.h"'
+        new_inc = old_inc + '\n#include "tracetools/tracetools.h"\n#include "tracetools/utils.hpp"'
         if old_inc not in content:
             print("    WARNING: generic_subscription.hpp include anchor not found")
             sys.exit(1)
@@ -1526,6 +1527,7 @@ else:
     // FISH: GenericSubscription attribution — fires the same tracepoints
     // as Subscription<T>::Subscription so subs created via
     // create_generic_subscription land an F vertex like any other sub.
+    // Includes rclcpp_callback_register so FISH model can resolve cb_addr → symbol.
     TRACEPOINT(
       rclcpp_subscription_init,
       static_cast<const void *>(get_subscription_handle().get()),
@@ -1534,6 +1536,12 @@ else:
       rclcpp_subscription_callback_added,
       static_cast<const void *>(this),
       static_cast<const void *>(&callback_));
+#ifndef TRACETOOLS_DISABLED
+    TRACEPOINT(
+      rclcpp_callback_register,
+      static_cast<const void *>(&callback_),
+      tracetools::get_symbol(callback_));
+#endif
   }"""
     if old_block not in content:
         print("    WARNING: generic_subscription.hpp ctor anchor not found")
@@ -1541,7 +1549,7 @@ else:
     content = content.replace(old_block, new_block, 1)
     with open(path, "w") as f:
         f.write(content)
-    print("    generic_subscription.hpp patched (FISH GenericSubscription tracepoints)")
+    print("    generic_subscription.hpp patched (FISH GenericSubscription tracepoints + callback_register)")
 
 
 print("  Done patching rclcpp for scheduler tracepoints.")
