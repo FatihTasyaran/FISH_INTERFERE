@@ -129,6 +129,17 @@ def per_node_tab(review):
     return rows
 
 
+def _sanitize_cell(v):
+    """Escape leading +/-/= so Sheets treats the cell as text, not a formula."""
+    if isinstance(v, str) and len(v) > 0 and v[0] in ('+', '-', '=', '@'):
+        return "'" + v
+    return v
+
+
+def _sanitize_rows(rows):
+    return [[_sanitize_cell(c) for c in row] for row in rows]
+
+
 def build_payload(spec, actual_summary):
     """spec keys: name, image, launch_script, container_name, components_desc, fish_graph_path, session_dir, run_rc, verdict, expected (dict), per_node_reviews (dict), extra_fields"""
     payload = {
@@ -143,6 +154,9 @@ def build_payload(spec, actual_summary):
     }
     for tab_name, review in spec['per_node_reviews'].items():
         payload['tabs'].append({'name': tab_name, 'rows': per_node_tab(review)})
+    # Sanitize cells across all tabs: escape leading +/-/=/@ so they aren't parsed as formulas
+    for tab in payload['tabs']:
+        tab['rows'] = _sanitize_rows(tab['rows'])
     return payload
 
 
