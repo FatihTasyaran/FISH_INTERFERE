@@ -1,0 +1,41 @@
+{
+  "@context": ["dtmi:dtdl:context;3", "dtmi:fish:context;1"],
+  "@id": "dtmi:fish:cuda_stream;1",
+  "@type": "Interface",
+  "displayName": "FISH CUDA Stream",
+  "description": "A CUDA stream created within an Executor process. First-class so dashboards can isolate stream-level concurrency / blocking patterns. Kernels reference their stream via the `gpu_kernel.on_stream` Relationship.",
+
+  "contents": [
+    {"@type": "Property", "name": "stream_handle", "schema": "string", "comment": "CUstream pointer (correlation_id in CUPTI runtime activity)."},
+    {"@type": "Property", "name": "owner_pid",     "schema": "integer"},
+    {"@type": "Property", "name": "created_ts_ns", "schema": "long"},
+
+    {
+      "@type": ["Telemetry", "fish:Aggregated"],
+      "name": "stream_busy_ns",
+      "schema": "long",
+      "description": "Time the stream was occupied by kernels (sum of kernel durations on this stream).",
+      "fish:source": "cupti",
+      "fish:store": "influxdb",
+      "fish:dbName": "fish",
+      "fish:measurement": "gpu_kernels",
+      "fish:fieldName": "duration_ns",
+      "fish:tagSelector": {"session": "{session_id}", "streamId": "{stream_handle}"},
+      "fish:recommendedViz": "stat",
+      "fish:unit": "nanosecond"
+    },
+    {
+      "@type": ["Telemetry", "fish:Event"],
+      "name": "sync_events",
+      "schema": "string",
+      "description": "StreamWaitEvent / EventRecord activity on this stream.",
+      "fish:source": "cupti",
+      "fish:store": "influxdb",
+      "fish:dbName": "fish",
+      "fish:measurement": "gpu_sync",
+      "fish:fieldName": "syncType",
+      "fish:tagSelector": {"session": "{session_id}", "streamId": "{stream_handle}"},
+      "fish:recommendedViz": "timeline"
+    }
+  ]
+}

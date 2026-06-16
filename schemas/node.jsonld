@@ -1,0 +1,51 @@
+{
+  "@context": ["dtmi:dtdl:context;3", "dtmi:fish:context;1"],
+  "@id": "dtmi:fish:node;1",
+  "@type": "Interface",
+  "displayName": "FISH Node (N)",
+  "description": "A rclcpp::Node or rclpy.Node — owns entities (subs, services, timers, clients, publishers). Subtypes (rclcpp_node, rclpy_node, component_manager) extend this Interface via `extends` and add language- or framework-specific Properties / Telemetry.",
+
+  "contents": [
+    {"@type": "Property", "name": "node_handle",  "schema": "string", "comment": "rcl node handle pointer at trace time — primary join key into ros2_trace."},
+    {"@type": "Property", "name": "full_name",    "schema": "string", "comment": "e.g. /r2b/AprilTagNode"},
+    {"@type": "Property", "name": "namespace",    "schema": "string"},
+    {"@type": "Property", "name": "name",         "schema": "string"},
+    {"@type": "Property", "name": "node_kind",    "schema": "string", "comment": "rclcpp | rclpy | container_manager"},
+    {"@type": "Property", "name": "init_ts_ns",   "schema": "long",   "comment": "ros2:rcl_node_init timestamp."},
+    {"@type": "Property", "name": "source_file",  "schema": "string", "comment": "Best-effort: file where Node ctor lives (from A2-style per-node review)."},
+
+    {
+      "@type": ["Telemetry", "fish:Event"],
+      "name": "node_init_event",
+      "schema": "string",
+      "fish:source": "lttng",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "ros2_trace",
+      "fish:fieldName": "payload",
+      "fish:eventName": "ros2:rcl_node_init",
+      "fish:tagSelector": {"payload.node_handle": "{node_handle}"},
+      "fish:recommendedViz": "stat"
+    },
+    {
+      "@type": ["Telemetry", "fish:Snapshot"],
+      "name": "node_info_snapshot",
+      "schema": "string",
+      "description": "ros2 node info output captured by snapshot.py (interfaces, pubs, subs, services, clients, actions).",
+      "fish:source": "ros2_cli",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "node_info",
+      "fish:fieldName": "info",
+      "fish:eventName": "ros2 node info",
+      "fish:tagSelector": {"node_full_name": "{full_name}"},
+      "fish:recommendedViz": "stat"
+    },
+
+    {
+      "@type": "Relationship", "name": "has_entity",
+      "target": "dtmi:fish:entity;1",
+      "minMultiplicity": 0
+    }
+  ]
+}

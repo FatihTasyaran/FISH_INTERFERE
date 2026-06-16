@@ -1,0 +1,82 @@
+{
+  "@context": ["dtmi:dtdl:context;3", "dtmi:fish:context;1"],
+  "@id": "dtmi:fish:executor;1",
+  "@type": "Interface",
+  "displayName": "FISH Executor (EX)",
+  "description": "A process-bound ROS 2 executor. Identified by pid within the session. Owns one or more Nodes loaded into it (typically via component manager) and optionally CUDA streams created in this process.",
+
+  "contents": [
+    {"@type": "Property", "name": "pid",            "schema": "integer"},
+    {"@type": "Property", "name": "tid",            "schema": "integer", "comment": "Main thread tid; usually == pid."},
+    {"@type": "Property", "name": "executor_kind",  "schema": "string",  "comment": "single_threaded | multi_threaded | static_single_threaded | rclpy"},
+    {"@type": "Property", "name": "container_id",   "schema": "string"},
+    {"@type": "Property", "name": "cmdline",        "schema": "string"},
+    {"@type": "Property", "name": "started_ts_ns",  "schema": "long"},
+
+    {
+      "@type": ["Telemetry", "fish:Sampled"],
+      "name": "executor_cpu_pct",
+      "schema": "double",
+      "fish:source": "proc",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "process_tree",
+      "fish:fieldName": "per_pid.cpu_pct",
+      "fish:tagSelector": {"pid": "{pid}"},
+      "fish:recommendedViz": "timeseries",
+      "fish:unit": "percent"
+    },
+    {
+      "@type": ["Telemetry", "fish:Sampled"],
+      "name": "executor_rss_kb",
+      "schema": "long",
+      "fish:source": "proc",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "process_tree",
+      "fish:fieldName": "per_pid.rss_kb",
+      "fish:tagSelector": {"pid": "{pid}"},
+      "fish:recommendedViz": "timeseries",
+      "fish:unit": "kibibyte"
+    },
+    {
+      "@type": ["Telemetry", "fish:Event"],
+      "name": "spin_events",
+      "schema": "string",
+      "description": "fish_executor_spin/get_next_ready events for this process.",
+      "fish:source": "lttng",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "ros2_trace",
+      "fish:fieldName": "payload",
+      "fish:eventName": "ros2:fish_executor_*",
+      "fish:tagSelector": {"meta.vpid": "{pid}"},
+      "fish:recommendedViz": "timeline"
+    },
+    {
+      "@type": ["Telemetry", "fish:Aggregated"],
+      "name": "gpu_kernel_time_ns",
+      "schema": "long",
+      "description": "Sum of GPU kernel durations attributed to this process (from shared `fish` InfluxDB).",
+      "fish:source": "cupti",
+      "fish:store": "influxdb",
+      "fish:dbName": "fish",
+      "fish:measurement": "gpu_kernels",
+      "fish:fieldName": "duration_ns",
+      "fish:tagSelector": {"session": "{session_id}", "globalPid": "{pid}"},
+      "fish:recommendedViz": "stat",
+      "fish:unit": "nanosecond"
+    },
+
+    {
+      "@type": "Relationship", "name": "has_node",
+      "target": "dtmi:fish:node;1",
+      "minMultiplicity": 1
+    },
+    {
+      "@type": "Relationship", "name": "owns_stream",
+      "target": "dtmi:fish:cuda_stream;1",
+      "minMultiplicity": 0
+    }
+  ]
+}

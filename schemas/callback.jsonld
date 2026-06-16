@@ -1,0 +1,71 @@
+{
+  "@context": ["dtmi:dtdl:context;3", "dtmi:fish:context;1"],
+  "@id": "dtmi:fish:callback;1",
+  "@type": "Interface",
+  "displayName": "FISH Callback (F)",
+  "description": "A first-class callback function bound to a ROS 2 entity. Carries the function symbol, source file/line, registration time, and primary live telemetry (duration distribution). Owns GPU kernels launched from inside it via the `launches` Relationship (if any).",
+
+  "contents": [
+    {"@type": "Property", "name": "cb_addr",            "schema": "string", "comment": "Callback pointer at trace time — primary join key."},
+    {"@type": "Property", "name": "symbol_demangled",   "schema": "string"},
+    {"@type": "Property", "name": "symbol_mangled",     "schema": "string"},
+    {"@type": "Property", "name": "source_file",        "schema": "string"},
+    {"@type": "Property", "name": "source_line",        "schema": "integer"},
+    {"@type": "Property", "name": "language",           "schema": "string", "comment": "cpp | python"},
+    {"@type": "Property", "name": "registered_ts_ns",   "schema": "long",   "comment": "ros2:rclcpp_callback_register / fish_rclpy_callback_register timestamp."},
+    {"@type": "Property", "name": "owner_entity_handle","schema": "string"},
+
+    {
+      "@type": ["Telemetry", "fish:Duration"],
+      "name": "callback_duration_ns",
+      "schema": "long",
+      "description": "Wall-time duration of each callback invocation. Derived from paired ros2:callback_start / ros2:callback_end events bracketed by this cb_addr.",
+      "fish:source": "lttng",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "ros2_trace",
+      "fish:fieldName": "payload.callback_end.ts - payload.callback_start.ts",
+      "fish:eventName": "ros2:callback_start + ros2:callback_end",
+      "fish:tagSelector": {"payload.callback": "{cb_addr}"},
+      "fish:recommendedViz": "histogram",
+      "fish:unit": "nanosecond",
+      "fish:derivation": "ros2:callback_end.ts - ros2:callback_start.ts grouped by payload.callback"
+    },
+    {
+      "@type": ["Telemetry", "fish:Event"],
+      "name": "callback_start_stream",
+      "schema": "string",
+      "description": "Raw callback_start event stream — used for timeline view + correlating with GPU launches via callchain.",
+      "fish:source": "lttng",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "ros2_trace",
+      "fish:fieldName": "payload",
+      "fish:eventName": "ros2:callback_start",
+      "fish:tagSelector": {"payload.callback": "{cb_addr}"},
+      "fish:recommendedViz": "timeline"
+    },
+    {
+      "@type": ["Telemetry", "fish:Aggregated"],
+      "name": "gpu_time_attributed_ns",
+      "schema": "long",
+      "description": "Aggregate GPU kernel time attributed to this callback by FISH's callchain mapping. Bridges the LTTng→CUPTI gap via cuda_callchain.",
+      "fish:source": "derived",
+      "fish:store": "influxdb",
+      "fish:dbName": "fish",
+      "fish:measurement": "gpu_kernels",
+      "fish:fieldName": "duration_ns",
+      "fish:tagSelector": {"session": "{session_id}"},
+      "fish:recommendedViz": "stat",
+      "fish:unit": "nanosecond",
+      "fish:derivation": "sum(gpu_kernels.duration_ns) joined via cuda_callchain (correlationId → callback_start.ts within callback bracket) where cuda_callchain.session = {session_id}"
+    },
+
+    {
+      "@type": "Relationship", "name": "launches",
+      "target": "dtmi:fish:gpu_kernel;1",
+      "minMultiplicity": 0,
+      "comment": "Ownership: GPU kernels launched from inside this callback (zero for non-GPU callbacks; many for ML inference / image-pipeline callbacks)."
+    }
+  ]
+}

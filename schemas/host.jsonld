@@ -1,0 +1,53 @@
+{
+  "@context": ["dtmi:dtdl:context;3", "dtmi:fish:context;1"],
+  "@id": "dtmi:fish:host;1",
+  "@type": "Interface",
+  "displayName": "FISH Host",
+  "description": "A physical machine that runs one or more FISH capture sessions. Top of the ownership hierarchy. Properties are stable across the host's lifetime; relationships fan out to sessions.",
+
+  "contents": [
+    {"@type": "Property", "name": "hostname",       "schema": "string"},
+    {"@type": "Property", "name": "arch",           "schema": "string", "comment": "x86_64 | aarch64 | ..."},
+    {"@type": "Property", "name": "kernel_version", "schema": "string"},
+    {"@type": "Property", "name": "ros_distro",     "schema": "string", "comment": "humble | iron | jazzy"},
+    {"@type": "Property", "name": "cpu_model",      "schema": "string"},
+    {"@type": "Property", "name": "cpu_cores",      "schema": "integer"},
+    {"@type": "Property", "name": "gpu_model",      "schema": "string"},
+    {"@type": "Property", "name": "total_ram_kb",   "schema": "long"},
+
+    {
+      "@type": ["Telemetry", "fish:Sampled"],
+      "name": "host_cpu_pct",
+      "schema": "double",
+      "fish:source": "proc",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "process_tree",
+      "fish:fieldName": "summary.cpu_pct",
+      "fish:eventName": "/proc/stat snapshot",
+      "fish:tagSelector": {"hostname": "{hostname}"},
+      "fish:recommendedViz": "timeseries",
+      "fish:unit": "percent"
+    },
+    {
+      "@type": ["Telemetry", "fish:Sampled"],
+      "name": "host_mem_used_kb",
+      "schema": "long",
+      "fish:source": "proc",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "process_tree",
+      "fish:fieldName": "summary.mem_used_kb",
+      "fish:eventName": "/proc/meminfo snapshot",
+      "fish:tagSelector": {"hostname": "{hostname}"},
+      "fish:recommendedViz": "timeseries",
+      "fish:unit": "kibibyte"
+    },
+
+    {
+      "@type": "Relationship", "name": "has_session",
+      "target": "dtmi:fish:session;1",
+      "minMultiplicity": 0
+    }
+  ]
+}

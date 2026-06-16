@@ -1,0 +1,45 @@
+{
+  "@context": ["dtmi:dtdl:context;3", "dtmi:fish:context;1"],
+  "@id": "dtmi:fish:session;1",
+  "@type": "Interface",
+  "displayName": "FISH Capture Session",
+  "description": "A single FISH trace+profile run (LTTng ros2_tracing + nsys + /proc + ros2 CLI). Identified by session_id = 'fish_YYYYMMDD_HHMMSS' which is also the MongoDB+InfluxDB database name. All session-scoped telemetry resolves {session_id} against this Interface's Property.",
+
+  "contents": [
+    {"@type": "Property", "name": "session_id",     "schema": "string", "comment": "fish_YYYYMMDD_HHMMSS — also the per-session MongoDB db name."},
+    {"@type": "Property", "name": "start_ts_ns",    "schema": "long"},
+    {"@type": "Property", "name": "end_ts_ns",      "schema": "long"},
+    {"@type": "Property", "name": "duration_ns",    "schema": "long"},
+    {"@type": "Property", "name": "fish_version",   "schema": "string", "comment": "git rev of fish_interfere at capture time."},
+    {"@type": "Property", "name": "target_image",   "schema": "string", "comment": "Container image tag (fish-r2b-apriltag:latest, etc.)."},
+    {"@type": "Property", "name": "launch_script",  "schema": "string"},
+    {"@type": "Property", "name": "tracepoint_set", "schema": "string", "comment": "Path to config/fish_events.txt snapshot used in this run."},
+    {"@type": "Property", "name": "nsys_flags",     "schema": "string"},
+
+    {
+      "@type": ["Telemetry", "fish:Event"],
+      "name": "lttng_event_stream",
+      "schema": "string",
+      "description": "Raw LTTng ros2_trace event stream — primary FISH datapoint surface. The 31 enabled events live here as documents in the ros2_trace timeseries collection. Use this telemetry to retrieve any per-event payload by tagSelector.event.",
+      "fish:source": "lttng",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "ros2_trace",
+      "fish:fieldName": "payload",
+      "fish:eventName": "ros2:*",
+      "fish:tagSelector": {"session_id": "{session_id}"},
+      "fish:recommendedViz": "timeline"
+    },
+
+    {
+      "@type": "Relationship", "name": "runs_container",
+      "target": "dtmi:fish:container;1",
+      "minMultiplicity": 0
+    },
+    {
+      "@type": "Relationship", "name": "has_executor",
+      "target": "dtmi:fish:executor;1",
+      "minMultiplicity": 1
+    }
+  ]
+}

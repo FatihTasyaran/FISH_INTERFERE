@@ -1,0 +1,55 @@
+{
+  "@context": ["dtmi:dtdl:context;3", "dtmi:fish:context;1"],
+  "@id": "dtmi:fish:entity;1",
+  "@type": "Interface",
+  "displayName": "FISH Entity (E)",
+  "description": "A subscription, publisher, service, client, or timer owned by a Node. The `entity_kind` Property distinguishes subtypes. First-class — sub-Interfaces such as dtmi:fish:entity:sub;1, dtmi:fish:entity:tmr;1 extend this and override `entity_kind` plus add kind-specific Telemetry (e.g. msg_rate for subs, period for timers).",
+
+  "contents": [
+    {"@type": "Property", "name": "entity_handle",   "schema": "string", "comment": "rcl_subscription / rcl_service / rcl_timer / rcl_client / rcl_publisher handle pointer."},
+    {"@type": "Property", "name": "entity_kind",     "schema": "string", "comment": "sub | pub | srv | cli | tmr | generic_sub | action_srv | action_cli"},
+    {"@type": "Property", "name": "topic_or_name",   "schema": "string", "comment": "Topic name for sub/pub, service name for srv/cli, '<timer>' for tmr."},
+    {"@type": "Property", "name": "qos_profile",     "schema": "string"},
+    {"@type": "Property", "name": "period_ns",       "schema": "long",   "comment": "For tmr entities only. -1 otherwise."},
+    {"@type": "Property", "name": "init_ts_ns",      "schema": "long",   "comment": "Init tracepoint timestamp (entity-kind-specific tracepoint)."},
+    {"@type": "Property", "name": "owner_node_handle","schema": "string", "comment": "Parent Node's node_handle — for graph reconstruction."},
+
+    {
+      "@type": ["Telemetry", "fish:Event"],
+      "name": "entity_init_event",
+      "schema": "string",
+      "description": "The kind-specific *_init tracepoint that created this entity (e.g. ros2:rclcpp_subscription_init, ros2:rcl_service_init, ros2:rcl_timer_init).",
+      "fish:source": "lttng",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "ros2_trace",
+      "fish:fieldName": "payload",
+      "fish:eventName": "ros2:*_init",
+      "fish:tagSelector": {"any_handle": "{entity_handle}"},
+      "fish:recommendedViz": "stat"
+    },
+    {
+      "@type": ["Telemetry", "fish:Sampled"],
+      "name": "topic_rate_hz",
+      "schema": "double",
+      "description": "ros2 topic hz background sample (only applies to entity_kind in {sub, pub}).",
+      "fish:source": "ros2_cli",
+      "fish:store": "mongodb",
+      "fish:dbName": "{session_id}",
+      "fish:collection": "topic_hz",
+      "fish:fieldName": "rate_hz",
+      "fish:eventName": "ros2 topic hz",
+      "fish:tagSelector": {"topic": "{topic_or_name}"},
+      "fish:recommendedViz": "timeseries",
+      "fish:unit": "hertz"
+    },
+
+    {
+      "@type": "Relationship", "name": "has_callback",
+      "target": "dtmi:fish:callback;1",
+      "minMultiplicity": 0,
+      "maxMultiplicity": 1,
+      "comment": "Ownership relation: an entity owns exactly one callback (entities like pubs / clis with no callback have multiplicity 0)."
+    }
+  ]
+}
