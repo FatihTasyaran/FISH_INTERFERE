@@ -3,12 +3,12 @@
   "@id": "dtmi:fish:gpu_kernel;1",
   "@type": "Interface",
   "displayName": "FISH GPU Kernel",
-  "description": "A CUDA kernel observed in this session. Each unique (kernel_name, launch_site) yields a separate instance — matching P-MoVE's per-component instancing pattern. Bound to its owning Callback (via the callback.launches Relationship) and the CUDA Stream it ran on (`on_stream` Relationship).",
+  "description": "A CUDA kernel observed in this session. Each unique kernel_name within a session yields a separate instance (matching P-MoVE's per-component instancing pattern). Bound to its owning Callback (via the callback.launches Relationship) and the CUDA Stream(s) it ran on (`on_stream` Relationship).",
 
   "contents": [
-    {"@type": "Property", "name": "kernel_name",     "schema": "string", "comment": "Demangled kernel name."},
-    {"@type": "Property", "name": "kernel_signature","schema": "string", "comment": "Full mangled signature for unique disambiguation."},
-    {"@type": "Property", "name": "grid_dim",        "schema": "string", "comment": "e.g. (256,1,1)"},
+    {"@type": "Property", "name": "kernel_name",     "schema": "string"},
+    {"@type": "Property", "name": "kernel_signature","schema": "string"},
+    {"@type": "Property", "name": "grid_dim",        "schema": "string"},
     {"@type": "Property", "name": "block_dim",       "schema": "string"},
     {"@type": "Property", "name": "registers_per_thread","schema": "integer"},
     {"@type": "Property", "name": "static_smem_bytes","schema": "long"},
@@ -21,12 +21,10 @@
       "schema": "long",
       "description": "Per-launch GPU execution time for this kernel.",
       "fish:source": "cupti",
-      "fish:store": "influxdb",
-      "fish:dbName": "fish",
-      "fish:measurement": "gpu_kernels",
-      "fish:fieldName": "duration_ns",
+      "fish:table": "gpu_kernels",
+      "fish:column": "duration_ns",
       "fish:eventName": "CUPTI_ACTIVITY_KIND_KERNEL",
-      "fish:tagSelector": {"session": "{session_id}", "kernel_name": "{kernel_name}"},
+      "fish:filter": {"session_id": "{session_id}", "kernel_name": "{kernel_name}"},
       "fish:recommendedViz": "histogram",
       "fish:unit": "nanosecond"
     },
@@ -36,26 +34,22 @@
       "schema": "long",
       "description": "Number of launches of this kernel in the session.",
       "fish:source": "cupti",
-      "fish:store": "influxdb",
-      "fish:dbName": "fish",
-      "fish:measurement": "gpu_kernels",
-      "fish:fieldName": "count(*)",
-      "fish:tagSelector": {"session": "{session_id}", "kernel_name": "{kernel_name}"},
+      "fish:table": "gpu_kernels",
+      "fish:column": "count(*)",
+      "fish:filter": {"session_id": "{session_id}", "kernel_name": "{kernel_name}"},
       "fish:recommendedViz": "stat",
       "fish:unit": "count"
     },
     {
       "@type": ["Telemetry", "fish:Aggregated"],
-      "name": "memcpy_bytes",
+      "name": "memcpy_bytes_on_stream",
       "schema": "long",
-      "description": "Memory transferred near this kernel's launches (host↔device). Correlated by correlationId proximity.",
+      "description": "Memory transferred on the same stream(s) this kernel ran on (host↔device).",
       "fish:source": "cupti",
-      "fish:store": "influxdb",
-      "fish:dbName": "fish",
-      "fish:measurement": "gpu_memcpy",
-      "fish:fieldName": "bytes",
+      "fish:table": "gpu_memcpy",
+      "fish:column": "bytes",
       "fish:eventName": "CUPTI_ACTIVITY_KIND_MEMCPY",
-      "fish:tagSelector": {"session": "{session_id}", "streamId": "{stream_handle}"},
+      "fish:filter": {"session_id": "{session_id}", "stream_id": "{stream_handle}"},
       "fish:recommendedViz": "timeseries",
       "fish:unit": "byte"
     },
@@ -64,7 +58,7 @@
       "@type": "Relationship", "name": "on_stream",
       "target": "dtmi:fish:cuda_stream;1",
       "minMultiplicity": 1,
-      "comment": "Reference (not ownership) to the stream(s) this kernel ran on. A kernel may run on multiple streams across the session — each is listed."
+      "comment": "Reference to the stream(s) this kernel ran on across the session."
     }
   ]
 }

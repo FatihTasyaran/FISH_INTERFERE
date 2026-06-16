@@ -3,7 +3,7 @@
   "@id": "dtmi:fish:container;1",
   "@type": "Interface",
   "displayName": "FISH Container",
-  "description": "A Docker/Podman container scoped to one session. Hosts one or more executors. Image identity is captured via image_tag + image_hash.",
+  "description": "A Docker/Podman container scoped to one session. Hosts one or more executors.",
 
   "contents": [
     {"@type": "Property", "name": "container_id",   "schema": "string"},
@@ -13,30 +13,16 @@
     {"@type": "Property", "name": "started_ts_ns",  "schema": "long"},
 
     {
-      "@type": ["Telemetry", "fish:Sampled"],
-      "name": "container_cpu_pct",
-      "schema": "double",
-      "fish:source": "proc",
-      "fish:store": "mongodb",
-      "fish:dbName": "{session_id}",
-      "fish:collection": "process_tree",
-      "fish:fieldName": "per_container.cpu_pct",
-      "fish:tagSelector": {"container_id": "{container_id}"},
-      "fish:recommendedViz": "timeseries",
-      "fish:unit": "percent"
-    },
-    {
-      "@type": ["Telemetry", "fish:Sampled"],
-      "name": "container_mem_rss_kb",
+      "@type": ["Telemetry", "fish:Aggregated"],
+      "name": "container_gpu_kernel_time_ns",
       "schema": "long",
-      "fish:source": "proc",
-      "fish:store": "mongodb",
-      "fish:dbName": "{session_id}",
-      "fish:collection": "process_tree",
-      "fish:fieldName": "per_container.rss_kb",
-      "fish:tagSelector": {"container_id": "{container_id}"},
-      "fish:recommendedViz": "timeseries",
-      "fish:unit": "kibibyte"
+      "description": "Sum of GPU kernel durations attributed to this container.",
+      "fish:source": "cupti",
+      "fish:table": "gpu_kernels",
+      "fish:column": "duration_ns",
+      "fish:filter": {"session_id": "{session_id}", "container": "{container_name}"},
+      "fish:recommendedViz": "stat",
+      "fish:unit": "nanosecond"
     },
 
     {

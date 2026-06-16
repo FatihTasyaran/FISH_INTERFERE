@@ -1,5 +1,5 @@
 {
-  "_comment": "FISH DTDL extension context — adds telemetry pointer fields so each Interface carries the location of its live data. Inspired by P-MoVE's PMUName/SamplerName/DBName/FieldName encoding on Telemetry entries (P-MoVE paper Fig. 1 + Section III.B), generalized to FISH's two-store (MongoDB + InfluxDB) reality. Reference @id: dtmi:fish:context;1",
+  "_comment": "FISH DTDL extension context — adds telemetry-pointer fields so each Interface carries the explicit location of its live data in the single PostgreSQL+TimescaleDB backend. Originally inspired by P-MoVE's PMUName/SamplerName/DBName/FieldName encoding (P-MoVE paper §III.B, Listing 1) and FISH's earlier two-store (Mongo+Influx) architecture. After the 2026-06-16 migration to a single PG backend, the store/collection/measurement split was collapsed into one fish:table + fish:column + fish:filter triple. dtmi:fish:context;1.",
 
   "@context": {
     "@version": 1.1,
@@ -8,47 +8,32 @@
     "fish:source": {
       "@id": "fish:source",
       "@type": "@vocab",
-      "_comment": "Datapoint origin. Values: lttng | cupti | proc | ros2_cli | dcgm | derived"
+      "_comment": "Datapoint origin. Values: lttng | cupti | proc | ros2_cli | dcgm | derived | snapshot"
     },
-    "fish:store": {
-      "@id": "fish:store",
-      "@type": "@vocab",
-      "_comment": "Backing store. Values: mongodb | influxdb. LTTng ros2_trace lives in MongoDB (timeseries collection); CUPTI/nsys data lives in InfluxDB."
-    },
-    "fish:dbName": {
-      "@id": "fish:dbName",
+    "fish:table": {
+      "@id": "fish:table",
       "@type": "xsd:string",
-      "_comment": "Database name. For session-scoped data: '{session_id}' literal placeholder (resolved at query time). For shared GPU data: 'fish'."
+      "_comment": "PostgreSQL table name (always in the `fish` database). See scripts/init_fish_pg.sql for the canonical schema."
     },
-    "fish:collection": {
-      "@id": "fish:collection",
+    "fish:column": {
+      "@id": "fish:column",
       "@type": "xsd:string",
-      "_comment": "MongoDB collection name (when fish:store = mongodb)."
+      "_comment": "Value column for the telemetry — typed PG column for time-series tables (e.g. duration_ns), or a JSONB path like 'payload->>callback' for structured columns."
     },
-    "fish:measurement": {
-      "@id": "fish:measurement",
-      "@type": "xsd:string",
-      "_comment": "InfluxDB measurement name (when fish:store = influxdb)."
-    },
-    "fish:fieldName": {
-      "@id": "fish:fieldName",
-      "@type": "xsd:string",
-      "_comment": "Field name (InfluxDB) or document path (MongoDB) for the actual value."
+    "fish:filter": {
+      "@id": "fish:filter",
+      "@container": "@index",
+      "_comment": "WHERE-clause filter: {column: value-or-placeholder}. Placeholders like '{cb_addr}', '{session_id}', '{kernel_name}', '{stream_handle}' are resolved against the instance Interface's Properties at query time. Values that name JSONB paths use the PG '->>'/'->' operator syntax (e.g. \"payload->>'callback'\" as the key)."
     },
     "fish:eventName": {
       "@id": "fish:eventName",
       "@type": "xsd:string",
-      "_comment": "Origin event identifier — LTTng event name (e.g. 'ros2:callback_start'), CUPTI activity kind, /proc field, or ros2 CLI command."
-    },
-    "fish:tagSelector": {
-      "@id": "fish:tagSelector",
-      "@container": "@index",
-      "_comment": "Filter expression: {tag_key: value}. Values can be literals or instance-property references using '{property_name}' placeholders (e.g. '{cb_addr}', '{kernel_name}', '{pid}'). The on-demand builder resolves placeholders against the instance Interface's Properties at query time."
+      "_comment": "Origin event identifier for documentation — LTTng event name (e.g. 'ros2:callback_start'), CUPTI activity kind, /proc field, or ros2 CLI command. Resolved at query time when relevant (e.g. ros2_trace lookups also filter by `event` column)."
     },
     "fish:recommendedViz": {
       "@id": "fish:recommendedViz",
       "@type": "@vocab",
-      "_comment": "Hint for the panel factory. Values: timeseries | heatmap | stat | timeline | histogram | roofline | bargauge"
+      "_comment": "Panel-factory hint. Values: timeseries | heatmap | stat | timeline | histogram | roofline | bargauge"
     },
     "fish:unit": {
       "@id": "fish:unit",
@@ -58,7 +43,7 @@
     "fish:derivation": {
       "@id": "fish:derivation",
       "@type": "xsd:string",
-      "_comment": "For fish:source = derived: a short expression naming the source telemetry and the transform (e.g. 'callback_end.ts - callback_start.ts')."
+      "_comment": "For fish:source = derived: a short expression naming the source telemetries and the transform (e.g. a SQL window function or pre-computed JOIN). The on-demand builder may rewrite this as a CTE or a materialized continuous aggregate."
     },
 
     "xsd": "http://www.w3.org/2001/XMLSchema#"
@@ -66,11 +51,10 @@
 
   "@id": "dtmi:fish:context;1",
   "@type": "Context",
-  "displayName": "FISH telemetry-pointer extension to DTDL v3",
-  "version": 1,
+  "displayName": "FISH telemetry-pointer extension to DTDL v3 (PostgreSQL backend)",
+  "version": 2,
   "specifies": [
-    "fish:source", "fish:store", "fish:dbName", "fish:collection",
-    "fish:measurement", "fish:fieldName", "fish:eventName",
-    "fish:tagSelector", "fish:recommendedViz", "fish:unit", "fish:derivation"
+    "fish:source", "fish:table", "fish:column", "fish:filter",
+    "fish:eventName", "fish:recommendedViz", "fish:unit", "fish:derivation"
   ]
 }

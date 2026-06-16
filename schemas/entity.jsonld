@@ -3,45 +3,52 @@
   "@id": "dtmi:fish:entity;1",
   "@type": "Interface",
   "displayName": "FISH Entity (E)",
-  "description": "A subscription, publisher, service, client, or timer owned by a Node. The `entity_kind` Property distinguishes subtypes. First-class — sub-Interfaces such as dtmi:fish:entity:sub;1, dtmi:fish:entity:tmr;1 extend this and override `entity_kind` plus add kind-specific Telemetry (e.g. msg_rate for subs, period for timers).",
+  "description": "A subscription, publisher, service, client, or timer owned by a Node. The `entity_kind` Property distinguishes subtypes. First-class — sub-Interfaces such as dtmi:fish:entity:sub;1, dtmi:fish:entity:tmr;1 extend this and override `entity_kind` plus add kind-specific Telemetry.",
 
   "contents": [
-    {"@type": "Property", "name": "entity_handle",   "schema": "string", "comment": "rcl_subscription / rcl_service / rcl_timer / rcl_client / rcl_publisher handle pointer."},
+    {"@type": "Property", "name": "entity_handle",   "schema": "string"},
     {"@type": "Property", "name": "entity_kind",     "schema": "string", "comment": "sub | pub | srv | cli | tmr | generic_sub | action_srv | action_cli"},
-    {"@type": "Property", "name": "topic_or_name",   "schema": "string", "comment": "Topic name for sub/pub, service name for srv/cli, '<timer>' for tmr."},
+    {"@type": "Property", "name": "topic_or_name",   "schema": "string"},
     {"@type": "Property", "name": "qos_profile",     "schema": "string"},
-    {"@type": "Property", "name": "period_ns",       "schema": "long",   "comment": "For tmr entities only. -1 otherwise."},
-    {"@type": "Property", "name": "init_ts_ns",      "schema": "long",   "comment": "Init tracepoint timestamp (entity-kind-specific tracepoint)."},
-    {"@type": "Property", "name": "owner_node_handle","schema": "string", "comment": "Parent Node's node_handle — for graph reconstruction."},
+    {"@type": "Property", "name": "period_ns",       "schema": "long"},
+    {"@type": "Property", "name": "init_ts_ns",      "schema": "long"},
+    {"@type": "Property", "name": "owner_node_handle","schema": "string"},
 
     {
       "@type": ["Telemetry", "fish:Event"],
       "name": "entity_init_event",
       "schema": "string",
-      "description": "The kind-specific *_init tracepoint that created this entity (e.g. ros2:rclcpp_subscription_init, ros2:rcl_service_init, ros2:rcl_timer_init).",
+      "description": "The kind-specific *_init tracepoint that created this entity (rcl_subscription_init, rcl_service_init, rcl_timer_init, ...).",
       "fish:source": "lttng",
-      "fish:store": "mongodb",
-      "fish:dbName": "{session_id}",
-      "fish:collection": "ros2_trace",
-      "fish:fieldName": "payload",
+      "fish:table": "ros2_trace",
+      "fish:column": "payload",
       "fish:eventName": "ros2:*_init",
-      "fish:tagSelector": {"any_handle": "{entity_handle}"},
+      "fish:filter": {"session_id": "{session_id}", "event~": "_init$", "payload->>any_handle": "{entity_handle}"},
       "fish:recommendedViz": "stat"
     },
     {
       "@type": ["Telemetry", "fish:Sampled"],
       "name": "topic_rate_hz",
       "schema": "double",
-      "description": "ros2 topic hz background sample (only applies to entity_kind in {sub, pub}).",
+      "description": "ros2 topic hz background sample (sub/pub only).",
       "fish:source": "ros2_cli",
-      "fish:store": "mongodb",
-      "fish:dbName": "{session_id}",
-      "fish:collection": "topic_hz",
-      "fish:fieldName": "rate_hz",
+      "fish:table": "topic_hz",
+      "fish:column": "average_rate",
       "fish:eventName": "ros2 topic hz",
-      "fish:tagSelector": {"topic": "{topic_or_name}"},
+      "fish:filter": {"session_id": "{session_id}", "topic": "{topic_or_name}"},
       "fish:recommendedViz": "timeseries",
       "fish:unit": "hertz"
+    },
+    {
+      "@type": ["Telemetry", "fish:Snapshot"],
+      "name": "topic_metadata",
+      "schema": "string",
+      "description": "Static topic metadata (type, pub/sub counts) joined from topic_info.",
+      "fish:source": "ros2_cli",
+      "fish:table": "topic_info",
+      "fish:column": "*",
+      "fish:filter": {"session_id": "{session_id}", "topic": "{topic_or_name}"},
+      "fish:recommendedViz": "stat"
     },
 
     {
@@ -49,7 +56,7 @@
       "target": "dtmi:fish:callback;1",
       "minMultiplicity": 0,
       "maxMultiplicity": 1,
-      "comment": "Ownership relation: an entity owns exactly one callback (entities like pubs / clis with no callback have multiplicity 0)."
+      "comment": "Ownership relation: an entity owns exactly one callback. Pub/cli entities (no callback) have multiplicity 0."
     }
   ]
 }

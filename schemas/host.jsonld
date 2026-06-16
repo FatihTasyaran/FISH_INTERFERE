@@ -16,32 +16,15 @@
     {"@type": "Property", "name": "total_ram_kb",   "schema": "long"},
 
     {
-      "@type": ["Telemetry", "fish:Sampled"],
-      "name": "host_cpu_pct",
-      "schema": "double",
+      "@type": ["Telemetry", "fish:Snapshot"],
+      "name": "host_registry",
+      "schema": "string",
+      "description": "Static host registry row keyed by hostname. One row per host across all sessions on this machine.",
       "fish:source": "proc",
-      "fish:store": "mongodb",
-      "fish:dbName": "{session_id}",
-      "fish:collection": "process_tree",
-      "fish:fieldName": "summary.cpu_pct",
-      "fish:eventName": "/proc/stat snapshot",
-      "fish:tagSelector": {"hostname": "{hostname}"},
-      "fish:recommendedViz": "timeseries",
-      "fish:unit": "percent"
-    },
-    {
-      "@type": ["Telemetry", "fish:Sampled"],
-      "name": "host_mem_used_kb",
-      "schema": "long",
-      "fish:source": "proc",
-      "fish:store": "mongodb",
-      "fish:dbName": "{session_id}",
-      "fish:collection": "process_tree",
-      "fish:fieldName": "summary.mem_used_kb",
-      "fish:eventName": "/proc/meminfo snapshot",
-      "fish:tagSelector": {"hostname": "{hostname}"},
-      "fish:recommendedViz": "timeseries",
-      "fish:unit": "kibibyte"
+      "fish:table": "hosts",
+      "fish:column": "*",
+      "fish:filter": {"host_name": "{hostname}"},
+      "fish:recommendedViz": "stat"
     },
 
     {

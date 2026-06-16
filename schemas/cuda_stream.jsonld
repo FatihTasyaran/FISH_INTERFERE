@@ -6,7 +6,7 @@
   "description": "A CUDA stream created within an Executor process. First-class so dashboards can isolate stream-level concurrency / blocking patterns. Kernels reference their stream via the `gpu_kernel.on_stream` Relationship.",
 
   "contents": [
-    {"@type": "Property", "name": "stream_handle", "schema": "string", "comment": "CUstream pointer (correlation_id in CUPTI runtime activity)."},
+    {"@type": "Property", "name": "stream_handle", "schema": "string"},
     {"@type": "Property", "name": "owner_pid",     "schema": "integer"},
     {"@type": "Property", "name": "created_ts_ns", "schema": "long"},
 
@@ -16,11 +16,9 @@
       "schema": "long",
       "description": "Time the stream was occupied by kernels (sum of kernel durations on this stream).",
       "fish:source": "cupti",
-      "fish:store": "influxdb",
-      "fish:dbName": "fish",
-      "fish:measurement": "gpu_kernels",
-      "fish:fieldName": "duration_ns",
-      "fish:tagSelector": {"session": "{session_id}", "streamId": "{stream_handle}"},
+      "fish:table": "gpu_kernels",
+      "fish:column": "duration_ns",
+      "fish:filter": {"session_id": "{session_id}", "stream_id": "{stream_handle}"},
       "fish:recommendedViz": "stat",
       "fish:unit": "nanosecond"
     },
@@ -30,12 +28,21 @@
       "schema": "string",
       "description": "StreamWaitEvent / EventRecord activity on this stream.",
       "fish:source": "cupti",
-      "fish:store": "influxdb",
-      "fish:dbName": "fish",
-      "fish:measurement": "gpu_sync",
-      "fish:fieldName": "syncType",
-      "fish:tagSelector": {"session": "{session_id}", "streamId": "{stream_handle}"},
+      "fish:table": "gpu_sync",
+      "fish:column": "sync_type",
+      "fish:filter": {"session_id": "{session_id}", "stream_id": "{stream_handle}"},
       "fish:recommendedViz": "timeline"
+    },
+    {
+      "@type": ["Telemetry", "fish:Snapshot"],
+      "name": "stream_registry",
+      "schema": "string",
+      "description": "Static per-stream metadata captured from nsys CUDA_STREAM target table.",
+      "fish:source": "cupti",
+      "fish:table": "cuda_streams",
+      "fish:column": "*",
+      "fish:filter": {"session_id": "{session_id}", "stream_id": "{stream_handle}"},
+      "fish:recommendedViz": "stat"
     }
   ]
 }
