@@ -1,0 +1,71 @@
+<div class="fish-viz-root">
+  <div class="fv-controls">
+    <b>FISH Graph Explorer</b>
+
+    <div class="fv-tabs">
+      <button class="active" data-mode="expand">Expand</button>
+      <button data-mode="layer">Layer</button>
+    </div>
+
+    <div class="fv-panel-expand">
+      <button class="fv-small-btn fv-collapseAll">Reset</button>
+      <span style="color:#888;font-size:11px;margin-left:6px">Click to expand/collapse</span>
+    </div>
+
+    <div class="fv-panel-layer" style="display:none">
+      <div class="fv-btn-group fv-depthBtns">
+        <button data-depth="-1">Cont</button>
+        <button data-depth="0" class="active">Exec</button>
+        <button data-depth="1">Node</button>
+        <button data-depth="2">Entity</button>
+        <button data-depth="3">Callback</button>
+        <button data-depth="99">All</button>
+      </div>
+    </div>
+
+    <div style="margin-top:6px">
+      Layout:
+      <div class="fv-btn-group fv-layoutBtns">
+        <button data-layout="force">Force</button>
+        <button data-layout="tree">Tree</button>
+        <button data-layout="stair" class="active">Stair</button>
+      </div>
+      <span class="fv-stairOpts" style="margin-left:8px">
+        <select class="fv-stairMode">
+          <option value="3" selected>3-cycle</option>
+          <option value="0">Flat</option>
+          <option value="inf">Continuous</option>
+        </select>
+      </span>
+    </div>
+
+    <div style="margin-top:4px">
+      <label><input type="checkbox" class="fv-showExternal"> External</label>
+      <label><input type="checkbox" class="fv-showLabels" checked> Labels</label>
+      <label><input type="checkbox" class="fv-showContain" checked> Hierarchy</label>
+    </div>
+  </div>
+
+  <div class="fv-info">
+    <h3>FISH Graph</h3>
+    <p style="color:#666;font-size:12px">
+      <b>Click</b> a node to expand/collapse.<br>
+      <b>Right-click</b> to collapse.<br>
+      <b>Scroll</b> to zoom, <b>drag</b> to pan.
+    </p>
+  </div>
+
+  <div class="fv-stats"></div>
+  <div class="fv-legend">
+    <span class="fv-legend-dot" style="background:#E8DAEF"></span>Container
+    <span class="fv-legend-dot" style="background:#5DADE2;margin-left:8px"></span>Executor
+    <span class="fv-legend-dot" style="background:#58D68D;margin-left:8px"></span>Node
+    <span class="fv-legend-dot" style="background:#F4D03F;margin-left:8px"></span>Entity
+    <span class="fv-legend-dot" style="background:#E0E0E0;margin-left:8px"></span>Function
+    <span style="margin-left:12px;color:#999">---</span> hierarchy
+    <span style="margin-left:4px;color:#4A90D9">&mdash;</span> comm
+  </div>
+
+  <svg class="fv-svg"></svg>
+  <div class="fv-tooltip" style="display:none"></div>
+</div>
