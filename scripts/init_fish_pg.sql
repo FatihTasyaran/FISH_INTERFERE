@@ -272,6 +272,7 @@ CREATE INDEX IF NOT EXISTS idx_graph_mutations_scope ON graph_mutations(session_
 CREATE TABLE IF NOT EXISTS ros2_trace (
     id          BIGSERIAL,
     ts_ns       BIGINT      NOT NULL,
+    ts          TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id  TEXT        NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     event       TEXT        NOT NULL,
     cpu_id      SMALLINT,
@@ -283,6 +284,7 @@ CREATE TABLE IF NOT EXISTS ros2_trace (
     PRIMARY KEY (session_id, ts_ns, id)
 );
 SELECT create_hypertable('ros2_trace', 'ts_ns', chunk_time_interval => 300000000000, if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_ros2_trace_ts    ON ros2_trace(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_ros2_trace_evt   ON ros2_trace(session_id, event, ts_ns);
 CREATE INDEX IF NOT EXISTS idx_ros2_trace_vpid  ON ros2_trace(session_id, vpid, ts_ns);
 CREATE INDEX IF NOT EXISTS idx_ros2_trace_cb    ON ros2_trace(session_id, (payload->>'callback'));
@@ -294,6 +296,7 @@ CREATE INDEX IF NOT EXISTS idx_ros2_trace_payload_gin ON ros2_trace USING GIN(pa
 CREATE TABLE IF NOT EXISTS gpu_kernels (
     id                  BIGSERIAL,
     ts_ns               BIGINT  NOT NULL,
+    ts                  TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id          TEXT    NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     duration_ns         BIGINT,
     kernel_name         TEXT,
@@ -320,6 +323,7 @@ CREATE INDEX IF NOT EXISTS idx_gpu_kernels_stream ON gpu_kernels(session_id, str
 -- GPU memcpy
 CREATE TABLE IF NOT EXISTS gpu_memcpy (
     id BIGSERIAL, ts_ns BIGINT NOT NULL,
+    ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     duration_ns BIGINT, bytes BIGINT, copy_kind INT,
     correlation_id BIGINT, context_id INT, device_id INT, stream_id INT,
@@ -330,6 +334,7 @@ SELECT create_hypertable('gpu_memcpy', 'ts_ns', chunk_time_interval => 300000000
 
 CREATE TABLE IF NOT EXISTS gpu_memset (
     id BIGSERIAL, ts_ns BIGINT NOT NULL,
+    ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     duration_ns BIGINT, bytes BIGINT, value BIGINT, mem_kind INT,
     correlation_id BIGINT, context_id INT, device_id INT, stream_id INT,
@@ -340,6 +345,7 @@ SELECT create_hypertable('gpu_memset', 'ts_ns', chunk_time_interval => 300000000
 
 CREATE TABLE IF NOT EXISTS gpu_sync (
     id BIGSERIAL, ts_ns BIGINT NOT NULL,
+    ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     duration_ns BIGINT,
     sync_type INT, event_id BIGINT, event_sync_id BIGINT,
@@ -351,6 +357,7 @@ SELECT create_hypertable('gpu_sync', 'ts_ns', chunk_time_interval => 30000000000
 
 CREATE TABLE IF NOT EXISTS cuda_runtime (
     id BIGSERIAL, ts_ns BIGINT NOT NULL,
+    ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     duration_ns BIGINT, api_name TEXT, return_value INT,
     correlation_id BIGINT, callchain_id BIGINT, event_class INT,
@@ -364,6 +371,7 @@ CREATE INDEX IF NOT EXISTS idx_cuda_runtime_tid  ON cuda_runtime(session_id, tid
 
 CREATE TABLE IF NOT EXISTS gpu_overhead (
     id BIGSERIAL, ts_ns BIGINT NOT NULL,
+    ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     duration_ns BIGINT, overhead_type INT, overhead_name TEXT,
     correlation_id BIGINT, event_class INT,
@@ -374,6 +382,7 @@ SELECT create_hypertable('gpu_overhead', 'ts_ns', chunk_time_interval => 3000000
 
 CREATE TABLE IF NOT EXISTS gpu_mem_usage (
     id BIGSERIAL, ts_ns BIGINT NOT NULL,
+    ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     bytes BIGINT, mem_kind INT, memory_operation_type INT,
     correlation_id BIGINT, context_id INT, device_id INT,
@@ -385,6 +394,7 @@ SELECT create_hypertable('gpu_mem_usage', 'ts_ns', chunk_time_interval => 300000
 CREATE TABLE IF NOT EXISTS cuda_callchain (
     id           BIGSERIAL,
     ts_ns        BIGINT NOT NULL,
+    ts           TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id   TEXT   NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     callchain_id BIGINT NOT NULL,
     stack_depth  INT,
@@ -400,6 +410,7 @@ CREATE INDEX IF NOT EXISTS idx_cuda_callchain_id ON cuda_callchain(session_id, c
 
 CREATE TABLE IF NOT EXISTS nvtx_events (
     id BIGSERIAL, ts_ns BIGINT NOT NULL,
+    ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     duration_ns BIGINT, domain_id INT, event_type INT,
     text TEXT, container TEXT, source TEXT,
@@ -410,6 +421,7 @@ SELECT create_hypertable('nvtx_events', 'ts_ns', chunk_time_interval => 30000000
 CREATE TABLE IF NOT EXISTS fish_events (
     id           BIGSERIAL,
     ts_ns        BIGINT NOT NULL,
+    ts           TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id   TEXT   NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     monotonic_ns BIGINT,
     action       TEXT,
@@ -425,6 +437,7 @@ CREATE INDEX IF NOT EXISTS idx_fish_events_action ON fish_events(session_id, act
 CREATE TABLE IF NOT EXISTS process_tree (
     id           BIGSERIAL,
     ts_ns        BIGINT NOT NULL,
+    ts           TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id   TEXT   NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     pid          INT,
     ppid         INT,
@@ -451,6 +464,7 @@ CREATE INDEX IF NOT EXISTS idx_process_tree_threads_pid ON process_tree_threads(
 CREATE TABLE IF NOT EXISTS topic_hz (
     id            BIGSERIAL,
     ts_ns         BIGINT NOT NULL,
+    ts            TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id    TEXT   NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     topic         TEXT,
     average_rate  DOUBLE PRECISION,
@@ -466,3 +480,18 @@ CREATE INDEX IF NOT EXISTS idx_topic_hz_topic ON topic_hz(session_id, topic);
 -- =============================================================================
 -- Done.
 -- =============================================================================
+
+-- Generated-column ts indexes for all the other hypertables (added 2026-06-16
+-- when generated columns were introduced; idempotent thanks to IF NOT EXISTS).
+CREATE INDEX IF NOT EXISTS idx_gpu_kernels_ts   ON gpu_kernels(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_gpu_memcpy_ts    ON gpu_memcpy(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_gpu_memset_ts    ON gpu_memset(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_gpu_sync_ts      ON gpu_sync(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_cuda_runtime_ts  ON cuda_runtime(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_gpu_overhead_ts  ON gpu_overhead(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_gpu_mem_usage_ts ON gpu_mem_usage(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_cuda_callchain_ts ON cuda_callchain(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_nvtx_events_ts   ON nvtx_events(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_fish_events_ts   ON fish_events(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_process_tree_ts  ON process_tree(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_topic_hz_ts      ON topic_hz(session_id, ts);
