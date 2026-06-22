@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FISH — Graph Explorer</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;overflow:hidden}
+
+#controls{position:fixed;top:10px;left:10px;z-index:10;background:#fff;padding:12px 16px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.12);font-size:13px;line-height:1.8;max-width:420px}
+#controls b{font-size:15px}
+
+.tabs{display:flex;gap:0;margin:8px 0 6px}
+.tabs button{flex:1;padding:5px 12px;border:1px solid #ccc;background:#f5f5f5;font-size:12px;cursor:pointer;transition:all .15s}
+.tabs button:first-child{border-radius:4px 0 0 4px}
+.tabs button:last-child{border-radius:0 4px 4px 0}
+.tabs button.active{background:#4A90D9;color:#fff;border-color:#4A90D9}
+
+.btn-group{display:inline-flex;gap:0}
+.btn-group button{padding:3px 8px;border:1px solid #ccc;background:#f5f5f5;font-size:11px;cursor:pointer;transition:all .15s}
+.btn-group button:first-child{border-radius:3px 0 0 3px}
+.btn-group button:last-child{border-radius:0 3px 3px 0}
+.btn-group button:not(:first-child){border-left:0}
+.btn-group button.active{background:#4A90D9;color:#fff;border-color:#4A90D9}
+.btn-group button:hover:not(.active){background:#e8e8e8}
+
+.panel{min-height:26px;padding:4px 0}
+#controls select{padding:2px 6px;border:1px solid #ccc;border-radius:3px;font-size:11px}
+#controls label{margin-right:10px;font-size:12px}
+.small-btn{padding:3px 8px;border:1px solid #ccc;border-radius:4px;font-size:11px;background:#e8e8e8;cursor:pointer}
+.small-btn:hover{background:#ddd}
+
+#info{position:fixed;top:10px;right:10px;z-index:10;background:#fff;padding:14px;border-radius:8px;width:320px;font-size:12px;max-height:85vh;overflow-y:auto;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+#info h3{margin:0 0 8px;font-size:14px;color:#333}
+.field{margin:2px 0}.key{color:#888;font-size:11px}.val{color:#222}
+
+#stats{position:fixed;bottom:10px;left:10px;z-index:10;background:rgba(255,255,255,.95);padding:6px 12px;border-radius:6px;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+#legend{position:fixed;bottom:10px;right:10px;z-index:10;background:rgba(255,255,255,.95);padding:6px 12px;border-radius:6px;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+.legend-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:3px;vertical-align:middle}
+
+svg{width:100vw;height:100vh}
+.link{fill:none;stroke-opacity:.45}
+.link.msg{stroke:#4A90D9}
+.link.comm{stroke:#27AE60}
+.link.dep{stroke:#E74C3C}
+.link.contains{stroke:#999;stroke-opacity:.2;stroke-dasharray:3,3}
+.link.external{stroke-dasharray:5,3;stroke-opacity:.2}
+.link.dim{opacity:.02}
+.node circle{cursor:pointer;stroke-width:2}
+.node text{pointer-events:none;fill:#444;font-size:10px;text-anchor:middle}
+.node.CN circle{fill:#E8DAEF;stroke:#8E44AD}
+.node.EX circle{fill:#5DADE2;stroke:#2980B9}
+.node.N circle{fill:#58D68D;stroke:#27AE60}
+.node.E circle{fill:#F4D03F;stroke:#D4AC0D}
+.node.E.ext circle{fill:#CCC;stroke:#999;stroke-dasharray:3,2}
+.node.F circle{fill:#F0F0F0;stroke:#BBB}
+.node.F.ext circle{fill:#DDD;stroke:#999;stroke-dasharray:3,2}
+.node.expandable circle{cursor:zoom-in}
+.node.expanded circle{stroke-width:3}
+.node.dim{opacity:.1}
+.tt{position:absolute;background:#333;color:#fff;padding:4px 8px;border-radius:4px;font-size:11px;pointer-events:none;z-index:20;white-space:nowrap}
+</style>
+</head>
+<body>
+
+<div id="controls">
+  <b>FISH Graph Explorer</b>
+
+  <div class="tabs" id="modeTabs">
+    <button class="active" data-mode="expand">Expand</button>
+    <button data-mode="layer">Layer</button>
+  </div>
+
+  <div id="panel-expand" class="panel">
+    <button class="small-btn" id="collapseAll">Reset</button>
+    <span style="color:#888;font-size:11px;margin-left:6px">Click to expand/collapse</span>
+  </div>
+
+  <div id="panel-layer" class="panel" style="display:none">
+    <div class="btn-group" id="depthBtns">
+      <button data-depth="-1">Cont</button>
+      <button data-depth="0" class="active">Exec</button>
+      <button data-depth="1">Node</button>
+      <button data-depth="2">Entity</button>
+      <button data-depth="3">Callback</button>
+      <button data-depth="99">All</button>
+    </div>
+  </div>
+
+  <div style="margin-top:6px">
+    Layout:
+    <div class="btn-group" id="layoutBtns">
+      <button data-layout="force">Force</button>
+      <button data-layout="tree">Tree</button>
+      <button data-layout="stair" class="active">Stair</button>
+    </div>
+    <span id="stairOpts" style="margin-left:8px">
+      <select id="stairMode">
+        <option value="3" selected>3-cycle</option>
+        <option value="0">Flat</option>
+        <option value="inf">Continuous</option>
+      </select>
+    </span>
+  </div>
+
+  <div style="margin-top:4px">
+    <label><input type="checkbox" id="showExternal"> External</label>
+    <label><input type="checkbox" id="showLabels" checked> Labels</label>
+    <label><input type="checkbox" id="showContain" checked> Hierarchy</label>
+  </div>
+</div>
+
+<div id="info">
+  <h3>FISH Graph</h3>
+  <p style="color:#666;font-size:12px">
+    <b>Click</b> a node to expand/collapse.<br>
+    <b>Right-click</b> to collapse.<br>
+    <b>Scroll</b> to zoom, <b>drag</b> to pan.
+  </p>
+</div>
+
+<div id="stats"></div>
+<div id="legend">
+  <span class="legend-dot" style="background:#E8DAEF"></span>Container
+  <span class="legend-dot" style="background:#5DADE2;margin-left:8px"></span>Executor
+  <span class="legend-dot" style="background:#58D68D;margin-left:8px"></span>Node
+  <span class="legend-dot" style="background:#F4D03F;margin-left:8px"></span>Entity
+  <span class="legend-dot" style="background:#E0E0E0;margin-left:8px"></span>Function
+  <span style="margin-left:12px;color:#999">---</span> hierarchy
+  <span style="margin-left:4px;color:#4A90D9">&mdash;</span> comm
+</div>
+
+<svg></svg>
+<div class="tt" id="tooltip" style="display:none"></div>
+
+<script>
+const R = {CN:24, EX:20, N:14, E:10, F:7};
+const LAYER_GAP = 180;
+const STAIR_STEP = 16;
+const NODE_SPACING = 90;
+const W = window.innerWidth, H = window.innerHeight;
+
+let mode = 'expand';
+let curLayout = 'stair';
+let layerDepth = 0;
+let stairMode = '3';
+let showExt = false;
+let showLbl = true;
+let showContain = true;
+let simulation = null;
+const exp = new Set();
+
+fetch('fish_graph.json' + window.location.search).then(r => r.json()).then(raw => {
+
+  /* ── Hierarchy ── */
+  const byId = {};
+  raw.nodes.forEach(n => { byId[n.id] = n; });
+
+  const parentOf = {};
+  const childrenOf = {};
+  raw.nodes.forEach(n => {
+    (n.children || []).forEach(c => {
+      parentOf[c] = n.id;
+      (childrenOf[n.id] = childrenOf[n.id] || []).push(c);
+    });
+  });
+
+  const maxLevel = Math.max(...raw.nodes.filter(n => !n.external).map(n => n.level));
+
+  /* ── Comm edges at ALL levels (for proper augmentation) ── */
+  const commEdges = raw.edges
+    .filter(e => e.rel === "comm")
+    .map(e => ({
+      s: e.source, d: e.target,
+      topic: e.topic || e.service || "",
+      nature: e.nature || "msg",
+      ext: !!e.external,
+      level: e.level || ""
+    }));
+
+  /* ── Visibility ──
+   *  Expand mode: parent stays visible when expanded, children appear
+   *  Layer mode: all nodes with level <= depth are visible
+   */
+  function isVis(id) {
+    const n = byId[id]; if (!n) return false;
+    if (n.external) return showExt;
+
+    if (mode === 'layer') {
+      const eff = layerDepth >= 99 ? Infinity : layerDepth;
+      return n.level <= eff;
+    }
+
+    // Expand mode: visible if top-level OR parent is expanded
+    const p = parentOf[id];
+    return p === undefined || exp.has(p);
+  }
+
+  function visAnc(id) {
+    if (isVis(id)) return id;
+    const p = parentOf[id];
+    return p !== undefined ? visAnc(p) : null;
+  }
+
+  function getVisNodes() { return raw.nodes.filter(n => isVis(n.id)); }
+
+  /* ── Comm edges aggregated to visible level ── */
+  function getVisCommEdges() {
+    const m = {};
+    commEdges.forEach(e => {
+      if (e.ext && !showExt) return;
+      const s = visAnc(e.s), d = visAnc(e.d);
+      if (!s || !d || s === d) return;
+      const k = s < d ? s + "-" + d : d + "-" + s;
+      const dk = s + "->" + d;  // directed key
+      if (!m[dk]) m[dk] = {source: s, target: d, topics: new Set(), cnt: 0, nature: e.nature, ext: e.ext};
+      m[dk].cnt++;
+      if (e.topic) m[dk].topics.add(e.topic);
+    });
+    return Object.values(m).map(e => ({...e, topics: [...e.topics]}));
+  }
+
+  /* ── Containment edges between visible parent-child pairs ── */
+  function getVisContainEdges() {
+    if (!showContain) return [];
+    const edges = [];
+    raw.nodes.forEach(n => {
+      if (!isVis(n.id)) return;
+      (childrenOf[n.id] || []).forEach(cid => {
+        if (isVis(cid)) {
+          edges.push({source: n.id, target: cid, nature: 'contains', cnt: 1, topics: [], ext: false});
+        }
+      });
+    });
+    return edges;
+  }
+
+  function collapse(id) {
+    exp.delete(id);
+    (childrenOf[id] || []).forEach(c => { if (exp.has(c)) collapse(c); });
+  }
+
+  function labelText(d) {
+    if (!showLbl) return "";
+    let l = d.label || "";
+    if (l.startsWith("ext:")) l = l.slice(4);
+    const p = l.split("/"); l = p[p.length - 1] || l;
+    return l.length > 22 ? l.slice(0, 20) + ".." : l;
+  }
+
+  /* ── D3 setup ── */
+  const svg = d3.select("svg");
+  const g = svg.append("g");
+  svg.call(d3.zoom().scaleExtent([.03, 12]).on("zoom", e => g.attr("transform", e.transform)));
+
+  const defs = svg.append("defs");
+  defs.append("marker").attr("id", "arr").attr("viewBox", "0 -5 10 10")
+    .attr("refX", 22).attr("refY", 0).attr("markerWidth", 5).attr("markerHeight", 5)
+    .attr("orient", "auto").append("path").attr("d", "M0,-4L10,0L0,4").attr("fill", "#4A90D9");
+  defs.append("marker").attr("id", "arr-f").attr("viewBox", "0 -5 10 10")
+    .attr("refX", 10).attr("refY", 0).attr("markerWidth", 5).attr("markerHeight", 5)
+    .attr("orient", "auto").append("path").attr("d", "M0,-4L10,0L0,4").attr("fill", "#4A90D9");
+  defs.append("marker").attr("id", "arr-c").attr("viewBox", "0 -4 8 8")
+    .attr("refX", 18).attr("refY", 0).attr("markerWidth", 4).attr("markerHeight", 4)
+    .attr("orient", "auto").append("path").attr("d", "M0,-3L8,0L0,3").attr("fill", "#999");
+
+  /* ── Tree positions ── */
+  function computeTreePositions(vn, useStair) {
+    const layers = {CN:[], EX:[], N:[], E:[], F:[]};
+    const extNodes = [];
+
+    vn.forEach(n => {
+      if (n.external) extNodes.push(n);
+      else if (layers[n.type]) layers[n.type].push(n);
+    });
+
+    layers.CN.sort((a, b) => (a.label || "").localeCompare(b.label || ""));
+    layers.EX.sort((a, b) => (a.label || "").localeCompare(b.label || ""));
+    for (const t of ["N", "E", "F"]) {
+      layers[t].sort((a, b) => {
+        const pa = parentOf[a.id] || 0, pb = parentOf[b.id] || 0;
+        return pa !== pb ? pa - pb : (a.label || "").localeCompare(b.label || "");
+      });
+    }
+
+    const margin = 60;
+    let currentY = 80;
+
+    for (const type of ["CN", "EX", "N", "E", "F"]) {
+      const nodes = layers[type];
+      if (!nodes.length) continue;
+      const spacing = Math.max(NODE_SPACING, Math.min(200, (W - 2 * margin) / nodes.length));
+      const startX = Math.max(margin, (W - nodes.length * spacing) / 2);
+
+      nodes.forEach((n, i) => {
+        n.x = startX + i * spacing;
+        if (useStair) {
+          n.y = stairMode === "inf" ? currentY + i * STAIR_STEP
+              : stairMode === "3"   ? currentY + (i % 3) * STAIR_STEP
+              : currentY;
+        } else {
+          n.y = currentY;
+        }
+      });
+      currentY = nodes.reduce((m, n) => Math.max(m, n.y), currentY) + LAYER_GAP;
+    }
+
+    if (extNodes.length) {
+      extNodes.sort((a, b) => (a.label || "").localeCompare(b.label || ""));
+      const spacing = Math.max(60, Math.min(150, (W - 2 * margin) / extNodes.length));
+      const startX = Math.max(margin, (W - extNodes.length * spacing) / 2);
+      extNodes.forEach((n, i) => {
+        n.x = startX + i * spacing;
+        n.y = currentY + (useStair && stairMode === "3" ? (i % 3) * STAIR_STEP
+            : useStair && stairMode === "inf" ? i * 8 : 0);
+      });
+    }
+  }
+
+  /* ── Edge paths ── */
+  function orthoPath(sx, sy, tx, ty) {
+    if (Math.abs(sy - ty) < 5) {
+      const midX = (sx + tx) / 2, rise = Math.min(-40, -Math.abs(tx - sx) * 0.15);
+      return `M${sx},${sy} Q${midX},${sy + rise} ${tx},${ty}`;
+    }
+    const midY = (sy + ty) / 2;
+    return `M${sx},${sy} L${sx},${midY} L${tx},${midY} L${tx},${ty}`;
+  }
+
+  function straightPath(sx, sy, tx, ty) {
+    return `M${sx},${sy}L${tx},${ty}`;
+  }
+
+  function forceLinkPath(d) {
+    const s = d.source, t = d.target;
+    if (!s || !t || s.x == null || t.x == null) return "";
+    const dx = t.x - s.x, dy = t.y - s.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    const tr = (R[t.type] || 8) + 8;
+    return `M${s.x},${s.y}L${t.x - dx / dist * tr},${t.y - dy / dist * tr}`;
+  }
+
+  function nodeClass(d) {
+    let c = "node " + d.type;
+    if (d.external) c += " ext";
+    if (mode === 'expand' && childrenOf[d.id] && !d.external) {
+      c += exp.has(d.id) ? " expanded" : " expandable";
+    }
+    return c;
+  }
+
+  /* ── Deduplicate edges (comm can overlap contain direction) ── */
+  function dedupeEdges(commE, containE) {
+    // Remove comm edges that duplicate a containment edge (same source→target)
+    const containKeys = new Set(containE.map(e => e.source + "->" + e.target));
+    const filteredComm = commE.filter(e => !containKeys.has(e.source + "->" + e.target) &&
+                                           !containKeys.has(e.target + "->" + e.source));
+    return {comm: filteredComm, contain: containE};
+  }
+
+  /* ── Main rebuild ── */
+  function rebuild() {
+    if (simulation) { simulation.stop(); simulation = null; }
+
+    const vn = getVisNodes();
+    const rawComm = getVisCommEdges();
+    const rawContain = getVisContainEdges();
+    const {comm: commE, contain: containE} = dedupeEdges(rawComm, rawContain);
+
+    g.selectAll("*").remove();
+
+    const vnMap = {};
+    vn.forEach(n => { vnMap[n.id] = n; });
+
+    if (curLayout === 'force') {
+      renderForce(vn, commE, containE, vnMap);
+    } else {
+      computeTreePositions(vn, curLayout === 'stair');
+      renderTree(vn, commE, containE, vnMap);
+    }
+
+    const tc = {};
+    vn.forEach(n => { tc[n.type] = (tc[n.type] || 0) + 1; });
+    document.getElementById("stats").innerHTML =
+      `Visible: ${vn.length} nodes, ${commE.length} comm + ${containE.length} contain edges \u2014 ` +
+      Object.entries(tc).map(([k, v]) => k + ":" + v).join(" ");
+  }
+
+  /* ── Render: Tree / Stair ── */
+  function renderTree(vn, commE, containE, vnMap) {
+    // Containment edges first (behind)
+    const cLink = g.append("g").selectAll("path").data(containE).enter().append("path")
+      .attr("class", "link contains")
+      .attr("stroke-width", 1)
+      .attr("marker-end", "url(#arr-c)")
+      .attr("d", d => {
+        const sn = vnMap[d.source], dn = vnMap[d.target];
+        return sn && dn ? straightPath(sn.x, sn.y, dn.x, dn.y) : "";
+      });
+
+    // Comm edges on top
+    const hLink = g.append("g").selectAll("path").data(commE).enter().append("path")
+      .attr("class", d => `link ${d.nature}${d.ext ? " external" : ""}`)
+      .attr("stroke-width", d => Math.min(1 + Math.log2(d.cnt + 1), 5))
+      .attr("marker-end", "url(#arr)")
+      .attr("d", d => {
+        const sn = vnMap[d.source], dn = vnMap[d.target];
+        return sn && dn ? orthoPath(sn.x, sn.y, dn.x, dn.y) : "";
+      });
+
+    const allLinks = g.selectAll(".link");
+
+    // Nodes
+    const node = g.append("g").selectAll("g").data(vn, d => d.id).enter().append("g")
+      .attr("class", nodeClass)
+      .attr("transform", d => `translate(${d.x},${d.y})`)
+      .call(d3.drag().on("drag", (e, d) => {
+        d.x = e.x; d.y = e.y;
+        d3.select(e.sourceEvent.target.parentNode).attr("transform", `translate(${d.x},${d.y})`);
+        cLink.attr("d", ed => {
+          const sn = vnMap[ed.source], dn = vnMap[ed.target];
+          return sn && dn ? straightPath(sn.x, sn.y, dn.x, dn.y) : "";
+        });
+        hLink.attr("d", ed => {
+          const sn = vnMap[ed.source], dn = vnMap[ed.target];
+          return sn && dn ? orthoPath(sn.x, sn.y, dn.x, dn.y) : "";
+        });
+      }));
+
+    node.append("circle").attr("r", d => R[d.type] || 8);
+    node.append("text").attr("dy", d => (R[d.type] || 8) + 13).text(labelText);
+
+    const allEdges = [...commE, ...containE];
+    bindEvents(node, allLinks, allEdges);
+  }
+
+  /* ── Render: Force ── */
+  function renderForce(vn, commE, containE, vnMap) {
+    const levelY = {CN: H * 0.08, EX: H * 0.2, N: H * 0.38, E: H * 0.58, F: H * 0.78};
+    vn.forEach(n => {
+      n.x = W / 2 + (Math.random() - 0.5) * 500;
+      n.y = (levelY[n.type] || H / 2) + (Math.random() - 0.5) * 60;
+      delete n.fx; delete n.fy;
+    });
+
+    const commData = commE.map(e => ({...e, linkType: 'comm'}));
+    const containData = containE.map(e => ({...e, linkType: 'contain'}));
+    const allLinkData = [...commData, ...containData];
+
+    // Containment edges
+    const cLink = g.append("g").selectAll("path").data(containData).enter().append("path")
+      .attr("class", "link contains")
+      .attr("stroke-width", 1);
+
+    // Comm edges
+    const hLink = g.append("g").selectAll("path").data(commData).enter().append("path")
+      .attr("class", d => `link ${d.nature}${d.ext ? " external" : ""}`)
+      .attr("stroke-width", d => Math.min(1 + Math.log2(d.cnt + 1), 5))
+      .attr("marker-end", "url(#arr-f)");
+
+    const allLinks = g.selectAll(".link");
+
+    // Nodes
+    const node = g.append("g").selectAll("g").data(vn, d => d.id).enter().append("g")
+      .attr("class", nodeClass);
+
+    node.append("circle").attr("r", d => R[d.type] || 8);
+    node.append("text").attr("dy", d => (R[d.type] || 8) + 13).text(labelText);
+
+    simulation = d3.forceSimulation(vn)
+      .force("link", d3.forceLink(allLinkData).id(d => d.id)
+        .distance(d => d.linkType === 'contain' ? 80 : 140)
+        .strength(d => d.linkType === 'contain' ? 1.0 : 0.4))
+      .force("charge", d3.forceManyBody().strength(-350))
+      .force("center", d3.forceCenter(W / 2, H / 2))
+      .force("collide", d3.forceCollide().radius(d => (R[d.type] || 8) + 18))
+      .force("y", d3.forceY().y(d => levelY[d.type] || H / 2).strength(0.06))
+      .on("tick", () => {
+        node.attr("transform", d => `translate(${d.x},${d.y})`);
+        hLink.attr("d", forceLinkPath);
+        cLink.attr("d", forceLinkPath);
+      });
+
+    node.call(d3.drag()
+      .on("start", (e, d) => {
+        if (!e.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x; d.fy = d.y;
+      })
+      .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on("end", (e, d) => {
+        if (!e.active) simulation.alphaTarget(0);
+        d.fx = null; d.fy = null;
+      }));
+
+    const allEdges = [...commE, ...containE];
+    bindEvents(node, allLinks, allEdges);
+  }
+
+  /* ── Shared events ── */
+  function bindEvents(node, allLinks, allEdges) {
+    node.on("click", (ev, d) => {
+      ev.stopPropagation();
+      if (mode === 'expand' && childrenOf[d.id] && !d.external) {
+        if (exp.has(d.id)) { collapse(d.id); } else { exp.add(d.id); }
+        rebuild();
+      } else {
+        showInfo(d, allEdges);
+        highlightNeighbors(d, node, allLinks, allEdges);
+      }
+    });
+
+    node.on("contextmenu", (ev, d) => {
+      ev.preventDefault(); ev.stopPropagation();
+      if (mode === 'expand') {
+        if (exp.has(d.id)) {
+          collapse(d.id); rebuild();
+        } else {
+          const p = parentOf[d.id];
+          if (p !== undefined && exp.has(p)) { collapse(p); rebuild(); }
+        }
+      }
+    });
+
+    node.on("mouseenter", (ev, d) => {
+      const tt = document.getElementById("tooltip");
+      const ch = childrenOf[d.id] || [];
+      let txt = `[${d.type}] ${d.full_name || d.label || d.id}`;
+      if (d.executor_type) {
+        txt += `  (${d.executor_type}`;
+        if (d.num_threads) txt += `, ${d.num_threads} thr`;
+        txt += `)`;
+        if (d.cb_groups && d.cb_groups.length) txt += ` \u00b7 ${d.cb_groups.length} CG`;
+      }
+      if (d.callback_group) {
+        const shortType = d.callback_group.type === "MutuallyExclusive" ? "MX" : "RE";
+        txt += `  [${shortType}]`;
+      }
+      if (mode === 'expand' && ch.length && !d.external) {
+        txt += exp.has(d.id) ? ` \u2014 click to collapse` : ` \u2014 click to expand (${ch.length})`;
+      }
+      tt.textContent = txt; tt.style.display = "block";
+      tt.style.left = (ev.pageX + 12) + "px"; tt.style.top = (ev.pageY - 10) + "px";
+    })
+    .on("mousemove", ev => {
+      const tt = document.getElementById("tooltip");
+      tt.style.left = (ev.pageX + 12) + "px"; tt.style.top = (ev.pageY - 10) + "px";
+    })
+    .on("mouseleave", () => document.getElementById("tooltip").style.display = "none");
+
+    allLinks.on("mouseenter", (ev, d) => {
+      const tt = document.getElementById("tooltip");
+      if (d.nature === 'contains') {
+        const sn = byId[typeof d.source === "object" ? d.source.id : d.source];
+        const tn = byId[typeof d.target === "object" ? d.target.id : d.target];
+        tt.textContent = `contains: [${sn?.type}] ${(sn?.label||"?").split("/").pop()} \u2192 [${tn?.type}] ${(tn?.label||"?").split("/").pop()}`;
+      } else {
+        const topics = d.topics || [];
+        const t = topics.length <= 3 ? topics.join(", ") : topics.slice(0, 3).join(", ") + ` +${topics.length - 3}`;
+        tt.textContent = `${d.nature} (${d.cnt} edges): ${t || "?"}`;
+      }
+      tt.style.display = "block";
+      tt.style.left = (ev.pageX + 12) + "px"; tt.style.top = (ev.pageY - 10) + "px";
+    })
+    .on("mousemove", ev => {
+      const tt = document.getElementById("tooltip");
+      tt.style.left = (ev.pageX + 12) + "px"; tt.style.top = (ev.pageY - 10) + "px";
+    })
+    .on("mouseleave", () => document.getElementById("tooltip").style.display = "none");
+
+    svg.on("click", () => {
+      node.classed("dim", false); allLinks.classed("dim", false);
+      document.getElementById("info").innerHTML =
+        '<h3>FISH Graph</h3><p style="color:#666;font-size:12px"><b>Click</b> to expand/select. <b>Right-click</b> to collapse.</p>';
+    });
+  }
+
+  function eid(x) { return typeof x === "object" ? x.id : x; }
+
+  function highlightNeighbors(d, node, allLinks, allEdges) {
+    const connected = new Set([d.id]);
+    allEdges.forEach(e => {
+      const s = eid(e.source), t = eid(e.target);
+      if (s === d.id) connected.add(t);
+      if (t === d.id) connected.add(s);
+    });
+    node.classed("dim", n => !connected.has(n.id));
+    allLinks.classed("dim", e => {
+      const s = eid(e.source), t = eid(e.target);
+      return s !== d.id && t !== d.id;
+    });
+  }
+
+  function showInfo(d, allEdges) {
+    let h = `<h3>[${d.type}] ${d.label || d.id}</h3>`;
+    h += `<div class="field"><span class="key">ID:</span> <span class="val">${d.id}</span></div>`;
+    if (d.pid) h += `<div class="field"><span class="key">PID:</span> <span class="val">${d.pid}</span></div>`;
+    if (d.full_name) h += `<div class="field"><span class="key">Full name:</span> <span class="val">${d.full_name}</span></div>`;
+    if (d.etype) h += `<div class="field"><span class="key">Entity type:</span> <span class="val">${d.etype}</span></div>`;
+    if (d.ptype) h += `<div class="field"><span class="key">Func type:</span> <span class="val">${d.ptype}</span></div>`;
+    if (d.external) h += `<div class="field"><span class="key">External:</span> <span class="val">yes</span></div>`;
+    const ch = childrenOf[d.id] || [];
+    if (ch.length) h += `<div class="field"><span class="key">Children:</span> <span class="val">${ch.length}</span></div>`;
+    if (d.aspects && d.aspects.length) {
+      h += `<div class="field"><span class="key">Aspects (${d.aspects.length}):</span></div>`;
+      d.aspects.slice(0, 20).forEach(a => {
+        h += `<div class="field" style="margin-left:10px"><span class="val">${a.aspect}: ${a.topic || a.service || ""}</span></div>`;
+      });
+      if (d.aspects.length > 20) h += `<div class="field" style="margin-left:10px;color:#888">+${d.aspects.length - 20} more</div>`;
+    }
+    const inc = [], out = [];
+    allEdges.forEach(e => {
+      const s = eid(e.source), t = eid(e.target);
+      if (t === d.id && e.nature !== 'contains') inc.push({from: byId[s], e});
+      if (s === d.id && e.nature !== 'contains') out.push({to: byId[t], e});
+    });
+    if (inc.length) {
+      h += `<div class="field"><span class="key">\u2190 Incoming (${inc.length}):</span></div>`;
+      inc.slice(0, 15).forEach(({from, e}) => {
+        const lbl = from ? (from.label || "").split("/").pop() : "?";
+        h += `<div class="field" style="margin-left:10px"><span class="val">${e.nature} from [${from?.type}] ${lbl} (${e.cnt})</span></div>`;
+      });
+    }
+    if (out.length) {
+      h += `<div class="field"><span class="key">\u2192 Outgoing (${out.length}):</span></div>`;
+      out.slice(0, 15).forEach(({to, e}) => {
+        const lbl = to ? (to.label || "").split("/").pop() : "?";
+        h += `<div class="field" style="margin-left:10px"><span class="val">${e.nature} to [${to?.type}] ${lbl} (${e.cnt})</span></div>`;
+      });
+    }
+    document.getElementById("info").innerHTML = h;
+  }
+
+  /* ── Controls ── */
+  document.querySelectorAll('#modeTabs button').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('#modeTabs button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      mode = btn.dataset.mode;
+      document.getElementById('panel-expand').style.display = mode === 'expand' ? '' : 'none';
+      document.getElementById('panel-layer').style.display = mode === 'layer' ? '' : 'none';
+      if (mode === 'expand') exp.clear();
+      rebuild();
+    };
+  });
+
+  document.querySelectorAll('#depthBtns button').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('#depthBtns button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      layerDepth = +btn.dataset.depth;
+      if (layerDepth >= 99) {
+        showExt = true;
+        document.getElementById('showExternal').checked = true;
+      }
+      rebuild();
+    };
+  });
+
+  document.querySelectorAll('#layoutBtns button').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('#layoutBtns button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      curLayout = btn.dataset.layout;
+      document.getElementById('stairOpts').style.display = curLayout === 'stair' ? '' : 'none';
+      rebuild();
+    };
+  });
+
+  document.getElementById('stairMode').onchange = function () { stairMode = this.value; rebuild(); };
+  document.getElementById('collapseAll').onclick = () => { exp.clear(); rebuild(); };
+  document.getElementById('showExternal').onchange = function () { showExt = this.checked; rebuild(); };
+  document.getElementById('showLabels').onchange = function () { showLbl = this.checked; rebuild(); };
+  document.getElementById('showContain').onchange = function () { showContain = this.checked; rebuild(); };
+
+  rebuild();
+});
+</script>
+</body>
+</html>

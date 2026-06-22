@@ -10,3 +10,9 @@ postprocess/png/
 postprocess/pdf/
 postprocess/dot/
 postprocess/dag_out/
+
+# Tempo runtime data (parquet blocks, WAL); recreated by export_traces_tempo.py
+tempo_data/
+# fish_graph.json is regenerable from PG via graph_store_pg.export_json
+/fish_graph.json
+postprocess/fish_graph.json

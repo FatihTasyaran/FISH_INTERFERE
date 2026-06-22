@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FISH — Per-thread Callback Gantt</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; font: 12px/1.4 'Segoe UI', system-ui, sans-serif; background: #fafafa; color: #222; overflow: hidden; }
+  #toolbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: #fff; border-bottom: 1px solid #ddd; }
+  #toolbar select, #toolbar button { padding: 3px 8px; font: inherit; border: 1px solid #ccc; border-radius: 3px; background: #fff; }
+  #toolbar button:hover { background: #f0f0f0; cursor: pointer; }
+  #stats { color: #666; font-size: 11px; margin-left: auto; }
+  #legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 12px; background: #f7f7f7; border-bottom: 1px solid #ddd; font-size: 11px; max-height: 50px; overflow-y: auto; }
+  #legend .swatch { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 3px; background: #fff; border: 1px solid #ddd; cursor: pointer; }
+  #legend .swatch .dot { width: 10px; height: 10px; border-radius: 2px; }
+  #legend .swatch.muted { opacity: 0.35; }
+  #chart { width: 100%; height: calc(100vh - 90px); }
+  .lane-row { fill: #fff; }
+  .lane-row.alt { fill: #f8f8f8; }
+  .lane-label { fill: #555; font-size: 10px; }
+  .axis path, .axis line { stroke: #ccc; }
+  .axis text { fill: #555; font-size: 10px; }
+  .bar { stroke: #fff; stroke-width: 0.3; cursor: pointer; }
+  .bar:hover { stroke: #000; stroke-width: 1; }
+  #tooltip { position: absolute; background: rgba(0,0,0,0.85); color: #fff; padding: 6px 9px; border-radius: 4px; font-size: 11px; pointer-events: none; z-index: 100; max-width: 500px; word-break: break-all; }
+  #tooltip .k { color: #aaa; }
+  #empty { padding: 30px; color: #888; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <b>FISH per-thread gantt</b>
+  <label>Process:
+    <select id="pid-select"><option value="">(all)</option></select>
+  </label>
+  <button id="zoom-fit">Fit</button>
+  <button id="zoom-reset">Reset zoom</button>
+  <span style="color:#888">scroll = zoom · drag = pan · click bar = details</span>
+  <span id="stats"></span>
+</div>
+<div id="legend"></div>
+<svg id="chart"></svg>
+<div id="tooltip" style="display:none"></div>
+
+<script>
+const qs = new URLSearchParams(window.location.search);
+const session_id = qs.get('session_id') || qs.get('session') || '';
+const scope = qs.get('scope') || '__main__';
+document.title = `FISH gantt — ${session_id}`;
+
+const url = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
+
+fetch(url).then(r => r.json()).then(raw => render(raw)).catch(err => {
+  document.body.innerHTML = `<div id="empty">Error: ${err}</div>`;
+});
+
+function render(raw) {
+  const spans = raw.spans.map(a => ({
+    pid: a[0], vtid: a[1], t0: a[2], t1: a[3],
+    node: a[4], entity: a[5], etype: a[6], symbol: a[7], cb_addr: a[8],
+  }));
+  document.getElementById('stats').textContent =
+    `${spans.length} spans · ${raw.t0_min_ns/1e6 | 0}ms..${raw.t1_max_ns/1e6 | 0}ms`;
+
+  // Process dropdown
+  const pids = [...new Set(spans.map(s => s.pid))].sort((a,b)=>a-b);
+  const pidSel = document.getElementById('pid-select');
+  pids.forEach(p => {
+    const cnt = spans.filter(s => s.pid===p).length;
+    const o = document.createElement('option');
+    o.value = p; o.textContent = `pid ${p}  (${cnt} spans)`;
+    pidSel.appendChild(o);
+  });
+  // Default to busiest pid
+  if (pids.length > 0) {
+    const counts = {};
+    spans.forEach(s => counts[s.pid] = (counts[s.pid]||0) + 1);
+    const top = pids.reduce((a,b) => counts[a] > counts[b] ? a : b);
+    pidSel.value = top;
+  }
+  pidSel.onchange = () => draw();
+
+  // Node → color (categorical)
+  const nodes = [...new Set(spans.map(s => s.node))].sort();
+  const palette = d3.schemeTableau10.concat(d3.schemeSet3, d3.schemePaired);
+  const colorFor = new Map(nodes.map((n,i) => [n, palette[i % palette.length]]));
+  const muted = new Set();
+
+  // Build legend
+  const legendEl = document.getElementById('legend');
+  nodes.forEach(n => {
+    const cnt = spans.filter(s => s.node===n).length;
+    const div = document.createElement('div');
+    div.className = 'swatch';
+    div.innerHTML = `<span class="dot" style="background:${colorFor.get(n)}"></span> ${n} (${cnt})`;
+    div.onclick = () => { muted.has(n) ? muted.delete(n) : muted.add(n);
+                          div.classList.toggle('muted'); draw(); };
+    legendEl.appendChild(div);
+  });
+
+  const svg = d3.select('#chart');
+  const tooltip = d3.select('#tooltip');
+  const margin = {top: 25, right: 20, bottom: 30, left: 120};
+
+  let gMain = null;
+  let xScale = null;
+  let yScale = null;
+  let xZoomed = null;
+  let curSpans = spans;
+  let curVtids = [];
+
+  // d3-zoom for x-axis pan/zoom
+  let zoom = d3.zoom().scaleExtent([1, 10000]).on('zoom', ev => {
+    xZoomed = ev.transform.rescaleX(xScale);
+    redrawBars();
+    gMain.select('.x-axis').call(d3.axisBottom(xZoomed).tickFormat(d => `${(d/1e6).toFixed(2)}ms`));
+  });
+
+  function draw() {
+    svg.selectAll('*').remove();
+    const pidV = pidSel.value;
+    curSpans = pidV ? spans.filter(s => s.pid===+pidV) : spans;
+    if (!curSpans.length) {
+      svg.append('text').attr('x', 40).attr('y', 40).text('No spans for selected pid');
+      return;
+    }
+    curVtids = [...new Set(curSpans.map(s => s.vtid))].sort((a,b) => a-b);
+
+    const w = window.innerWidth, h = window.innerHeight - 90;
+    svg.attr('width', w).attr('height', h);
+
+    xScale = d3.scaleLinear()
+      .domain([d3.min(curSpans, s => s.t0), d3.max(curSpans, s => s.t1)])
+      .range([margin.left, w - margin.right]);
+    xZoomed = xScale;
+    const laneH = Math.max(12, Math.min(40, (h - margin.top - margin.bottom) / curVtids.length));
+    yScale = d3.scaleBand().domain(curVtids).range([margin.top, margin.top + curVtids.length * laneH]).padding(0.1);
+
+    gMain = svg.append('g');
+
+    // Lane backgrounds + labels
+    curVtids.forEach((v, i) => {
+      gMain.append('rect')
+        .attr('x', 0).attr('y', yScale(v))
+        .attr('width', w).attr('height', yScale.bandwidth())
+        .attr('class', i % 2 === 0 ? 'lane-row' : 'lane-row alt');
+      gMain.append('text')
+        .attr('class', 'lane-label')
+        .attr('x', margin.left - 6).attr('y', yScale(v) + yScale.bandwidth()/2)
+        .attr('dy', '.35em').attr('text-anchor', 'end')
+        .text(`vtid ${v}`);
+    });
+
+    // x-axis
+    gMain.append('g').attr('class', 'x-axis axis')
+      .attr('transform', `translate(0,${margin.top + curVtids.length * laneH})`)
+      .call(d3.axisBottom(xScale).tickFormat(d => `${(d/1e6).toFixed(2)}ms`));
+
+    // bars container, clipped
+    svg.append('defs').append('clipPath').attr('id', 'bars-clip')
+      .append('rect')
+      .attr('x', margin.left).attr('y', margin.top)
+      .attr('width', w - margin.left - margin.right)
+      .attr('height', curVtids.length * laneH);
+    const barsG = gMain.append('g').attr('clip-path', 'url(#bars-clip)').attr('class', 'bars-g');
+
+    redrawBars();
+
+    // zoom catcher (over whole chart area)
+    svg.call(zoom).on('dblclick.zoom', () => svg.transition().call(zoom.transform, d3.zoomIdentity));
+  }
+
+  function redrawBars() {
+    const barsG = gMain.select('.bars-g');
+    barsG.selectAll('rect').remove();
+    const visible = curSpans.filter(s => !muted.has(s.node));
+    const x0 = xZoomed.domain()[0], x1 = xZoomed.domain()[1];
+    const inView = visible.filter(s => s.t1 >= x0 && s.t0 <= x1);
+
+    barsG.selectAll('rect')
+      .data(inView)
+      .enter()
+      .append('rect')
+        .attr('class', 'bar')
+        .attr('x', s => xZoomed(s.t0))
+        .attr('y', s => yScale(s.vtid))
+        .attr('width', s => Math.max(0.5, xZoomed(s.t1) - xZoomed(s.t0)))
+        .attr('height', yScale.bandwidth())
+        .attr('fill', s => colorFor.get(s.node))
+        .on('mousemove', (ev, s) => {
+          tooltip.style('display', 'block')
+            .style('left', (ev.clientX + 12) + 'px')
+            .style('top',  (ev.clientY + 12) + 'px')
+            .html(`<b>${s.entity}</b><br>` +
+                  `<span class="k">node:</span> ${s.node}<br>` +
+                  `<span class="k">vtid:</span> ${s.vtid} &nbsp; <span class="k">pid:</span> ${s.pid}<br>` +
+                  `<span class="k">duration:</span> ${((s.t1-s.t0)/1e3).toFixed(1)} μs<br>` +
+                  `<span class="k">cb_addr:</span> ${s.cb_addr}<br>` +
+                  (s.symbol ? `<span class="k">symbol:</span> ${s.symbol.length > 200 ? s.symbol.slice(0,200) + '…' : s.symbol}` : ''));
+        })
+        .on('mouseleave', () => tooltip.style('display', 'none'));
+  }
+
+  document.getElementById('zoom-fit').onclick = () => svg.transition().call(zoom.transform, d3.zoomIdentity);
+  document.getElementById('zoom-reset').onclick = () => svg.transition().call(zoom.transform, d3.zoomIdentity);
+
+  draw();
+  window.addEventListener('resize', () => draw());
+}
+</script>
+</body>
+</html>
