@@ -7,14 +7,18 @@
 <style>
   html, body { margin: 0; padding: 0; height: 100%; font: 12px/1.4 'Segoe UI', system-ui, sans-serif; background: #fafafa; color: #222; overflow: hidden; }
   #toolbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: #fff; border-bottom: 1px solid #ddd; }
-  #toolbar select, #toolbar button { padding: 3px 8px; font: inherit; border: 1px solid #ccc; border-radius: 3px; background: #fff; }
+  #toolbar select, #toolbar button, #toolbar input { padding: 3px 8px; font: inherit; border: 1px solid #ccc; border-radius: 3px; background: #fff; }
   #toolbar button:hover { background: #f0f0f0; cursor: pointer; }
+  #toolbar .sep { width: 1px; height: 20px; background: #ddd; }
   #stats { color: #666; font-size: 11px; margin-left: auto; }
+  #trace-status { font-size: 11px; color: #c0392b; font-weight: 600; padding: 2px 8px; background: #fdedec; border: 1px solid #f5b7b1; border-radius: 3px; display: none; }
   #legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 12px; background: #f7f7f7; border-bottom: 1px solid #ddd; font-size: 11px; max-height: 50px; overflow-y: auto; }
   #legend .swatch { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 3px; background: #fff; border: 1px solid #ddd; cursor: pointer; }
   #legend .swatch .dot { width: 10px; height: 10px; border-radius: 2px; }
   #legend .swatch.muted { opacity: 0.35; }
-  #chart { width: 100%; height: calc(100vh - 90px); }
+  /* Outer scrollable container — vertical scroll appears when lanes don't fit. */
+  #chart-wrap { width: 100%; height: calc(100vh - 90px); overflow: auto; position: relative; }
+  #chart { display: block; }
   .lane-row { fill: #fff; }
   .lane-row.alt { fill: #f8f8f8; }
   .lane-label { fill: #555; font-size: 10px; }
@@ -22,6 +26,13 @@
   .axis text { fill: #555; font-size: 10px; }
   .bar { stroke: #fff; stroke-width: 0.3; cursor: pointer; }
   .bar:hover { stroke: #000; stroke-width: 1; }
+  .bar.dim { opacity: 0.08; }
+  .bar.trace-anchor { stroke: #c0392b; stroke-width: 2; }
+  .bar.trace-up    { stroke: #27ae60; stroke-width: 1.5; }
+  .bar.trace-down  { stroke: #2980b9; stroke-width: 1.5; }
+  .causal-arrow { fill: none; pointer-events: none; }
+  .causal-arrow.down { stroke: #2980b9; stroke-opacity: 0.85; }
+  .causal-arrow.up   { stroke: #27ae60; stroke-opacity: 0.85; }
   #tooltip { position: absolute; background: rgba(0,0,0,0.85); color: #fff; padding: 6px 9px; border-radius: 4px; font-size: 11px; pointer-events: none; z-index: 100; max-width: 500px; word-break: break-all; }
   #tooltip .k { color: #aaa; }
   #empty { padding: 30px; color: #888; }
@@ -33,13 +44,19 @@
   <label>Process:
     <select id="pid-select"><option value="">(all)</option></select>
   </label>
-  <button id="zoom-fit">Fit</button>
+  <div class="sep"></div>
+  <label>Trace depth:
+    <input id="depth-input" type="number" min="1" max="20" value="5" style="width:48px">
+  </label>
+  <button id="trace-clear" title="Clear causal trace highlight (Esc)">✕ clear</button>
+  <span id="trace-status"></span>
+  <div class="sep"></div>
   <button id="zoom-reset">Reset zoom</button>
-  <span style="color:#888">scroll = zoom · drag = pan · click bar = details</span>
+  <span style="color:#888">scroll = zoom · drag = pan · click bar = trace</span>
   <span id="stats"></span>
 </div>
 <div id="legend"></div>
-<svg id="chart"></svg>
+<div id="chart-wrap"><svg id="chart"></svg></div>
 <div id="tooltip" style="display:none"></div>
 
 <script>
@@ -48,21 +65,144 @@ const session_id = qs.get('session_id') || qs.get('session') || '';
 const scope = qs.get('scope') || '__main__';
 document.title = `FISH gantt — ${session_id}`;
 
-const url = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
+const gurl = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
+const curl = `/api/causal?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
 
-fetch(url).then(r => r.json()).then(raw => render(raw)).catch(err => {
-  document.body.innerHTML = `<div id="empty">Error: ${err}</div>`;
-});
+Promise.all([fetch(gurl).then(r=>r.json()), fetch(curl).then(r=>r.json())])
+  .then(([gantt, causal]) => render(gantt, causal))
+  .catch(err => document.body.innerHTML = `<div id="empty">Error: ${err}</div>`);
 
-function render(raw) {
-  const spans = raw.spans.map(a => ({
+function render(raw, causal) {
+  // Spans with stable id = index
+  const spans = raw.spans.map((a, idx) => ({
+    id: idx,
     pid: a[0], vtid: a[1], t0: a[2], t1: a[3],
     node: a[4], entity: a[5], etype: a[6], symbol: a[7], cb_addr: a[8],
   }));
-  document.getElementById('stats').textContent =
-    `${spans.length} spans · ${raw.t0_min_ns/1e6 | 0}ms..${raw.t1_max_ns/1e6 | 0}ms`;
+  const t0_min = raw.t0_min_ns;
 
-  // Process dropdown
+  document.getElementById('stats').textContent =
+    `${spans.length} spans · ${causal.n_pubs} pubs / ${causal.n_topics} topics`;
+
+  // Causal indices
+  // pubs: [(ts_abs, vtid, pub_cb_addr, topic)] → make pub events with relative ts
+  const pubEvents = causal.pubs.map(p => ({
+    ts: p[0] - t0_min, ts_abs: p[0], vtid: p[1], pub_cb_addr: p[2], topic: p[3],
+  })).sort((a, b) => a.ts - b.ts);
+
+  const subsByTopic = new Map();   // topic → Set<cb_addr>
+  for (const [tp, lst] of Object.entries(causal.subs_by_topic || {})) {
+    subsByTopic.set(tp, new Set(lst));
+  }
+
+  // Spans sorted by start within each vtid (for "next callback start ≥ t" lookups)
+  const spansByVtid = new Map();
+  for (const s of spans) {
+    if (!spansByVtid.has(s.vtid)) spansByVtid.set(s.vtid, []);
+    spansByVtid.get(s.vtid).push(s);
+  }
+  for (const v of spansByVtid.values()) v.sort((a, b) => a.t0 - b.t0);
+
+  // Span lookup: which span contains a given (vtid, ts)?
+  function spanAt(vtid, tsRel) {
+    const arr = spansByVtid.get(vtid);
+    if (!arr) return null;
+    // binary search for first s with s.t0 > tsRel, then check s-1
+    let lo = 0, hi = arr.length;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (arr[m].t0 <= tsRel) lo = m + 1; else hi = m;
+    }
+    if (lo === 0) return null;
+    const cand = arr[lo - 1];
+    return (cand.t1 >= tsRel) ? cand : null;
+  }
+  // First span with given cb_addr starting after tsRel (any vtid)
+  function nextSpanByCb(cbAddr, afterTs) {
+    let best = null;
+    for (const arr of spansByVtid.values()) {
+      // binary search first s with s.t0 > afterTs
+      let lo = 0, hi = arr.length;
+      while (lo < hi) {
+        const m = (lo + hi) >> 1;
+        if (arr[m].t0 <= afterTs) lo = m + 1; else hi = m;
+      }
+      for (let i = lo; i < arr.length; i++) {
+        if (arr[i].cb_addr === cbAddr) {
+          if (!best || arr[i].t0 < best.t0) best = arr[i];
+          break;
+        }
+      }
+    }
+    return best;
+  }
+
+  // Pub events grouped by (vtid) → sorted by ts for fast "events within a span" lookups
+  const pubsByVtid = new Map();
+  for (const ev of pubEvents) {
+    if (!pubsByVtid.has(ev.vtid)) pubsByVtid.set(ev.vtid, []);
+    pubsByVtid.get(ev.vtid).push(ev);
+  }
+
+  function pubEventsWithinSpan(s) {
+    const arr = pubsByVtid.get(s.vtid);
+    if (!arr) return [];
+    const out = [];
+    for (const ev of arr) {
+      if (ev.ts >= s.t0 && ev.ts <= s.t1) out.push(ev);
+      else if (ev.ts > s.t1) break;
+    }
+    return out;
+  }
+
+  // Downstream (forward) BFS from a span: follow each publish → find first
+  // span on each subscriber cb_addr starting after the publish.
+  function bfs(startSpan, maxDepth, direction /* 'down' | 'up' */) {
+    const visited = new Map();   // span.id → depth
+    const edges = [];            // [{src, dst, topic}]
+    const q = [{s: startSpan, d: 0}];
+    visited.set(startSpan.id, 0);
+    while (q.length) {
+      const {s: cur, d} = q.shift();
+      if (d >= maxDepth) continue;
+      if (direction === 'down') {
+        const pubs = pubEventsWithinSpan(cur);
+        for (const ev of pubs) {
+          const subs = subsByTopic.get(ev.topic);
+          if (!subs) continue;
+          for (const cb of subs) {
+            const next = nextSpanByCb(cb, ev.ts);
+            if (next && !visited.has(next.id)) {
+              visited.set(next.id, d + 1);
+              edges.push({src: cur, dst: next, topic: ev.topic, ev_ts: ev.ts});
+              q.push({s: next, d: d + 1});
+            }
+          }
+        }
+      } else { // upstream
+        // What spans published a topic to which cur.cb_addr is subscribed AND
+        // cur is the first span with cur.cb_addr starting after that pub.ts?
+        for (const ev of pubEvents) {
+          if (ev.ts >= cur.t0) continue;  // must be before cur starts
+          const subs = subsByTopic.get(ev.topic);
+          if (!subs || !subs.has(cur.cb_addr)) continue;
+          // Is cur really the FIRST span with this cb_addr after ev.ts?
+          const cand = nextSpanByCb(cur.cb_addr, ev.ts);
+          if (!cand || cand.id !== cur.id) continue;
+          // Find pub_span owning this event
+          const pubSpan = spanAt(ev.vtid, ev.ts);
+          if (pubSpan && !visited.has(pubSpan.id)) {
+            visited.set(pubSpan.id, d + 1);
+            edges.push({src: pubSpan, dst: cur, topic: ev.topic, ev_ts: ev.ts});
+            q.push({s: pubSpan, d: d + 1});
+          }
+        }
+      }
+    }
+    return {visited, edges};
+  }
+
+  // ---------- UI ----------
   const pids = [...new Set(spans.map(s => s.pid))].sort((a,b)=>a-b);
   const pidSel = document.getElementById('pid-select');
   pids.forEach(p => {
@@ -71,22 +211,19 @@ function render(raw) {
     o.value = p; o.textContent = `pid ${p}  (${cnt} spans)`;
     pidSel.appendChild(o);
   });
-  // Default to busiest pid
   if (pids.length > 0) {
     const counts = {};
     spans.forEach(s => counts[s.pid] = (counts[s.pid]||0) + 1);
-    const top = pids.reduce((a,b) => counts[a] > counts[b] ? a : b);
-    pidSel.value = top;
+    pidSel.value = pids.reduce((a,b) => counts[a] > counts[b] ? a : b);
   }
-  pidSel.onchange = () => draw();
+  pidSel.onchange = () => { traceState = null; draw(); };
 
-  // Node → color (categorical)
+  // Color: ROS node
   const nodes = [...new Set(spans.map(s => s.node))].sort();
   const palette = d3.schemeTableau10.concat(d3.schemeSet3, d3.schemePaired);
   const colorFor = new Map(nodes.map((n,i) => [n, palette[i % palette.length]]));
   const muted = new Set();
 
-  // Build legend
   const legendEl = document.getElementById('legend');
   nodes.forEach(n => {
     const cnt = spans.filter(s => s.node===n).length;
@@ -94,100 +231,186 @@ function render(raw) {
     div.className = 'swatch';
     div.innerHTML = `<span class="dot" style="background:${colorFor.get(n)}"></span> ${n} (${cnt})`;
     div.onclick = () => { muted.has(n) ? muted.delete(n) : muted.add(n);
-                          div.classList.toggle('muted'); draw(); };
+                          div.classList.toggle('muted'); redrawBars(); };
     legendEl.appendChild(div);
   });
 
   const svg = d3.select('#chart');
   const tooltip = d3.select('#tooltip');
-  const margin = {top: 25, right: 20, bottom: 30, left: 120};
+  const traceStatus = document.getElementById('trace-status');
+  const margin = {top: 30, right: 20, bottom: 10, left: 120};
 
-  let gMain = null;
-  let xScale = null;
-  let yScale = null;
-  let xZoomed = null;
-  let curSpans = spans;
-  let curVtids = [];
+  let gMain = null, gBars = null, gArrows = null;
+  let xScale = null, xZoomed = null, yScale = null;
+  let curSpans = spans, curVtids = [];
+  let traceState = null;   // {anchor, up:{visited,edges}, down:{visited,edges}}
 
-  // d3-zoom for x-axis pan/zoom
-  let zoom = d3.zoom().scaleExtent([1, 10000]).on('zoom', ev => {
+  const zoom = d3.zoom().scaleExtent([1, 100000]).on('zoom', ev => {
     xZoomed = ev.transform.rescaleX(xScale);
-    redrawBars();
-    gMain.select('.x-axis').call(d3.axisBottom(xZoomed).tickFormat(d => `${(d/1e6).toFixed(2)}ms`));
+    redrawBars(); redrawArrows();
+    gMain.select('.x-axis').call(d3.axisTop(xZoomed).tickFormat(d => `${(d/1e6).toFixed(2)}ms`));
   });
 
   function draw() {
     svg.selectAll('*').remove();
     const pidV = pidSel.value;
     curSpans = pidV ? spans.filter(s => s.pid===+pidV) : spans;
-    if (!curSpans.length) {
-      svg.append('text').attr('x', 40).attr('y', 40).text('No spans for selected pid');
-      return;
+    if (!curSpans.length) { svg.append('text').attr('x', 40).attr('y', 40).text('No spans'); return; }
+    // Group vtids by their parent pid, then sort lanes by (pid, vtid).
+    // Also build a vtid→pid map for color coding + tooltip on lane labels.
+    const vtidToPid = new Map();
+    const vtidToProcName = new Map();
+    for (const s of curSpans) {
+      if (!vtidToPid.has(s.vtid)) {
+        vtidToPid.set(s.vtid, s.pid);
+        // We don't have procname directly — best proxy is the node name.
+        vtidToProcName.set(s.vtid, s.node);
+      }
     }
-    curVtids = [...new Set(curSpans.map(s => s.vtid))].sort((a,b) => a-b);
+    curVtids = [...vtidToPid.keys()].sort((a, b) => {
+      const pa = vtidToPid.get(a), pb = vtidToPid.get(b);
+      if (pa !== pb) return pa - pb;
+      return a - b;
+    });
+    // Distinct pids in lane order — used for color coding + the legend tooltip.
+    const distinctPids = [...new Set(curVtids.map(v => vtidToPid.get(v)))];
+    const pidColor = d3.scaleOrdinal()
+      .domain(distinctPids)
+      .range(d3.schemeTableau10.concat(d3.schemePaired));
 
-    const w = window.innerWidth, h = window.innerHeight - 90;
-    svg.attr('width', w).attr('height', h);
+    // Layout: try to fit all lanes within viewport. If the per-lane height would
+    // drop below MIN_LANE, use MIN_LANE instead and let the wrapper scroll.
+    const wrap = document.getElementById('chart-wrap');
+    const w = wrap.clientWidth;
+    const viewportH = wrap.clientHeight;
+    const MIN_LANE = 18, MAX_LANE = 40, DEFAULT_LANE = 24;
+    const availH = viewportH - margin.top - margin.bottom;
+    let laneH = availH / curVtids.length;
+    if (laneH < MIN_LANE)      laneH = MIN_LANE;       // scroll kicks in
+    else if (laneH > MAX_LANE) laneH = DEFAULT_LANE;   // don't make lanes huge
+    const totalLanesH = curVtids.length * laneH;
+    // SVG height = whichever is larger so the wrapper scrolls when needed.
+    const svgH = Math.max(viewportH, margin.top + totalLanesH + margin.bottom);
+
+    svg.attr('width', w).attr('height', svgH);
 
     xScale = d3.scaleLinear()
       .domain([d3.min(curSpans, s => s.t0), d3.max(curSpans, s => s.t1)])
       .range([margin.left, w - margin.right]);
     xZoomed = xScale;
-    const laneH = Math.max(12, Math.min(40, (h - margin.top - margin.bottom) / curVtids.length));
-    yScale = d3.scaleBand().domain(curVtids).range([margin.top, margin.top + curVtids.length * laneH]).padding(0.1);
+    yScale = d3.scaleBand().domain(curVtids).range([margin.top, margin.top + totalLanesH]).padding(0.1);
 
     gMain = svg.append('g');
 
-    // Lane backgrounds + labels
+    // Where do pid boundaries fall in the lane stack?
+    const pidBoundaries = [];  // y-coords where a horizontal divider should go
+    for (let i = 1; i < curVtids.length; i++) {
+      if (vtidToPid.get(curVtids[i]) !== vtidToPid.get(curVtids[i-1])) {
+        pidBoundaries.push(yScale(curVtids[i]) - yScale.step() * yScale.padding() / 2);
+      }
+    }
+
     curVtids.forEach((v, i) => {
+      const pid = vtidToPid.get(v);
+      const procName = vtidToProcName.get(v);
+      const col = pidColor(pid);
+      // Faint pid-tinted lane background (alpha-mixed with the alt stripe)
       gMain.append('rect')
         .attr('x', 0).attr('y', yScale(v))
         .attr('width', w).attr('height', yScale.bandwidth())
         .attr('class', i % 2 === 0 ? 'lane-row' : 'lane-row alt');
-      gMain.append('text')
-        .attr('class', 'lane-label')
-        .attr('x', margin.left - 6).attr('y', yScale(v) + yScale.bandwidth()/2)
+      gMain.append('rect')
+        .attr('x', 0).attr('y', yScale(v))
+        .attr('width', margin.left - 18).attr('height', yScale.bandwidth())
+        .attr('fill', col).attr('opacity', 0.18);
+      // Colored swatch + lane label
+      gMain.append('rect')
+        .attr('class', 'pid-swatch')
+        .attr('x', margin.left - 14).attr('y', yScale(v) + yScale.bandwidth()/2 - 4)
+        .attr('width', 6).attr('height', 8)
+        .attr('fill', col).attr('stroke', '#444').attr('stroke-width', 0.5);
+      const lbl = gMain.append('text').attr('class','lane-label')
+        .attr('x', margin.left - 18).attr('y', yScale(v) + yScale.bandwidth()/2)
         .attr('dy', '.35em').attr('text-anchor', 'end')
-        .text(`vtid ${v}`);
+        .text(`vtid ${v}`)
+        .attr('data-pid', pid).attr('data-proc', procName)
+        .style('cursor', 'help');
+      // Lane-label hover: show the parent process info
+      const laneHoverRect = gMain.append('rect')
+        .attr('x', 0).attr('y', yScale(v))
+        .attr('width', margin.left).attr('height', yScale.bandwidth())
+        .attr('fill', 'transparent')
+        .style('cursor', 'help')
+        .on('mousemove', (ev) => {
+          tooltip.style('display', 'block')
+            .style('left', (ev.clientX + 12) + 'px')
+            .style('top',  (ev.clientY + 12) + 'px')
+            .html(`<b>vtid ${v}</b><br>` +
+                  `<span class="k">pid:</span> ${pid}<br>` +
+                  `<span class="k">process:</span> ${procName}`);
+        })
+        .on('mouseleave', () => tooltip.style('display', 'none'));
     });
 
-    // x-axis
+    // Process-boundary dividers (between groups of vtids belonging to different pids).
+    // Drawn AFTER lane backgrounds but BEFORE bars + axis, so they sit on top of
+    // backgrounds and tinting yet under the actual span rectangles.
+    pidBoundaries.forEach(yb => {
+      gMain.append('line').attr('class', 'pid-divider')
+        .attr('x1', 0).attr('x2', w).attr('y1', yb).attr('y2', yb)
+        .attr('stroke', '#444').attr('stroke-width', 1).attr('stroke-opacity', 0.7);
+    });
+
+    // X-axis at TOP so it stays in view even when lanes scroll below.
     gMain.append('g').attr('class', 'x-axis axis')
-      .attr('transform', `translate(0,${margin.top + curVtids.length * laneH})`)
-      .call(d3.axisBottom(xScale).tickFormat(d => `${(d/1e6).toFixed(2)}ms`));
+      .attr('transform', `translate(0,${margin.top - 2})`)
+      .call(d3.axisTop(xScale).tickFormat(d => `${(d/1e6).toFixed(2)}ms`));
+    // White band behind axis labels so they're readable over lane backgrounds
+    gMain.insert('rect', '.x-axis')
+      .attr('x', 0).attr('y', 0).attr('width', w).attr('height', margin.top - 2)
+      .attr('fill', '#fff').attr('opacity', 0.95);
 
-    // bars container, clipped
     svg.append('defs').append('clipPath').attr('id', 'bars-clip')
-      .append('rect')
-      .attr('x', margin.left).attr('y', margin.top)
+      .append('rect').attr('x', margin.left).attr('y', margin.top)
       .attr('width', w - margin.left - margin.right)
-      .attr('height', curVtids.length * laneH);
-    const barsG = gMain.append('g').attr('clip-path', 'url(#bars-clip)').attr('class', 'bars-g');
+      .attr('height', totalLanesH);
 
-    redrawBars();
+    gBars = gMain.append('g').attr('clip-path', 'url(#bars-clip)').attr('class', 'bars-g');
+    gArrows = gMain.append('g').attr('clip-path', 'url(#bars-clip)').attr('class', 'arrows-g');
 
-    // zoom catcher (over whole chart area)
+    redrawBars(); redrawArrows();
     svg.call(zoom).on('dblclick.zoom', () => svg.transition().call(zoom.transform, d3.zoomIdentity));
   }
 
+  function classify(s) {
+    if (!traceState) return null;
+    if (s.id === traceState.anchor.id) return 'trace-anchor';
+    if (traceState.down.visited.has(s.id)) return 'trace-down';
+    if (traceState.up.visited.has(s.id))   return 'trace-up';
+    return 'dim';
+  }
+
   function redrawBars() {
-    const barsG = gMain.select('.bars-g');
-    barsG.selectAll('rect').remove();
+    gBars.selectAll('rect').remove();
     const visible = curSpans.filter(s => !muted.has(s.node));
-    const x0 = xZoomed.domain()[0], x1 = xZoomed.domain()[1];
+    const [x0, x1] = xZoomed.domain();
     const inView = visible.filter(s => s.t1 >= x0 && s.t0 <= x1);
 
-    barsG.selectAll('rect')
-      .data(inView)
+    gBars.selectAll('rect')
+      .data(inView, s => s.id)
       .enter()
       .append('rect')
-        .attr('class', 'bar')
+        .attr('class', s => 'bar' + (classify(s) ? ' ' + classify(s) : ''))
         .attr('x', s => xZoomed(s.t0))
         .attr('y', s => yScale(s.vtid))
         .attr('width', s => Math.max(0.5, xZoomed(s.t1) - xZoomed(s.t0)))
         .attr('height', yScale.bandwidth())
         .attr('fill', s => colorFor.get(s.node))
         .on('mousemove', (ev, s) => {
+          let causal = '';
+          if (traceState && s.id === traceState.anchor.id) {
+            causal = `<br><span class="k">trace:</span> ${traceState.up.visited.size-1} up · ${traceState.down.visited.size-1} down`;
+          }
           tooltip.style('display', 'block')
             .style('left', (ev.clientX + 12) + 'px')
             .style('top',  (ev.clientY + 12) + 'px')
@@ -195,14 +418,64 @@ function render(raw) {
                   `<span class="k">node:</span> ${s.node}<br>` +
                   `<span class="k">vtid:</span> ${s.vtid} &nbsp; <span class="k">pid:</span> ${s.pid}<br>` +
                   `<span class="k">duration:</span> ${((s.t1-s.t0)/1e3).toFixed(1)} μs<br>` +
-                  `<span class="k">cb_addr:</span> ${s.cb_addr}<br>` +
-                  (s.symbol ? `<span class="k">symbol:</span> ${s.symbol.length > 200 ? s.symbol.slice(0,200) + '…' : s.symbol}` : ''));
+                  `<span class="k">cb_addr:</span> ${s.cb_addr}` + causal);
         })
-        .on('mouseleave', () => tooltip.style('display', 'none'));
+        .on('mouseleave', () => tooltip.style('display', 'none'))
+        .on('click', (ev, s) => { ev.stopPropagation(); startTrace(s); });
   }
 
-  document.getElementById('zoom-fit').onclick = () => svg.transition().call(zoom.transform, d3.zoomIdentity);
+  function redrawArrows() {
+    if (!gArrows) return;
+    gArrows.selectAll('path').remove();
+    if (!traceState) return;
+    const drawEdges = (edges, cls) => {
+      gArrows.selectAll(null).data(edges).enter().append('path')
+        .attr('class', `causal-arrow ${cls}`)
+        .attr('d', e => {
+          const x1 = xZoomed(e.src.t1);
+          const y1 = yScale(e.src.vtid) + yScale.bandwidth()/2;
+          const x2 = xZoomed(e.dst.t0);
+          const y2 = yScale(e.dst.vtid) + yScale.bandwidth()/2;
+          const mx = (x1 + x2) / 2;
+          return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+        })
+        .attr('stroke-width', 1.5)
+        .attr('marker-end', cls === 'down' ? 'url(#arrow-down)' : 'url(#arrow-up)');
+    };
+    // arrow markers
+    let defs = svg.select('defs');
+    if (defs.select('#arrow-down').empty()) {
+      defs.append('marker').attr('id','arrow-down').attr('viewBox','0 0 10 10')
+        .attr('refX',8).attr('refY',5).attr('markerWidth',6).attr('markerHeight',6)
+        .attr('orient','auto').append('path').attr('d','M 0 0 L 10 5 L 0 10 z').attr('fill','#2980b9');
+      defs.append('marker').attr('id','arrow-up').attr('viewBox','0 0 10 10')
+        .attr('refX',8).attr('refY',5).attr('markerWidth',6).attr('markerHeight',6)
+        .attr('orient','auto').append('path').attr('d','M 0 0 L 10 5 L 0 10 z').attr('fill','#27ae60');
+    }
+    drawEdges(traceState.down.edges, 'down');
+    drawEdges(traceState.up.edges,   'up');
+  }
+
+  function startTrace(s) {
+    const depth = +document.getElementById('depth-input').value || 5;
+    const down = bfs(s, depth, 'down');
+    const up   = bfs(s, depth, 'up');
+    traceState = {anchor: s, down, up};
+    traceStatus.style.display = 'inline-block';
+    traceStatus.textContent =
+      `TRACE: ${s.node}::${s.entity} (vtid ${s.vtid}) — ↓${down.visited.size-1} ↑${up.visited.size-1}, depth ${depth}`;
+    redrawBars(); redrawArrows();
+  }
+  function clearTrace() {
+    traceState = null;
+    traceStatus.style.display = 'none';
+    redrawBars(); redrawArrows();
+  }
+
+  document.getElementById('trace-clear').onclick = clearTrace;
   document.getElementById('zoom-reset').onclick = () => svg.transition().call(zoom.transform, d3.zoomIdentity);
+  document.getElementById('depth-input').onchange = () => { if (traceState) startTrace(traceState.anchor); };
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape') clearTrace(); });
 
   draw();
   window.addEventListener('resize', () => draw());

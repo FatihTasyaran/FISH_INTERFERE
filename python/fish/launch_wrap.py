@@ -424,10 +424,13 @@ def _patch_execute_process_shutdown_timeout() -> None:
     orig_init = ExecuteProcess.__init__
 
     def patched_init(self, *args, **kwargs):
-        if "sigterm_timeout" not in kwargs:
-            kwargs["sigterm_timeout"] = timeout_s
-        if "sigkill_timeout" not in kwargs:
-            kwargs["sigkill_timeout"] = "10"
+        # Force-override: when nsys-wrapped containers handle SIGINT, the
+        # benchmark's caller (ros2_benchmark, launch_testing) may set its own
+        # sigterm_timeout, but those values often resolve to 5s downstream
+        # (Substitution defaults, env var lookup) — too short for nsys to
+        # finalize multi-MB qdstrm files in parallel. Force our value in.
+        kwargs["sigterm_timeout"] = timeout_s
+        kwargs["sigkill_timeout"] = "30"
         return orig_init(self, *args, **kwargs)
 
     ExecuteProcess.__init__ = patched_init

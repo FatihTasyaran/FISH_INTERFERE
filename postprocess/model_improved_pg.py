@@ -52,6 +52,33 @@ def log(msg):
     print(f"[FISH model_pg] {msg}", flush=True)
 
 
+# Warning counter: aggregated per category to keep output manageable.
+# Resolved by `_warn_summary()` at the end of identify_callbacks().
+_WARN: dict[str, int] = {}
+
+
+def warn(category: str, detail: str = "", limit_examples: int = 3):
+    """Emit a [FISH model_pg WARN] line and bump the per-category counter.
+
+    `category` should be a stable string like 'nitros_duplicate_sub'. The first
+    `limit_examples` warnings per category include `detail`; subsequent ones
+    only increment the counter and a final summary is printed once at the end.
+    """
+    count = _WARN.get(category, 0)
+    _WARN[category] = count + 1
+    if count < limit_examples:
+        suffix = f": {detail}" if detail else ""
+        print(f"[FISH model_pg WARN] {category}{suffix}", flush=True)
+
+
+def _warn_summary():
+    if not _WARN:
+        return
+    print("[FISH model_pg WARN] summary:", flush=True)
+    for cat, n in sorted(_WARN.items(), key=lambda kv: -kv[1]):
+        print(f"[FISH model_pg WARN]   {cat}: {n} occurrence(s)", flush=True)
+
+
 # ----------------------------------------------------------------------------
 # Vertex classes (parity with model_improved.py)
 # ----------------------------------------------------------------------------
@@ -388,11 +415,20 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
 
     # NitrosNode + negotiated subscriptions register MULTIPLE rclcpp_subscription_init
     # events with the SAME sub_handle (one for the compat / fallback sub, one for the
-    # NITROS-negotiated wrapper). The "active" callback in the trace — the one that
-    # actually publishes — is the FIRST one registered. The original MongoDB pipeline
-    # got this for free because find()'s natural-order iteration happened to expose
-    # it last, so dict-comp's last-wins kept it. PG returns rows strictly by (ts_ns,
-    # id) — so we explicitly keep-first for these handle→callback chains to match.
+    # NITROS-negotiated wrapper). The earlier "_keep_first" heuristic matched the
+    # MongoDB pipeline's natural-order iteration which happened to surface the
+    # correct callback for the apriltag fixture — but it does NOT generalise: in
+    # stereo_image_proc_custom the *negotiated* sub registers second and is the
+    # one whose callback actually fires.
+    #
+    # New strategy:
+    #   1. Keep ALL (handle → [sub_obj1, sub_obj2, ...]).
+    #   2. For each sub_obj, look up its callback via rclcpp_sub_cb_added.
+    #   3. Among the candidate callbacks, prefer the one that *fired* in
+    #      ros2_trace (has callback_start events). This is the empirical truth.
+    #   4. If only one candidate fires → use it (warn if we had to disambiguate).
+    #   5. If multiple fire → keep first registered (rare; warn).
+    #   6. If none fire → fall back to first (unchanged from old behaviour).
     def _keep_first(docs, key_field, val_field):
         out = {}
         for d in docs:
@@ -401,6 +437,64 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                 out[k] = d["payload"][val_field]
         return out
 
+    def _group_all(docs, key_field, val_field):
+        """Like _keep_first but builds key → [vals in registration order]."""
+        out: dict[str, list] = {}
+        for d in docs:
+            k = d["payload"][key_field]
+            out.setdefault(k, []).append(d["payload"][val_field])
+        return out
+
+    # Set of cb_addrs that actually have callback_start events — the firing set.
+    _firing_cbs: set[str] = set()
+    for d in _all_events(session_id, "ros2:callback_start"):
+        cb = d["payload"].get("callback")
+        if cb:
+            _firing_cbs.add(cb)
+
+    rclcpp_sub_objs_by_handle = _group_all(rclcpp_sub_init, "subscription_handle", "subscription")
+    rclcpp_sub_cb_all_by_sub = _group_all(rclcpp_sub_cb_added, "subscription", "callback")
+
+    def _resolve_sub_handle_to_cb(sub_handle: str, topic: str = "") -> str | None:
+        """Pick the active callback for a sub_handle, preferring firing ones.
+        Logs warnings on disambiguation."""
+        sub_objs = rclcpp_sub_objs_by_handle.get(sub_handle, [])
+        if not sub_objs:
+            return None
+        candidates: list[str] = []
+        for so in sub_objs:
+            for cb in rclcpp_sub_cb_all_by_sub.get(so, []):
+                if cb not in candidates:
+                    candidates.append(cb)
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        # Multiple callbacks registered for this sub_handle — typical NITROS case
+        firing = [c for c in candidates if c in _firing_cbs]
+        if len(firing) == 1:
+            warn(
+                "nitros_duplicate_sub",
+                f"sub_handle={sub_handle} topic={topic!r} had {len(candidates)} "
+                f"candidate cb_addrs, picked firing {firing[0]}",
+            )
+            return firing[0]
+        if firing:
+            warn(
+                "multi_firing_sub",
+                f"sub_handle={sub_handle} topic={topic!r} had {len(firing)} "
+                f"firing cb_addrs, keeping first {firing[0]}",
+            )
+            return firing[0]
+        warn(
+            "no_firing_cb_for_sub",
+            f"sub_handle={sub_handle} topic={topic!r} none of {len(candidates)} "
+            f"candidate cb_addrs fired; keeping first {candidates[0]}",
+        )
+        return candidates[0]
+
+    # Legacy keep-first dict kept around for any non-sub callsites that still
+    # consult it directly (e.g. external boundary edges).
     rclcpp_sub_by_handle = _keep_first(rclcpp_sub_init, "subscription_handle", "subscription")
     rclcpp_sub_cb_by_sub = _keep_first(rclcpp_sub_cb_added, "subscription", "callback")
 
@@ -441,19 +535,24 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
 
         sub_chain = {}
         for sub_handle, topic in sub_init_by_node.get(node_handle, []):
-            sub_obj = rclcpp_sub_by_handle.get(sub_handle)
-            if sub_obj:
-                cb_ptr = rclcpp_sub_cb_by_sub.get(sub_obj)
-                if cb_ptr:
-                    info = _resolve_cb(cb_ptr)
-                    if info:
-                        sub_chain[topic] = info
-                        continue
+            # Firing-aware resolution (handles NITROS duplicate sub_handles)
+            cb_ptr = _resolve_sub_handle_to_cb(sub_handle, topic=topic)
+            if cb_ptr:
+                info = _resolve_cb(cb_ptr)
+                if info:
+                    sub_chain[topic] = info
+                    continue
             cb_ptr = rclpy_sub_cb_by_handle.get(sub_handle)
             if cb_ptr:
                 info = _resolve_cb(cb_ptr)
                 if info:
                     sub_chain[topic] = info
+                else:
+                    warn("sub_no_register",
+                         f"sub_handle={sub_handle} topic={topic!r} cb_ptr={cb_ptr} has no callback_register")
+            elif sub_handle not in rclcpp_sub_objs_by_handle and sub_handle not in rclpy_sub_cb_by_handle:
+                warn("sub_handle_unresolved",
+                     f"sub_handle={sub_handle} topic={topic!r} (node={node.A_v.get('full_name')}) no cb_added event")
 
         srv_chain = {}
         for srv_handle, srv_name in srv_init_by_node.get(node_handle, []):
@@ -500,7 +599,16 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                 entity.Z_v.append(f.id_v)
                 functions[f.id_v] = f
 
+    # Sanity check: any cb_addr that fired but didn't produce an F is a
+    # silent attribution miss — warn at the end so it's visible.
+    bound_cb_addrs = {f.A_v.get("cb_addr") for f in functions.values()}
+    missed = _firing_cbs - bound_cb_addrs - {None}
+    if missed:
+        warn("firing_cb_without_F",
+             f"{len(missed)} cb_addr(s) fired but produced no F node — e.g. {next(iter(missed))}")
+
     log(f"identify_callbacks DONE in {time.time()-t0:.1f}s — {len(functions)} functions")
+    _warn_summary()
     return functions
 
 

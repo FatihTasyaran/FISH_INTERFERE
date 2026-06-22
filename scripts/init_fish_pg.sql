@@ -167,7 +167,7 @@ CREATE TABLE IF NOT EXISTS cuda_context (
     device_id         INT,
     parent_context_id INT,
     is_green_context  BOOLEAN,
-    null_stream_id    INT,
+    null_stream_id BIGINT,
     num_multiprocessors INT,
     PRIMARY KEY (session_id, context_id)
 );
@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS cuda_device (
 
 CREATE TABLE IF NOT EXISTS cuda_streams (
     session_id  TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    stream_id   INT  NOT NULL,
+    stream_id   BIGINT NOT NULL,
     hw_id       INT,
     vm_id       INT,
     process_id  INT,
@@ -304,7 +304,7 @@ CREATE TABLE IF NOT EXISTS gpu_kernels (
     correlation_id      BIGINT,
     context_id          INT,
     device_id           INT,
-    stream_id           INT,
+    stream_id BIGINT,
     global_pid          BIGINT,
     grid_x              INT, grid_y INT, grid_z INT,
     block_x             INT, block_y INT, block_z INT,
@@ -326,7 +326,7 @@ CREATE TABLE IF NOT EXISTS gpu_memcpy (
     ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     duration_ns BIGINT, bytes BIGINT, copy_kind INT,
-    correlation_id BIGINT, context_id INT, device_id INT, stream_id INT,
+    correlation_id BIGINT, context_id INT, device_id INT, stream_id BIGINT,
     global_pid BIGINT, container TEXT, source TEXT,
     PRIMARY KEY (session_id, ts_ns, id)
 );
@@ -337,7 +337,7 @@ CREATE TABLE IF NOT EXISTS gpu_memset (
     ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ns::double precision / 1000000000)) STORED,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     duration_ns BIGINT, bytes BIGINT, value BIGINT, mem_kind INT,
-    correlation_id BIGINT, context_id INT, device_id INT, stream_id INT,
+    correlation_id BIGINT, context_id INT, device_id INT, stream_id BIGINT,
     global_pid BIGINT, container TEXT, source TEXT,
     PRIMARY KEY (session_id, ts_ns, id)
 );
@@ -349,7 +349,7 @@ CREATE TABLE IF NOT EXISTS gpu_sync (
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     duration_ns BIGINT,
     sync_type INT, event_id BIGINT, event_sync_id BIGINT,
-    correlation_id BIGINT, context_id INT, device_id INT, stream_id INT,
+    correlation_id BIGINT, context_id INT, device_id INT, stream_id BIGINT,
     global_pid BIGINT, container TEXT, source TEXT,
     PRIMARY KEY (session_id, ts_ns, id)
 );

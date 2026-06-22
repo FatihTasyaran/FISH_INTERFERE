@@ -112,31 +112,104 @@ stop_session() {
     # 2. Stop daemon (stops live collectors + flushes nsys reports)
     PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.cli gpu daemon stop 2>/dev/null
 
-    # 2b. Belt-and-suspenders: poll fish_events.log for nsys_report_complete
-    # entries. Daemon stop already waits for nsys reports, but if it returns
-    # early (timeout, race) we don't want to KILL the process group while
-    # nsys is still flushing its .nsys-rep file. Wait up to FISH_NSYS_DRAIN
-    # seconds (default 60) for the report counter to stabilise.
+    # 2b. Belt-and-suspenders drain — two signals decide we're done:
+    #     (a) no nsys/qdstrm post-process processes still running, OR
+    #     (b) the nsys_report_complete event count stops growing.
+    #
+    # The OLD logic only checked (b) and broke as soon as the count was
+    # stable for 2 seconds. With 0 events ever emitted (e.g. ros2_benchmark
+    # spawns nsys at launch time, FISH skips wrapping, no events fire) this
+    # exits at 2s — long before the .nsys-rep file is finalised.
+    #
+    # FISH_NSYS_DRAIN bumped from 60 to 300 to handle multi-container graphs
+    # whose nsys post-process can write several MB in parallel.
     if [[ -n "\$SESSION_DIR" ]]; then
         EVT_LOG=\$(ls -t "\$SESSION_DIR/fishlog"/fish_events_*.log 2>/dev/null | head -1)
         if [[ -n "\$EVT_LOG" ]]; then
-            DRAIN=\${FISH_NSYS_DRAIN:-60}
+            DRAIN=\${FISH_NSYS_DRAIN:-300}
+            MIN_WAIT=\${FISH_NSYS_MIN_WAIT:-15}   # always wait this long before declaring 'done'
             T0=\$(date +%s)
-            LAST_N=\$(grep -c "nsys_report_complete" "\$EVT_LOG" 2>/dev/null || echo 0)
-            STABLE_FOR=0
-            while [[ \$(( \$(date +%s) - T0 )) -lt \$DRAIN ]]; do
-                sleep 1
-                N=\$(grep -c "nsys_report_complete" "\$EVT_LOG" 2>/dev/null || echo 0)
-                if [[ "\$N" == "\$LAST_N" ]]; then
-                    STABLE_FOR=\$(( STABLE_FOR + 1 ))
-                    # Two consecutive seconds with no new report → done.
-                    [[ \$STABLE_FOR -ge 2 ]] && break
+
+            # Primary completion signal: count finalised .nsys-rep files in
+            # session_dir/nsys. This is binary-agnostic: works regardless of
+            # whether the finalize subprocess is nsys, QdstrmImporter,
+            # nsys-cli, etc. We wait until file count is stable for N seconds.
+            NSYS_DIR="\$SESSION_DIR/nsys"
+            _count_reports() {
+                if [[ -d "\$NSYS_DIR" ]]; then
+                    find "\$NSYS_DIR" -maxdepth 1 -name '*.nsys-rep' -type f 2>/dev/null | wc -l
                 else
-                    STABLE_FOR=0
-                    LAST_N=\$N
+                    echo 0
                 fi
+            }
+            REPORT_LAST=-1
+            REPORT_STABLE_FOR=0
+
+            # _count_session_procs: nsys-related processes that hold the
+            # .nsys-rep finalize in flight. Match by EXE path under the
+            # nsight-systems install, OR cmdline starting with 'nsys'/QdstrmImporter.
+            # CRITICAL: do NOT match by session_dir in cmdline — that catches
+            # the FISH LTTng/trace_session processes which intentionally stay
+            # alive until AFTER the drain completes, causing a deadlock.
+            _count_session_procs() {
+                local n=0
+                for pid_d in /proc/[0-9]*; do
+                    [[ -d "\$pid_d" ]] || continue
+                    local cmd exe comm
+                    exe=\$(readlink "\$pid_d/exe" 2>/dev/null || echo "")
+                    comm=\$(cat "\$pid_d/comm" 2>/dev/null || echo "")
+                    cmd=\$(tr '\\0' ' ' < "\$pid_d/cmdline" 2>/dev/null || echo "")
+                    # nsys main + finalize subprocesses
+                    if [[ "\$exe" == */nsight-systems*/target-*/* ]] \\
+                       || [[ "\$comm" == nsys ]] \\
+                       || [[ "\$comm" == QdstrmImporter ]] \\
+                       || [[ "\$cmd" == *QdstrmImporter* ]] \\
+                       || [[ "\$cmd" == nsys\\ * ]]; then
+                        n=\$((n + 1))
+                    fi
+                done
+                echo \$n
+            }
+            _count_events() {
+                local n
+                n=\$(grep -c "nsys_report_complete" "\$EVT_LOG" 2>/dev/null)
+                # grep -c with no match exits 1 but outputs "0" — both branches
+                # would write to N_EVT via 'echo 0' fallback. Bypass that:
+                echo "\${n:-0}"
+            }
+
+            while [[ \$(( \$(date +%s) - T0 )) -lt \$DRAIN ]]; do
+                ELAPSED=\$(( \$(date +%s) - T0 ))
+                N_REPORTS=\$(_count_reports)
+                N_PROC=\$(_count_session_procs "\$SESSION_DIR")
+
+                # Primary signal: .nsys-rep file count has stabilised AND
+                # we've waited at least MIN_WAIT. (Files appear at the very
+                # end of finalize, so seeing the count stop incrementing for
+                # K seconds means all finalisers are done.)
+                if [[ "\$N_REPORTS" == "\$REPORT_LAST" ]]; then
+                    REPORT_STABLE_FOR=\$(( REPORT_STABLE_FOR + 1 ))
+                    if [[ \$REPORT_STABLE_FOR -ge 8 && \$ELAPSED -ge \$MIN_WAIT ]]; then
+                        echo "[FISH] nsys drain: .nsys-rep count stable=\$N_REPORTS for 8s (waited \${ELAPSED}s)"
+                        break
+                    fi
+                else
+                    REPORT_STABLE_FOR=0
+                    REPORT_LAST=\$N_REPORTS
+                fi
+
+                # Secondary signal: no nsys-family processes AND no reports growing
+                if [[ \$ELAPSED -ge \$MIN_WAIT && "\$N_PROC" -eq 0 && \$REPORT_STABLE_FOR -ge 3 ]]; then
+                    echo "[FISH] nsys drain: no nsys procs + reports stable=\$N_REPORTS (waited \${ELAPSED}s)"
+                    break
+                fi
+                sleep 1
             done
-            echo "[FISH] nsys reports observed: \$LAST_N (waited \$(( \$(date +%s) - T0 ))s)"
+            ELAPSED=\$(( \$(date +%s) - T0 ))
+            FINAL_REPORTS=\$(_count_reports)
+            FINAL_PROC=\$(_count_session_procs "\$SESSION_DIR")
+            FINAL_EVT=\$(_count_events)
+            echo "[FISH] nsys drain done: .nsys-rep files=\$FINAL_REPORTS, events=\$FINAL_EVT, procs=\$FINAL_PROC, waited=\${ELAPSED}s"
         fi
     fi
 
