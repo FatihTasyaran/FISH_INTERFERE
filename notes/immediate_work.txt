@@ -73,6 +73,86 @@ This task BLOCKS the host-sterilization work (notes/prepare_host.txt) —
 sterile timing is meaningless if the structural model is wrong.
 
 
+STATUS as of 2026-06-25 18:35 (autonomous run completed step 2 partially)
+-------------------------------------------------------------------------
+Step 1 DONE — scripts/audit_publisher_coverage.py written + run:
+  - Old session stereo_custom_full_20260622_184919: 25 GAP + 10 LOW, 0 OK
+  - /r2b/left/image_rect: 9063 sub_fires vs 2 publish_link → <0.05% coverage
+
+Step 2 PARTIALLY DONE — NITROS patch applied + isaac_ros_nitros rebuilt:
+  - fish_tracepoints/install_fish_tracepoints: new patch_and_build_isaac_ros_nitros
+    function injects fish_rclcpp_publish_link at start of
+    NitrosPublisher::publish(NitrosTypeBase&) — verified via objdump:
+
+        00078470 <NitrosPublisher::publish(NitrosTypeBase&)>:
+          mov %rdi,%rbp          ; save 'this'
+          ...
+          lea __fish_active_callback,%rdi
+          call ros_trace_fish_rclcpp_publish_link@plt    ; <-- OUR PATCH FIRES
+
+  - Fresh stereo benchmark run: session fish_20260625_162540
+    * publish_link events: 109 (was 114) — basically same
+    * /r2b/left/image_rect: 10574 sub_fires vs 8 publish_link
+      (improved from 2 → 8, but still 0.08% coverage)
+    * Timeline of 8 events: ALL at 14.8-15.4s = NITROS negotiation phase
+    * After negotiation, the thousands of actual data publishes
+      do NOT fire NitrosPublisher::publish(NitrosTypeBase&)
+  - WCC count: 121 → 110 (essentially unchanged); biggest WCC depth 1 → 3
+
+ROOT-CAUSE FINDING — data publish bypasses our patch
+----------------------------------------------------
+The NITROS data flow path doesn't go through NitrosPublisher::publish.
+At init, each NitrosPublisher's publish(NitrosTypeBase&) is called ONCE
+during the post-negotiation handshake (that's our 8 events). After that,
+the data publishes happen via a SEPARATE code path. Candidates:
+
+  A. nitros_type_manager_->getFormatCallbacks(format).negotiatedPublishCallback
+     (or .compatiblePublishCallback) called directly by GXF graph
+     extension hooks, bypassing NitrosPublisher::publish entirely.
+     These are TYPE-SPECIFIC callbacks registered per data format.
+  B. The GXF graph itself publishes via internal extensions that talk
+     to ROS via some non-public bridge (gxf_isaac_ros_messages?).
+  C. compatible_pub_->publish() called from inside a callback type
+     factory that doesn't route through our patched function.
+
+What we tried that ruled out the obvious things
+-----------------------------------------------
+- Patch IS in the source ✓
+- Patch IS compiled into the rebuilt .so ✓ (disassembly confirms)
+- Library IS loaded at runtime ✓ (ldd from container)
+- compatible_pub_ guard wraps the TRACEPOINT — so a null check (rare
+  for NEGOTIATED type) skipping is one possibility but unlikely for
+  the per-pid 1496 PrepLeftResize case
+- The patch fired 8 times at init — proving the function IS called,
+  just not enough times to match data volume
+
+What needs human input
+----------------------
+The right hook point is not NitrosPublisher::publish — it's whatever
+GXF→ROS bridge runs PER ACTUAL PUBLISH. Identifying it needs runtime
+analysis (strace/eBPF perf-probe) or deeper code archaeology in the
+nitros_type_manager + format_callbacks templates. Both possible but
+non-trivial. Recommended approach for next session:
+
+  1. Run a short stereo session with strace -f -e write -p $PID on the
+     publishing process to find what syscalls accompany each publish
+  2. OR: perf record on libisaac_ros_nitros.so + libimage_proc.so and
+     check the call stack during the high-rate publish window
+  3. Look at isaac_ros_image_proc/src/{disparity_node,resize_node}.cpp
+     for any direct calls to rclcpp::Publisher::publish on compat topic
+  4. Investigate gxf_isaac_ros_messages package — that's likely the
+     bridge that does the actual ROS publish
+
+Files touched in this attempt:
+  - fish_tracepoints/install_fish_tracepoints
+       (patch_and_build_isaac_ros_nitros + wiring)
+  - scripts/audit_publisher_coverage.py (new — saves audit to JSON)
+  - Notes here
+
+The new session (fish_20260625_162540) is in PG and usable for further
+investigation. /tmp/pbr1_nitros_test contains the full output.
+
+
 *** TOP PRIORITY (talk-driven, added 2026-05-28) ***
 GPU plugin keyword list -> fish_settings.ini (configurable, like tracepoints)
 -----------------------------------------------------------------------------
