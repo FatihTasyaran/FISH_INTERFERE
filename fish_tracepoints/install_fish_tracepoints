@@ -1567,6 +1567,129 @@ PATCH_RCLCPP_SCHED
     log "  rclcpp built with scheduler tracepoints"
 }
 
+# ─── Patch rclcpp publisher.hpp for INTRA-process publish attribution ───────
+# Same-process pub→sub bypasses rcl entirely (uses IntraProcessManager directly).
+# This patch fires fish_rclcpp_publish_link at the head of all three intra-process
+# entry points in rclcpp's publisher.hpp template. Closes the last gap in publish
+# coverage (rcl_publish + rcl_publish_serialized_message + rcl_publish_loaned_message
+# + these intra paths = every publish in the system).
+patch_rclcpp_publisher_intra() {
+    step "Patching rclcpp publisher.hpp (intra-process tracepoints) ..."
+    python3 <<'PATCH_INTRA'
+import sys
+path = "/root/trace_overlay_ws/src/rclcpp/rclcpp/include/rclcpp/publisher.hpp"
+with open(path) as f:
+    content = f.read()
+
+# Add tracetools include if not present
+if "tracetools/tracetools.h" not in content:
+    inc_anchor = '#include "rclcpp/visibility_control.hpp"'
+    if inc_anchor in content:
+        content = content.replace(inc_anchor,
+            inc_anchor + '\n#include "tracetools/tracetools.h"   // FISH', 1)
+    else:
+        # try a different anchor
+        inc_anchor = '#include "rcl/publisher.h"'
+        if inc_anchor in content:
+            content = content.replace(inc_anchor,
+                inc_anchor + '\n#include "tracetools/tracetools.h"   // FISH', 1)
+
+# Add the extern declaration once (file scope)
+if "FISH __fish_active_callback extern" not in content:
+    anchor = "namespace rclcpp"
+    if anchor in content:
+        content = content.replace(anchor,
+            'extern "C" __thread const void * __fish_active_callback;  // FISH __fish_active_callback extern\n\nnamespace rclcpp', 1)
+
+TRACEPOINT_CALL = (
+    "    TRACEPOINT(fish_rclcpp_publish_link, "
+    "static_cast<const void *>(publisher_handle_.get()), "
+    "__fish_active_callback);  // FISH intra\n"
+)
+
+# Patch (a) do_intra_process_publish (template-typed payload)
+anchor_a = (
+    "  do_intra_process_publish(std::unique_ptr<PublishedType, PublishedTypeDeleter> msg)\n"
+    "  {\n"
+    "    auto ipm = weak_ipm_.lock();"
+)
+new_a = (
+    "  do_intra_process_publish(std::unique_ptr<PublishedType, PublishedTypeDeleter> msg)\n"
+    "  {\n"
+    + TRACEPOINT_CALL +
+    "    auto ipm = weak_ipm_.lock();"
+)
+if "FISH intra" in content and "do_intra_process_publish(std::unique_ptr<PublishedType" in content[content.find("FISH intra"):][:600]:
+    print("    publisher.hpp (a) do_intra_process_publish already patched")
+elif anchor_a in content:
+    content = content.replace(anchor_a, new_a, 1)
+    print("    publisher.hpp (a) — do_intra_process_publish patched")
+else:
+    print("    WARN: do_intra_process_publish anchor not found")
+
+# Patch (b) do_intra_process_ros_message_publish
+anchor_b = (
+    "  do_intra_process_ros_message_publish(std::unique_ptr<ROSMessageType, ROSMessageTypeDeleter> msg)\n"
+    "  {\n"
+    "    auto ipm = weak_ipm_.lock();"
+)
+new_b = (
+    "  do_intra_process_ros_message_publish(std::unique_ptr<ROSMessageType, ROSMessageTypeDeleter> msg)\n"
+    "  {\n"
+    + TRACEPOINT_CALL +
+    "    auto ipm = weak_ipm_.lock();"
+)
+# Check by counting FISH intra occurrences
+n_existing = content.count("// FISH intra")
+if n_existing >= 2 and "do_intra_process_ros_message_publish(std::unique_ptr<ROSMessageType" in content:
+    print("    publisher.hpp (b) do_intra_process_ros_message_publish already patched")
+elif anchor_b in content:
+    content = content.replace(anchor_b, new_b, 1)
+    print("    publisher.hpp (b) — do_intra_process_ros_message_publish patched")
+else:
+    print("    WARN: do_intra_process_ros_message_publish anchor not found")
+
+# Patch (c) do_intra_process_ros_message_publish_and_return_shared
+anchor_c = (
+    "  do_intra_process_ros_message_publish_and_return_shared(\n"
+    "    std::unique_ptr<ROSMessageType, ROSMessageTypeDeleter> msg)\n"
+    "  {\n"
+    "    auto ipm = weak_ipm_.lock();"
+)
+new_c = (
+    "  do_intra_process_ros_message_publish_and_return_shared(\n"
+    "    std::unique_ptr<ROSMessageType, ROSMessageTypeDeleter> msg)\n"
+    "  {\n"
+    + TRACEPOINT_CALL +
+    "    auto ipm = weak_ipm_.lock();"
+)
+n_existing = content.count("// FISH intra")
+if n_existing >= 3:
+    print("    publisher.hpp (c) and_return_shared already patched")
+elif anchor_c in content:
+    content = content.replace(anchor_c, new_c, 1)
+    print("    publisher.hpp (c) — and_return_shared patched")
+else:
+    print("    WARN: and_return_shared anchor not found")
+
+with open(path, "w") as f:
+    f.write(content)
+print("    publisher.hpp saved")
+PATCH_INTRA
+
+    # Build rclcpp
+    set +u && source "$OVERLAY_WS/install/setup.bash" && set -u
+    cd "$OVERLAY_WS"
+    colcon build \
+        --packages-select rclcpp \
+        --cmake-args \
+            -DBUILD_TESTING=OFF \
+            "-Dtracetools_DIR=$OVERLAY_WS/install/tracetools/share/tracetools/cmake" \
+        2>&1 | tail -5
+
+    log "  rclcpp built with intra-process publish tracepoints"
+}
+
 # ─── Patch and build isaac_ros_nitros (NITROS publisher attribution) ─────────
 # Isaac ROS NITROS publishes via its own NitrosPublisher::publish() entry that
 # bypasses rclcpp::Publisher::publish() — so our rcl_publish-based
@@ -3109,6 +3232,9 @@ main() {
     $DO_ACTION    && patch_and_build_rclcpp_action
     $DO_CLIENT    && patch_and_build_rclcpp_client
     $DO_SCHEDULER && patch_and_build_rclcpp_scheduler
+    # rclcpp intra-process publisher patch — same fish_rclcpp_publish_link
+    # tracepoint, fires for same-process pub→sub that bypasses rcl entirely.
+    $DO_LINK      && patch_rclcpp_publisher_intra
     # NITROS patch: only relevant when --link is on (fires fish_rclcpp_publish_link).
     # Always runs but skips gracefully if isaac_ros_nitros source isn't present.
     $DO_LINK      && patch_and_build_isaac_ros_nitros
