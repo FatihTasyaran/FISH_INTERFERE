@@ -153,6 +153,54 @@ The new session (fish_20260625_162540) is in PG and usable for further
 investigation. /tmp/pbr1_nitros_test contains the full output.
 
 
+FOLLOW-UP 2026-06-25 19:30 — three more patches landed (commits 2c0a044,
+ec4c4e8, a146e96), but the gap is NOT fully closed for single-process
+benchmarks. Status by publish path:
+
+  (a) rcl_publish                       — patched, captured ✓
+  (b) rcl_publish_serialized_message    — patched, captured ✓
+      (rosbag2 GenericPublisher path; data_loader topics now 1 event each)
+  (c) rcl_publish_loaned_message        — patched, captured ✓
+      (NITROS cross-process zero-copy path)
+  (d) do_intra_process_publish (template, header-only)   — patched
+      BUT not effective because Isaac ROS pre-built .so's contain
+      instantiations of the OLD publisher.hpp template. Only NEW
+      compilations (e.g. our rebuild of isaac_ros_nitros) inherit
+      the patch. Image_proc, image_pipeline, message types — all
+      still use the unpatched template.
+
+Coverage on fish_20260625_172907 (single-container test5):
+  - sub_fires=10574 for /r2b/left/image_rect: link_events 2 → 7
+  - /r2b/disparity: still 0/6501 (pure intra-process)
+  - /r2b/data_loader/*: 0 → 1 (serialized path)
+
+ROOT-CAUSE for incomplete intra-process coverage:
+  rclcpp::Publisher<T>::do_intra_process_publish is a TEMPLATE
+  defined in publisher.hpp. The compiler instantiates it INTO every
+  package that calls ::publish() — so the tracepoint call needs to
+  be in the publisher.hpp at the time those packages are compiled.
+  Image's libs were compiled before our patch existed.
+
+REMEDIATION options (left for next session):
+  1. Rebuild every Isaac ROS package in /root/ros_ws after patching
+     publisher.hpp. Order is ~50+ packages, ~30-60 min total. Could
+     parametrize install_fish_tracepoints with a --rebuild-isaac flag.
+  2. Move the tracepoint OUT of the template into a non-template
+     helper function exported from librclcpp.so. Then existing
+     instantiations automatically pick up the new behavior via
+     dynamic linking. Lower effort, cleaner. Needs care: the helper
+     can't be template-specialized but doesn't need to be — only
+     publisher_handle + active_callback are passed.
+  3. Use an LD_PRELOAD shim that intercepts intra-process publish
+     calls. Avoids rebuilds but more invasive.
+
+Best path forward: option 2 — refactor publisher.hpp to call a
+non-template helper rclcpp::detail::fire_intra_publish_link(handle).
+This requires a librclcpp ABI bump but doesn't disturb downstream
+binaries (they still call the same template, the template just calls
+into librclcpp now).
+
+
 *** TOP PRIORITY (talk-driven, added 2026-05-28) ***
 GPU plugin keyword list -> fish_settings.ini (configurable, like tracepoints)
 -----------------------------------------------------------------------------
