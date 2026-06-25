@@ -1683,15 +1683,43 @@ with open(path) as f:
 if "fish_rclcpp_publish_link" in content:
     print("    publisher.c already patched, skipping")
 else:
-    old = "  TRACEPOINT(rcl_publish, (const void *)publisher, (const void *)ros_message);"
-    new = old + "\n  TRACEPOINT(fish_rclcpp_publish_link, (const void *)publisher, __fish_active_callback);"
-    if old in content:
-        content = content.replace(old, new)
+    changed = False
+    # (a) rcl_publish: insert after existing rcl_publish tracepoint
+    old_a = "  TRACEPOINT(rcl_publish, (const void *)publisher, (const void *)ros_message);"
+    new_a = old_a + "\n  TRACEPOINT(fish_rclcpp_publish_link, (const void *)publisher, __fish_active_callback);"
+    if old_a in content:
+        content = content.replace(old_a, new_a)
+        changed = True
+        print("    publisher.c — fish_rclcpp_publish_link after rcl_publish")
+    else:
+        print("    WARN: rcl_publish tracepoint anchor not found")
+    # (b) rcl_publish_serialized_message: NITROS/rosbag2 path — no existing tracepoint.
+    #     Inject BEFORE rmw_publish_serialized_message so we capture the publisher
+    #     handle + the active user callback.
+    old_b = "  rmw_ret_t ret = rmw_publish_serialized_message("
+    new_b = ("  TRACEPOINT(fish_rclcpp_publish_link, (const void *)publisher, "
+             "__fish_active_callback);\n"
+             "  rmw_ret_t ret = rmw_publish_serialized_message(")
+    if old_b in content:
+        content = content.replace(old_b, new_b, 1)
+        changed = True
+        print("    publisher.c — fish_rclcpp_publish_link in rcl_publish_serialized_message")
+    else:
+        print("    WARN: rcl_publish_serialized_message anchor not found")
+    # (c) rcl_publish_loaned_message: zero-copy path (potential CUDA/iceoryx).
+    old_c = "  rmw_ret_t ret = rmw_publish_loaned_message(publisher->impl->rmw_handle"
+    new_c = ("  TRACEPOINT(fish_rclcpp_publish_link, (const void *)publisher, "
+             "__fish_active_callback);\n"
+             "  rmw_ret_t ret = rmw_publish_loaned_message(publisher->impl->rmw_handle")
+    if old_c in content:
+        content = content.replace(old_c, new_c, 1)
+        changed = True
+        print("    publisher.c — fish_rclcpp_publish_link in rcl_publish_loaned_message")
+    else:
+        print("    WARN: rcl_publish_loaned_message anchor not found")
+    if changed:
         with open(path, "w") as f:
             f.write(content)
-        print("    publisher.c patched — fish_rclcpp_publish_link after rcl_publish")
-    else:
-        print("    WARNING: rcl_publish tracepoint not found in publisher.c")
 
 # ── client.c: add fish_rclcpp_client_link in rcl_send_request ──
 path = f"{OVERLAY}/src/rcl/client.c"
