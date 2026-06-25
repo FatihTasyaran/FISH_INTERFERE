@@ -1577,7 +1577,7 @@ patch_rclcpp_publisher_intra() {
     step "Patching rclcpp publisher.hpp (intra-process tracepoints) ..."
     python3 <<'PATCH_INTRA'
 import sys
-path = "/root/trace_overlay_ws/src/rclcpp/rclcpp/include/rclcpp/publisher.hpp"
+path = "/root/trace_overlay_ws/src/rclcpp/include/rclcpp/publisher.hpp"
 with open(path) as f:
     content = f.read()
 
