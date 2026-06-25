@@ -1,0 +1,253 @@
+Preparing a Sterile Execution Host for FISH Benchmarks
+=======================================================
+
+Goal
+----
+Reduce run-to-run variance in callback execution times, timer firing
+phases, and GPU kernel duration so that hyperperiod-window stats
+(μ_EX, σ_EX in /cb-stats) reflect application behaviour, not host noise.
+
+Target machine
+--------------
+- 12th Gen Intel(R) Core(TM) i7-12700H — hybrid x86 (6P + 8E)
+    * P-cores: cpu0-cpu11   (6 physical, 12 logical with SMT, max 4.6-4.7 GHz)
+    * E-cores: cpu12-cpu19  (8 physical, no SMT,            max 3.5 GHz)
+    * NUMA: single node
+- NVIDIA RTX A1000 Laptop GPU (driver 580.159.03)
+- 20 logical CPUs total, single socket
+
+Why this matters
+----------------
+The hybrid topology + uncontrolled multithreading + dynamic frequencies
+are the dominant noise source. Without isolation:
+  - Linux scheduler migrates threads P↔E mid-iteration; E IPC ~30-50%
+    lower than P → exec time visibly changes turn-to-turn
+  - HT/SMT siblings share L1/L2 + execution units → invisible
+    interference between two threads pinned to "the same" P-core
+  - intel_pstate dynamic frequency + Turbo: P and E enter different
+    turbo bins, thermal headroom varies across iterations
+  - Kernel timer/workqueue/RCU/IRQ work lands on the "isolated" cores
+    unless explicitly told otherwise
+  - GNOME + Mutter render via GPU → contends with NVIDIA streams used
+    by ROS perception nodes (kernel launch latency tail blows up)
+
+
+===========================================================================
+Layer 1 — User's plan (validated, highest ROI)
+===========================================================================
+
+[1.1] cgroup / cpuset partition
+  Pin the application stack to ALL P-core logical CPUs (0-11);
+  push everything else (system services + cgroup root tasks) onto
+  E-cores (12-19).
+  - Use systemd's CPUAffinity= for system slices, or a dedicated
+    fish.slice with CPUAffinity=0-11 for the app + container
+  - Docker/Podman:  --cpuset-cpus=0-11
+  - Pair with isolcpus= so the kernel itself stops scheduling timers
+    on those cores (see [2.1])
+
+[1.2] SMT (HyperThreading) off
+  Two ways:
+  (a) BIOS — cleanest; "Intel HT Technology = Disabled"
+      * P-cores become 6 single-thread logical CPUs (cpu0..cpu5)
+      * E-cores unaffected
+  (b) Runtime — sysfs, no BIOS access needed:
+      echo off > /sys/devices/system/cpu/smt/control
+      This idles odd-numbered P-core siblings (cpu1,3,5,7,9,11)
+  (c) cpuset-only alternative — keep SMT on in BIOS but only use
+      even-numbered logical CPUs (0,2,4,6,8,10) in the cpuset.
+      Siblings remain "online" but stay idle since nothing's pinned
+      to them. Same effect with no BIOS touch.
+
+[1.3] Fixed frequency
+  cpupower frequency-set -g performance
+  # Optionally lock min=max so P-state controller doesn't drift:
+  for c in /sys/devices/system/cpu/cpu*/cpufreq; do
+    echo 4600000 > $c/scaling_min_freq
+    echo 4600000 > $c/scaling_max_freq
+  done
+  # Or disable intel_pstate entirely via kernel cmdline:
+  #   intel_pstate=disable
+  # then use acpi-cpufreq + the steps above.
+  Verification:
+    watch -n0.5 'grep MHz /proc/cpuinfo'   # should not bounce
+
+
+===========================================================================
+Layer 2 — Additions for a tight FISH timing profile
+===========================================================================
+
+[2.1] Kernel cmdline (requires reboot; /etc/default/grub or systemd-boot)
+  isolcpus=0-11        # remove these CPUs from the general scheduler
+  nohz_full=0-11       # tickless on these CPUs (no scheduler tick when 1 task)
+  rcu_nocbs=0-11       # offload RCU callbacks to non-isolated CPUs (12-19)
+  intel_idle.max_cstate=0   # forbid deep C-states (wake-up latency)
+  processor.max_cstate=1    # fallback for acpi_idle
+  intel_pstate=disable      # only if going acpi-cpufreq route
+  mitigations=off           # optional, reclaims Spectre/Meltdown overhead;
+                            # ONLY if this is not a shared/multi-tenant box
+
+[2.2] IRQ affinity
+  Default kernel spreads IRQs across all online CPUs. Pin them OFF the
+  app cores (move to E-cores):
+    for irq in $(awk -F: '/[A-Z]/{print $1}' /proc/interrupts); do
+      irq=$(echo $irq | tr -d ' ')
+      echo fff000 > /proc/irq/$irq/smp_affinity 2>/dev/null  # cpu12-19
+    done
+  Particularly important for: NIC IRQ (image stream), nvidia, xhci (USB),
+  i915 (iGPU even if Quadro is primary).
+
+[2.3] Disable Turbo on top of [1.3] (otherwise lock applies to base only)
+  echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo
+  # if acpi-cpufreq: setting min=max=base already disables turbo
+
+[2.4] Transparent hugepages + swap
+  echo never > /sys/kernel/mm/transparent_hugepage/enabled
+  echo never > /sys/kernel/mm/transparent_hugepage/defrag
+  swapoff -a            # only if RAM is comfortable; benchmarks should not swap
+
+[2.5] ROS 2 / DDS thread priority — runtime, NOT a custom kernel
+  chrt -f 50 ros2 launch <bench>.launch.py    # SCHED_FIFO, prio 50
+  # Or set per-thread in RMW config (Cyclone/FastDDS). Combined with
+  # isolcpus this gives a deterministic priority lattice for callbacks
+  # without needing PREEMPT_RT.
+  # Need /etc/security/limits.conf:
+  #   <user>  -  rtprio   99
+  #   <user>  -  memlock  unlimited
+
+[2.6] PREEMPT_RT kernel — LAST RESORT
+  Apt: linux-image-rt-amd64 (Debian) / Ubuntu RT kernel via Ubuntu Pro.
+  - Wins:  bounded preemption latency (~µs tails), proper RT semantics
+  - Costs: 5-15% throughput hit, kernel install + reboot + driver rebuild,
+           some tracepoint subsystems behave differently (LTTng OK as of
+           recent versions, but re-validate fish_compose pipeline first)
+  Don't reach for this until [1.x] + [2.1-2.5] have been applied and
+  measured. If σ_EX is still unacceptable after Layers 1+2, then RT.
+
+
+===========================================================================
+Layer 3 — GPU sterilization (NEW — added per user request)
+===========================================================================
+
+The host's GNOME desktop is rendered by the same NVIDIA GPU that
+perception nodes use. Mutter (compositor), Xorg, Firefox VAAPI, and
+GNOME Shell all submit GPU work via OpenGL/Vulkan. Their kernel launches
+share the GPU command queue with ROS streams, so:
+  - GPU kernel duration tail blows up unpredictably (queue contention)
+  - SM occupancy varies based on whether you happen to move the mouse
+  - DMA bandwidth split between display scanout and CUDA copies
+
+[3.1] GPU clock lock — analogue of CPU freq lock
+  sudo nvidia-smi -pm 1                       # persistence mode on
+  sudo nvidia-smi --lock-gpu-clocks=2100,2100  # lock SM clock to max
+  sudo nvidia-smi --lock-memory-clocks=5470,5470  # lock memory clock
+  # RTX A1000 Laptop: max gr 2100 MHz, mem 5470 MHz (from nvidia-smi)
+  # Reset with: nvidia-smi --reset-gpu-clocks --reset-memory-clocks
+
+[3.2] Move the display to iGPU (BEST option — full GPU isolation)
+  The 12700H has Intel UHD Graphics (Xe iGPU). Run GNOME on iGPU and
+  reserve the A1000 exclusively for CUDA/perception:
+  Steps (Ubuntu / GNOME):
+    - Install intel-microcode + mesa-vulkan-drivers (usually already there)
+    - /usr/share/X11/xorg.conf.d/10-intel.conf  → set Intel as primary
+      OR: in BIOS set "Primary Display = iGPU/Auto"
+    - GDM: in /etc/gdm3/custom.conf add WaylandEnable=false if on X11,
+      or configure prime-select to "on-demand" mode:
+        sudo prime-select on-demand
+    - Verify: glxinfo | grep "OpenGL renderer"  → Intel
+    - CUDA still goes to A1000 (cudaSetDevice(0))
+    - nvidia-smi: idle desktop → ~0% GPU util when nothing CUDA-running
+  Caveat: external monitors wired to A1000 outputs may not route through
+  iGPU; check `xrandr --listproviders`.
+
+[3.3] Less invasive: keep A1000 driving display but suppress compositor
+  - Switch to a tty (Ctrl+Alt+F3) for benchmark runs — kills Mutter + Xorg
+    rendering entirely. Most surgical.
+  - Or stop gdm: `sudo systemctl stop gdm` before the run, restart after.
+  - Or run benchmark on a separate seat (logind multi-seat) — overkill.
+
+[3.4] GPU compute mode (multi-process control)
+  sudo nvidia-smi -c EXCLUSIVE_PROCESS   # only one CUDA context at a time
+  # Default is DEFAULT (shared). EXCLUSIVE_PROCESS prevents accidental
+  # second context from another tool stealing SMs.
+  # Reset: nvidia-smi -c DEFAULT
+
+[3.5] Disable GPU power management transitions
+  sudo nvidia-smi --persistence-mode=1
+  sudo nvidia-smi -pl <max_W>            # cap = max → prevents throttle
+  # Lap GPUs do thermal throttle; if benchmark is long, monitor:
+  #   nvidia-smi dmon -s pucvmet -i 0
+
+
+===========================================================================
+Roll-up: prepare_host.sh skeleton (one-shot, idempotent)
+===========================================================================
+
+This is the suggested order — each step is independently revertible.
+Items needing a reboot (kernel cmdline) are flagged.
+
+  # --- CPU ---
+  cpupower frequency-set -g performance
+  echo off > /sys/devices/system/cpu/smt/control                 # [1.2b]
+  echo 1   > /sys/devices/system/cpu/intel_pstate/no_turbo       # [2.3]
+  for c in /sys/devices/system/cpu/cpu*/cpufreq; do
+    echo 4600000 > $c/scaling_min_freq                            # [1.3]
+    echo 4600000 > $c/scaling_max_freq
+  done
+  # IRQ → push to E-cores
+  for irq in $(awk -F: '/[A-Z0-9]+:/{print $1}' /proc/interrupts); do
+    echo fff000 > /proc/irq/$(echo $irq|tr -d ' ')/smp_affinity 2>/dev/null
+  done                                                            # [2.2]
+  # Memory hygiene
+  echo never > /sys/kernel/mm/transparent_hugepage/enabled       # [2.4]
+  echo never > /sys/kernel/mm/transparent_hugepage/defrag
+  swapoff -a 2>/dev/null                                         # [2.4]
+
+  # --- GPU ---
+  nvidia-smi -pm 1                                                # [3.5]
+  nvidia-smi --lock-gpu-clocks=2100,2100                          # [3.1]
+  nvidia-smi --lock-memory-clocks=5470,5470
+  nvidia-smi -c EXCLUSIVE_PROCESS                                 # [3.4]
+
+  # --- Bench launch ---
+  # Inside container:
+  systemd-run --scope --uid=$USER -p CPUAffinity=0-11 \
+              chrt -f 50 ros2 launch <bench>.launch.py            # [1.1]+[2.5]
+
+Reboot-required (one-time, /etc/default/grub):
+  GRUB_CMDLINE_LINUX_DEFAULT="... isolcpus=0-11 nohz_full=0-11 \
+    rcu_nocbs=0-11 intel_idle.max_cstate=0 processor.max_cstate=1"
+                                                                  # [2.1]
+
+
+===========================================================================
+Verification checklist after preparing the host
+===========================================================================
+
+[ ] cpupower frequency-info → governor=performance, freq stable at max
+[ ] cat /sys/devices/system/cpu/smt/active → 0  (SMT off)
+[ ] cat /sys/devices/system/cpu/isolated  → 0-11
+[ ] grep MHz /proc/cpuinfo → no fluctuation under load
+[ ] nvidia-smi → SM clock = 2100 MHz, persistence ON, compute EXCLUSIVE
+[ ] glxinfo | grep "OpenGL renderer" → Intel (if [3.2] applied)
+[ ] cat /proc/interrupts | head → IRQ counts only on cpu12-19
+[ ] Run a baseline session, compare σ_EX in /cb-stats vs the prior run.
+    Target: σ for image_rect-class subs < 20% of μ (was 86 / 160 = 54%).
+
+
+===========================================================================
+What NOT to do
+===========================================================================
+
+- Don't disable mitigations=off on a shared machine; data exposure risk.
+- Don't isolcpus= ALL P-cores (0-11) AND assign them to the app at
+  SCHED_FIFO prio 99 — a runaway thread can deadlock the system without
+  any cores left for the kernel watchdog. Keep at least 1 P-core or E-core
+  for the kernel work cgroup.
+- Don't disable swap on a low-RAM box without checking the working set;
+  ROS perception nodes with cached model weights can OOM.
+- Don't lock GPU clocks on a long-running benchmark without a thermal
+  monitor (`nvidia-smi dmon`) — laptop GPUs may throttle anyway and
+  silently miss the lock target.
+- Don't reuse a session naming after applying these changes — store
+  pre/post sessions distinctly so FISH analyses are comparable.

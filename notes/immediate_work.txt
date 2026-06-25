@@ -1,6 +1,78 @@
 Immediate Work Items
 ====================
 
+*** TASK #0 — Edge extraction validation + publisher coverage (added 2026-06-25) ***
+Background
+----------
+Built /api/task-graphs (WCC decomposition on F-subgraph using comm edges).
+Result on stereo_custom_full_20260622_184919:
+  - 166 F nodes, only 139 F->F comm edges, 121 WCCs (119 singletons!)
+  - Only WCC #1 (8 cbs) is a real task graph: PlaybackNode/play_messages ->
+    DisparityNode/PointCloudNode subs. Chain breaks at depth 1 because
+    DisparityNode SUB has no outgoing edge to disparity-publisher F.
+
+Three suspected causes (validated against model_improved_pg.py code):
+
+(A) Publisher coverage gap. fish_rclcpp_publish_link tracepoint is patched
+    at rclcpp::Publisher::publish(). NITROS publishes via NitrosPublisher /
+    type-adapter route which bypasses the standard rclcpp path -> NO
+    publish_link event fires -> entity has no 'pub' aspect -> L2 pub_index
+    doesn't include it -> no comm edge in the model.
+
+(B) L3 propagation cartesian over-connect (model_improved_pg.py:1229-1234).
+    For every L2 entity-pair, it creates ALL src F's x ALL dst F's. So if
+    an entity has both a timer F and a sub F, an upstream publisher edge
+    gets propagated to BOTH F's even though only the sub actually receives
+    the message. False edges -> some sessions may go the OPPOSITE way
+    (everything collapses into one giant WCC).
+
+(C) Same-node pub-sub filtered out (model_improved_pg.py:1151). The
+    'if pub_n == sub_n: continue' line drops edges within the same Node.
+    ROS 2 intra-process self-feedback patterns + NegotiatedPublisher use
+    this. Edges silently disappear.
+
+Plus we never wrote an edge-extraction VALIDATION harness. We validated
+vertex counts (EX/N/E/F) but not edges. Some "singleton" F's might be
+extraction bugs, not real missing publishers.
+
+Plan (do in this order, re-evaluate after each step)
+----------------------------------------------------
+1. AUDIT SCRIPT: for each rcl_publisher_init in a session, count how many
+   fish_rclcpp_publish_link events it produced at runtime. Publishers
+   with rate > 0 in DDS but zero publish_link events == our gap.
+   Output: list of (publisher_handle, topic, owning_cb_pattern, n_link_events).
+   Diagnoses precisely which C++ classes bypass our patch.
+
+2. NITROS publish path tracepoint. Based on (1)'s output, add patch(es)
+   to whichever lower-level publisher entry point NITROS uses. Likely
+   candidates: nitros::NitrosPublisher::publish, rclcpp::PublisherBase::
+   do_inter_process_publish, type_adapter publish entry. Persist patch
+   in install_fish_tracepoints (same pattern as the GenericSubscription
+   patch).
+
+3. L3 propagation fix in model_improved_pg.py. Instead of cartesian:
+     for sf in src_funcs: for df in dst_funcs: ...
+   propagate only to F's whose entity-aspect matches the edge direction:
+   src entity's 'pub' F (the publishing cb) -> dst entity's 'sub' F (the
+   subscription cb). Likely needs a per-F aspect breakdown.
+
+4. Same-node pub-sub: remove the 'if pub_n == sub_n: continue' skip OR
+   tag those edges differently (rel='comm', scope='intra-node') so the
+   user can choose to include/exclude.
+
+5. EDGE VALIDATION HARNESS. Pick a small known-structure app (TIRIS demo:
+   4 nodes, 2 GPU cbs). Hand-enumerate expected edges from source code.
+   Diff against FISH graph_edges output. Persist as tests/edge_truth_*.json
+   so future graph extractor changes can regression-test.
+
+After (5), re-run /api/task-graphs on stereo session, expect WCC count
+to drop sharply (toward 1-5 meaningful task graphs) + each WCC's
+depth to grow (multi-hop chains instead of star-from-rosbag-root).
+
+This task BLOCKS the host-sterilization work (notes/prepare_host.txt) —
+sterile timing is meaningless if the structural model is wrong.
+
+
 *** TOP PRIORITY (talk-driven, added 2026-05-28) ***
 GPU plugin keyword list -> fish_settings.ini (configurable, like tracepoints)
 -----------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>FISH — Per-thread Callback Gantt</title>
+<title>FISH — Per-callback Gantt (gantt-cb)</title>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; font: 12px/1.4 'Segoe UI', system-ui, sans-serif; background: #fafafa; color: #222; overflow: hidden; }
@@ -92,7 +92,7 @@
 </head>
 <body>
 <div id="toolbar">
-  <b>FISH per-thread gantt</b>
+  <b>FISH per-callback gantt</b> (rows=cb, bar fill=vtid)
   <label>Process:
     <select id="pid-select"><option value="">(all)</option></select>
   </label>
@@ -137,7 +137,7 @@
 const qs = new URLSearchParams(window.location.search);
 const session_id = qs.get('session_id') || qs.get('session') || '';
 const scope = qs.get('scope') || '__main__';
-document.title = `FISH gantt — ${session_id}`;
+document.title = `FISH gantt-cb — ${session_id}`;
 
 const gurl = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
 const curl = `/api/causal?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
@@ -148,7 +148,7 @@ let gpuMarkerOn = false; // toolbar toggle state (default off; user opts in)
 let taskset = null;      // {executors: {pid: {hyperperiod_ns, hyperperiod_tmr_only_ns, ...}}, ...}
 if (!session_id) {
   document.body.innerHTML = `<div id="empty">Missing <code>?session_id=...</code> in URL.<br>` +
-    `Try: <code>/gantt-tid?session_id=&lt;your_session_id&gt;</code></div>`;
+    `Try: <code>/gantt-cb?session_id=&lt;your_session_id&gt;</code></div>`;
 } else {
   const fetchJson = (url, label) => fetch(url).then(async r => {
     const txt = await r.text();
@@ -331,19 +331,73 @@ function render(raw, causal) {
   const traceStatus = document.getElementById('trace-status');
   const margin = {top: 30, right: 20, bottom: 10, left: 120};
 
-  // render()-scoped maps for thread/process labelling (populated by draw(),
-  // consumed by the layer tree). Declared at this scope so both can see them.
+  // render()-scoped maps. gantt-cb keys lanes by cb_addr (not vtid).
+  // We still need vtid→pid mapping because bars are filled by their executing
+  // vtid's process color (showing "which thread ran this execution").
   const vtidToPid = new Map();
   const vtidToProcName = new Map();
   const pidContainerName = new Map();
   const pidAnyName = new Map();
+  // cb_addr → {pid, node, entity, etype, symbol, ex_label}
+  const cbInfo = new Map();
+  // pid → categorical color, node label → shade of its pid color
+  let pidColor = null;
+  const nodeColor = new Map();
+
   let gMain = null, gBars = null, gArrows = null, gHyper = null;
   // Each entry: {pid, yTop, yBot, hp_all_ns, hp_tmr_ns} — populated by draw(),
   // consumed by redrawHyperperiods() to draw lines clipped to that pid band.
   let hpBands = [];
   let xScale = null, xZoomed = null, yScale = null;
-  let curSpans = spans, curVtids = [];
+  let curSpans = spans, curCbs = [];   // curCbs = ordered cb_addrs for current view
   let traceState = null;   // {anchor, up:{visited,edges}, down:{visited,edges}}
+
+  // Pid → human label (container name preferred). Available outside draw()
+  // so redrawBars() can use it in its bar tooltip.
+  function labelForPidGlobal(pid) {
+    return pidContainerName.get(pid) || pidAnyName.get(pid) || `pid ${pid}`;
+  }
+
+  // HSL shade derivation: given a base hex color, produce N visually-distinct
+  // shades by varying lightness ±, returning a function shade(i, total).
+  function _hexToHsl(hex) {
+    const c = hex.replace('#', '');
+    const r = parseInt(c.slice(0,2),16)/255, g=parseInt(c.slice(2,4),16)/255, b=parseInt(c.slice(4,6),16)/255;
+    const mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+    let h=0,s=0, l=(mx+mn)/2;
+    if (mx !== mn) {
+      const d = mx - mn;
+      s = l > 0.5 ? d/(2-mx-mn) : d/(mx+mn);
+      switch(mx) {
+        case r: h = (g-b)/d + (g<b?6:0); break;
+        case g: h = (b-r)/d + 2; break;
+        case b: h = (r-g)/d + 4; break;
+      }
+      h /= 6;
+    }
+    return [h*360, s*100, l*100];
+  }
+  function _hslToHex(h, s, l) {
+    s /= 100; l /= 100;
+    const k = n => (n + h/30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    const f = n => {
+      const c = k(n);
+      return l - a * Math.max(-1, Math.min(c - 3, 9 - c, 1));
+    };
+    const r = Math.round(f(0)*255), g = Math.round(f(8)*255), b = Math.round(f(4)*255);
+    return '#' + [r,g,b].map(v => v.toString(16).padStart(2,'0')).join('');
+  }
+  function shadesOf(baseHex, total) {
+    // Equally-spaced lightness shades centered on the base color's L,
+    // confined to a comfortable range (avoid too-dark / too-light).
+    if (total <= 1) return [baseHex];
+    const [h, s] = _hexToHsl(baseHex);
+    // Range in L from 35% to 70% (avoids invisible-light and gunmetal-dark)
+    const lMin = 35, lMax = 70;
+    const step = (lMax - lMin) / (total - 1);
+    return Array.from({length: total}, (_, i) => _hslToHex(h, Math.max(40, s), lMin + i*step));
+  }
 
   const zoom = d3.zoom().scaleExtent([1, 100000]).on('zoom', ev => {
     xZoomed = ev.transform.rescaleX(xScale);
@@ -356,16 +410,10 @@ function render(raw, causal) {
     const pidV = pidSel.value;
     curSpans = pidV ? spans.filter(s => s.pid===+pidV) : spans;
     if (!curSpans.length) { svg.append('text').attr('x', 40).attr('y', 40).text('No spans'); return; }
-    // Group vtids by their parent pid, then sort lanes by (pid, vtid).
-    // For lane labels we want the *container* identity (stable per pid), not
-    // the per-callback node. A MultiThreadedExecutor pool services callbacks
-    // from BOTH the container's own ROS node (`cnt_*`) AND every composed
-    // node loaded into it — so the same thread can show different `s.node`
-    // values across spans. We prefer the `cnt_*` name when present (the
-    // process identity); fall back to the first non-`cnt_` name; finally
-    // fall back to just the pid number.
-    // Populate the render()-scoped maps so layer-tree callbacks can read them.
+
+    // ── First pass: build per-pid identity maps + per-cb info ──
     vtidToPid.clear(); pidContainerName.clear(); pidAnyName.clear(); vtidToProcName.clear();
+    cbInfo.clear();
     for (const s of curSpans) {
       if (!vtidToPid.has(s.vtid)) vtidToPid.set(s.vtid, s.pid);
       if (!pidContainerName.has(s.pid) && s.node && s.node.startsWith('cnt_')) {
@@ -374,35 +422,65 @@ function render(raw, causal) {
       if (!pidAnyName.has(s.pid) && s.node && s.node !== '(unknown)' && !s.node.startsWith('cnt_')) {
         pidAnyName.set(s.pid, s.node);
       }
+      if (!cbInfo.has(s.cb_addr)) {
+        cbInfo.set(s.cb_addr, {
+          pid: s.pid, node: s.node, entity: s.entity, etype: s.etype, symbol: s.symbol,
+        });
+      }
     }
     const labelForPid = (pid) =>
       pidContainerName.get(pid) || pidAnyName.get(pid) || `pid ${pid}`;
     for (const v of vtidToPid.keys()) {
       vtidToProcName.set(v, labelForPid(vtidToPid.get(v)));
     }
-    curVtids = [...vtidToPid.keys()].sort((a, b) => {
-      const pa = vtidToPid.get(a), pb = vtidToPid.get(b);
-      if (pa !== pb) return pa - pb;
-      return a - b;
+    for (const [cb, info] of cbInfo) {
+      info.ex_label = labelForPid(info.pid);
+    }
+
+    // ── Sort cb_addrs by (executor → node → entity → cb_addr) ──
+    curCbs = [...cbInfo.keys()].sort((a, b) => {
+      const A = cbInfo.get(a), B = cbInfo.get(b);
+      if (A.pid !== B.pid) return A.pid - B.pid;
+      if (A.node !== B.node) return (A.node || '').localeCompare(B.node || '');
+      if (A.entity !== B.entity) return (A.entity || '').localeCompare(B.entity || '');
+      return a.localeCompare(b);
     });
-    // Distinct pids in lane order — used for color coding + the legend tooltip.
-    const distinctPids = [...new Set(curVtids.map(v => vtidToPid.get(v)))];
-    const pidColor = d3.scaleOrdinal()
+
+    // ── Color hierarchy ──
+    // Executor gets a categorical palette color; each node within that executor
+    // gets an HSL-equal-step shade of its executor's color.
+    const distinctPids = [...new Set(curCbs.map(c => cbInfo.get(c).pid))];
+    pidColor = d3.scaleOrdinal()
       .domain(distinctPids)
       .range(d3.schemeTableau10.concat(d3.schemePaired));
+    // Group nodes per pid → assign shades
+    const nodesByPid = {};
+    for (const c of curCbs) {
+      const i = cbInfo.get(c);
+      if (!nodesByPid[i.pid]) nodesByPid[i.pid] = [];
+      if (!nodesByPid[i.pid].includes(i.node)) nodesByPid[i.pid].push(i.node);
+    }
+    nodeColor.clear();
+    for (const [pid, nodes] of Object.entries(nodesByPid)) {
+      const base = pidColor(+pid);
+      const shades = shadesOf(base, nodes.length);
+      nodes.forEach((n, i) => nodeColor.set(`${pid}|${n}`, shades[i]));
+    }
+    const colorForCb = (cb) => {
+      const i = cbInfo.get(cb);
+      return nodeColor.get(`${i.pid}|${i.node}`) || pidColor(i.pid);
+    };
 
-    // Layout: try to fit all lanes within viewport. If the per-lane height would
-    // drop below MIN_LANE, use MIN_LANE instead and let the wrapper scroll.
+    // ── Layout ──
     const wrap = document.getElementById('chart-wrap');
     const w = wrap.clientWidth;
     const viewportH = wrap.clientHeight;
-    const MIN_LANE = 18, MAX_LANE = 40, DEFAULT_LANE = 24;
+    const MIN_LANE = 16, MAX_LANE = 32, DEFAULT_LANE = 22;
     const availH = viewportH - margin.top - margin.bottom;
-    let laneH = availH / curVtids.length;
-    if (laneH < MIN_LANE)      laneH = MIN_LANE;       // scroll kicks in
-    else if (laneH > MAX_LANE) laneH = DEFAULT_LANE;   // don't make lanes huge
-    const totalLanesH = curVtids.length * laneH;
-    // SVG height = whichever is larger so the wrapper scrolls when needed.
+    let laneH = availH / curCbs.length;
+    if (laneH < MIN_LANE)      laneH = MIN_LANE;
+    else if (laneH > MAX_LANE) laneH = DEFAULT_LANE;
+    const totalLanesH = curCbs.length * laneH;
     const svgH = Math.max(viewportH, margin.top + totalLanesH + margin.bottom);
 
     svg.attr('width', w).attr('height', svgH);
@@ -411,46 +489,55 @@ function render(raw, causal) {
       .domain([d3.min(curSpans, s => s.t0), d3.max(curSpans, s => s.t1)])
       .range([margin.left, w - margin.right]);
     xZoomed = xScale;
-    yScale = d3.scaleBand().domain(curVtids).range([margin.top, margin.top + totalLanesH]).padding(0.1);
+    yScale = d3.scaleBand().domain(curCbs).range([margin.top, margin.top + totalLanesH]).padding(0.1);
 
     gMain = svg.append('g');
 
-    // Where do pid boundaries fall in the lane stack?
-    const pidBoundaries = [];  // y-coords where a horizontal divider should go
-    for (let i = 1; i < curVtids.length; i++) {
-      if (vtidToPid.get(curVtids[i]) !== vtidToPid.get(curVtids[i-1])) {
-        pidBoundaries.push(yScale(curVtids[i]) - yScale.step() * yScale.padding() / 2);
+    // ── Executor boundaries (between groups of cbs from different EX) ──
+    const exBoundaries = [];
+    for (let i = 1; i < curCbs.length; i++) {
+      const a = cbInfo.get(curCbs[i-1]).pid;
+      const b = cbInfo.get(curCbs[i]).pid;
+      if (a !== b) {
+        exBoundaries.push(yScale(curCbs[i]) - yScale.step() * yScale.padding() / 2);
       }
     }
 
-    curVtids.forEach((v, i) => {
-      const pid = vtidToPid.get(v);
-      const procName = vtidToProcName.get(v);
-      const col = pidColor(pid);
-      // Faint pid-tinted lane background (alpha-mixed with the alt stripe)
+    // ── Per-cb lane: bg + colored bar + label ──
+    curCbs.forEach((cb, i) => {
+      const info = cbInfo.get(cb);
+      const exCol = pidColor(info.pid);
+      const ndCol = nodeColor.get(`${info.pid}|${info.node}`) || exCol;
+      const cbCol = colorForCb(cb);
+      const lblText = shortenSymbol(info.symbol) || info.entity || cb;
+
       gMain.append('rect')
-        .attr('x', 0).attr('y', yScale(v))
+        .attr('x', 0).attr('y', yScale(cb))
         .attr('width', w).attr('height', yScale.bandwidth())
         .attr('class', i % 2 === 0 ? 'lane-row' : 'lane-row alt');
+      // Left margin tint: bigger shade band ("the node color") + thin executor stripe
       gMain.append('rect')
-        .attr('x', 0).attr('y', yScale(v))
-        .attr('width', margin.left - 18).attr('height', yScale.bandwidth())
-        .attr('fill', col).attr('opacity', 0.18);
-      // Colored swatch + lane label
+        .attr('x', 0).attr('y', yScale(cb))
+        .attr('width', 6).attr('height', yScale.bandwidth())
+        .attr('fill', exCol);
       gMain.append('rect')
-        .attr('class', 'pid-swatch')
-        .attr('x', margin.left - 14).attr('y', yScale(v) + yScale.bandwidth()/2 - 4)
+        .attr('x', 6).attr('y', yScale(cb))
+        .attr('width', margin.left - 24).attr('height', yScale.bandwidth())
+        .attr('fill', ndCol).attr('opacity', 0.45);
+      // cb swatch + lane label
+      gMain.append('rect')
+        .attr('class', 'cb-swatch')
+        .attr('x', margin.left - 14).attr('y', yScale(cb) + yScale.bandwidth()/2 - 4)
         .attr('width', 6).attr('height', 8)
-        .attr('fill', col).attr('stroke', '#444').attr('stroke-width', 0.5);
-      const lbl = gMain.append('text').attr('class','lane-label')
-        .attr('x', margin.left - 18).attr('y', yScale(v) + yScale.bandwidth()/2)
+        .attr('fill', cbCol).attr('stroke', '#444').attr('stroke-width', 0.5);
+      gMain.append('text').attr('class','lane-label')
+        .attr('x', margin.left - 18).attr('y', yScale(cb) + yScale.bandwidth()/2)
         .attr('dy', '.35em').attr('text-anchor', 'end')
-        .text(`vtid ${v}`)
-        .attr('data-pid', pid).attr('data-proc', procName)
+        .text(lblText)
         .style('cursor', 'help');
-      // Lane-label hover: show the parent process info
-      const laneHoverRect = gMain.append('rect')
-        .attr('x', 0).attr('y', yScale(v))
+      // Lane-label hover: show the cb's executor + node + entity
+      gMain.append('rect')
+        .attr('x', 0).attr('y', yScale(cb))
         .attr('width', margin.left).attr('height', yScale.bandwidth())
         .attr('fill', 'transparent')
         .style('cursor', 'help')
@@ -458,37 +545,35 @@ function render(raw, causal) {
           tooltip.style('display', 'block')
             .style('left', (ev.clientX + 12) + 'px')
             .style('top',  (ev.clientY + 12) + 'px')
-            .html(`<b>vtid ${v}</b><br>` +
-                  `<span class="k">pid:</span> ${pid}<br>` +
-                  `<span class="k">process:</span> ${procName}`);
+            .html(`<b>${info.entity}</b><br>` +
+                  `<span class="k">executor:</span> ${info.ex_label} (pid ${info.pid})<br>` +
+                  `<span class="k">node:</span> ${info.node}<br>` +
+                  `<span class="k">cb_addr:</span> ${cb}` +
+                  (info.symbol ? `<br><span class="k">symbol:</span> ${info.symbol.slice(0,200)}` : ''));
         })
         .on('mouseleave', () => tooltip.style('display', 'none'));
     });
 
-    // Process-boundary dividers (between groups of vtids belonging to different pids).
-    // Drawn AFTER lane backgrounds but BEFORE bars + axis, so they sit on top of
-    // backgrounds and tinting yet under the actual span rectangles.
-    pidBoundaries.forEach(yb => {
+    exBoundaries.forEach(yb => {
       gMain.append('line').attr('class', 'pid-divider')
         .attr('x1', 0).attr('x2', w).attr('y1', yb).attr('y2', yb)
         .attr('stroke', '#444').attr('stroke-width', 1).attr('stroke-opacity', 0.7);
     });
 
-    // Compute hyperperiod bands (one per pid) — y-range covering all of that pid's lanes,
-    // plus the H_all / H_tmr in absolute ns. Used by redrawHyperperiods().
+    // ── Hyperperiod bands: one per EX (group of cb rows sharing same pid) ──
     hpBands = [];
     if (taskset && taskset.executors) {
-      const lanesByPid = {};
-      for (const v of curVtids) {
-        const p = vtidToPid.get(v);
-        if (!lanesByPid[p]) lanesByPid[p] = [];
-        lanesByPid[p].push(v);
+      const cbsByPid = {};
+      for (const cb of curCbs) {
+        const p = cbInfo.get(cb).pid;
+        if (!cbsByPid[p]) cbsByPid[p] = [];
+        cbsByPid[p].push(cb);
       }
-      for (const [pidStr, vts] of Object.entries(lanesByPid)) {
+      for (const [pidStr, cbs] of Object.entries(cbsByPid)) {
         const ex = taskset.executors[pidStr];
         if (!ex) continue;
-        const yTop = yScale(vts[0]);
-        const yBot = yScale(vts[vts.length-1]) + yScale.bandwidth();
+        const yTop = yScale(cbs[0]);
+        const yBot = yScale(cbs[cbs.length-1]) + yScale.bandwidth();
         hpBands.push({
           pid: +pidStr, label: ex.label,
           yTop, yBot,
@@ -521,17 +606,12 @@ function render(raw, causal) {
     svg.call(zoom).on('dblclick.zoom', () => svg.transition().call(zoom.transform, d3.zoomIdentity));
   }
 
-  // Per-pid anchor: earliest tmr-nominal callback firing in that EX
-  // Session anchor: earliest tmr-nominal firing anywhere
-  // Computed in draw() once taskset is in hand.
   let tmrAnchorByPid = new Map();
   let tmrAnchorSession = null;
-
   function computeTmrAnchors() {
     tmrAnchorByPid = new Map();
     tmrAnchorSession = null;
     if (!taskset || !taskset.executors) return;
-    // Set of cb_addrs that are tmr-nominal periodic tasks
     const tmrCbs = new Set();
     for (const ex of Object.values(taskset.executors)) {
       for (const t of (ex.tasks || [])) {
@@ -539,7 +619,6 @@ function render(raw, causal) {
       }
     }
     if (tmrCbs.size === 0) return;
-    // Scan spans for earliest t0 per pid (relative ns) where cb_addr is a tmr
     for (const s of curSpans) {
       if (!tmrCbs.has(s.cb_addr)) continue;
       const cur = tmrAnchorByPid.get(s.pid);
@@ -558,7 +637,6 @@ function render(raw, causal) {
 
     function drawLine(h_ns, anchor_ns, yTop, yBot, cls) {
       if (!h_ns || h_ns <= 0 || anchor_ns == null) return;
-      // Anchor itself is a period boundary; lines at anchor + k·h for k=0,1,...
       for (let t = anchor_ns; t <= x1; t += h_ns) {
         if (t < x0) continue;
         gHyper.append('line')
@@ -570,13 +648,9 @@ function render(raw, causal) {
 
     if (showTmr) {
       for (const band of hpBands) {
-        const anchor = tmrAnchorByPid.get(band.pid);
-        drawLine(band.hp_tmr_ns, anchor, band.yTop, band.yBot, 'hp-tmr');
+        drawLine(band.hp_tmr_ns, tmrAnchorByPid.get(band.pid), band.yTop, band.yBot, 'hp-tmr');
       }
     }
-
-    // Session-wide line spans the FULL chart height, anchored at the first
-    // tmr-nominal firing anywhere in the session.
     if (showSession && taskset) {
       const h = taskset.session_hyperperiod_tmr_only_ns;
       const totalBottom = hpBands.length
@@ -622,10 +696,11 @@ function render(raw, causal) {
           return cls;
         })
         .attr('x', s => xZoomed(s.t0))
-        .attr('y', s => yScale(s.vtid))
+        .attr('y', s => yScale(s.cb_addr))    // row = cb_addr
         .attr('width', s => Math.max(0.5, xZoomed(s.t1) - xZoomed(s.t0)))
         .attr('height', yScale.bandwidth())
-        .attr('fill', s => colorFor.get(s.node))
+        // bar fill = pid color of the vtid that ran this execution
+        .attr('fill', s => pidColor(vtidToPid.get(s.vtid) || s.pid))
         .on('mousemove', (ev, s) => {
           let causal = '';
           if (traceState && s.id === traceState.anchor.id) {
@@ -635,8 +710,8 @@ function render(raw, causal) {
             .style('left', (ev.clientX + 12) + 'px')
             .style('top',  (ev.clientY + 12) + 'px')
             .html(`<b>${s.entity}</b><br>` +
+                  `<span class="k">ran on:</span> vtid <b>${s.vtid}</b> (pid ${s.pid}, ${labelForPidGlobal(s.pid)})<br>` +
                   `<span class="k">node:</span> ${s.node}<br>` +
-                  `<span class="k">vtid:</span> ${s.vtid} &nbsp; <span class="k">pid:</span> ${s.pid}<br>` +
                   `<span class="k">duration:</span> ${((s.t1-s.t0)/1e3).toFixed(1)} μs<br>` +
                   `<span class="k">cb_addr:</span> ${s.cb_addr}` +
                   (gpuSubmitterCbs.has(s.cb_addr) ? '<br><span style="color:#e74c3c">⚡ submits GPU work</span>' : '') +
@@ -655,9 +730,9 @@ function render(raw, causal) {
         .attr('class', `causal-arrow ${cls}`)
         .attr('d', e => {
           const x1 = xZoomed(e.src.t1);
-          const y1 = yScale(e.src.vtid) + yScale.bandwidth()/2;
+          const y1 = yScale(e.src.cb_addr) + yScale.bandwidth()/2;
           const x2 = xZoomed(e.dst.t0);
-          const y2 = yScale(e.dst.vtid) + yScale.bandwidth()/2;
+          const y2 = yScale(e.dst.cb_addr) + yScale.bandwidth()/2;
           const mx = (x1 + x2) / 2;
           return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
         })

@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FISH — Callback execution stats</title>
+<style>
+  body { font: 12px/1.4 system-ui, -apple-system, sans-serif; margin: 0; padding: 8px 12px; color: #1a1a1a; }
+  h1 { font-size: 14px; margin: 0 0 4px 0; }
+  .subtitle { color: #555; font-size: 11px; margin-bottom: 8px; }
+  .toolbar { display: flex; gap: 16px; align-items: center; margin: 8px 0; font-size: 12px; }
+  .toolbar input[type=text] { padding: 3px 6px; font: 12px monospace; width: 280px; }
+  .toolbar .stat { color: #555; }
+  table { border-collapse: collapse; width: 100%; font-size: 11px; }
+  thead { position: sticky; top: 0; background: #f5f5f5; z-index: 2; }
+  th, td { padding: 4px 8px; border-bottom: 1px solid #e0e0e0; text-align: right; vertical-align: top; white-space: nowrap; }
+  th:nth-child(-n+5), td:nth-child(-n+5) { text-align: left; }   /* text columns */
+  th { cursor: pointer; user-select: none; background: #f5f5f5; }
+  th .arrow { color: #999; font-size: 10px; margin-left: 4px; }
+  th.sorted .arrow { color: #1a1a1a; }
+  tbody tr:hover { background: #fafad2; }
+  tbody tr.oneshot     { background: #fdf3e3; }
+  tbody tr.aperiodic   { background: #f5f5f5; color: #777; }
+  td.num { font-variant-numeric: tabular-nums; }
+  td.sym { max-width: 380px; overflow: hidden; text-overflow: ellipsis; font: 11px monospace; color: #333; }
+  td.cb  { font: 11px monospace; color: #555; }
+  .group-ex      { border-left: 3px solid #2980b9; }
+  .group-session { border-left: 3px solid #1f4e79; }
+  .group-ex.hdr      { background: #e8f1fb !important; }
+  .group-session.hdr { background: #e1ebf3 !important; }
+  .nullv { color: #bbb; }
+  .src-tmr-nominal { color: #c0392b; font-weight: 600; }
+  .src-tmr-oneshot { color: #d68910; }
+  .src-sub               { color: #2980b9; }
+  .src-serv-aperiodic    { color: #7f8c8d; }
+  .src-tmr-unknown, .src-unknown { color: #b03a2e; }
+  #empty { padding: 40px; color: #b00; font: 14px monospace; }
+  .meta { color: #555; font-size: 11px; margin: 6px 0; }
+  .meta code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>FISH callback execution stats</h1>
+<div class="subtitle">Per-callback fire counts per hyperperiod window — mean / std / min / max</div>
+
+<div id="meta" class="meta"></div>
+
+<div class="toolbar">
+  <label>filter: <input type="text" id="q" placeholder="cb_addr / symbol / node / entity"></label>
+  <label><input type="checkbox" id="hide-aperiodic"> hide aperiodic / unknown</label>
+  <label><input type="checkbox" id="hide-zero" checked> hide zero-fire callbacks</label>
+  <span class="stat" id="cnt"></span>
+</div>
+
+<table id="tbl">
+  <thead>
+    <tr>
+      <th data-key="ex_label">Executor<span class="arrow">↕</span></th>
+      <th data-key="node">Node<span class="arrow">↕</span></th>
+      <th data-key="entity">Entity<span class="arrow">↕</span></th>
+      <th data-key="symbol">Callback<span class="arrow">↕</span></th>
+      <th data-key="period_source">Source<span class="arrow">↕</span></th>
+      <th data-key="period_ns">Period<span class="arrow">↕</span></th>
+      <th data-key="n_total">N fires<span class="arrow">↕</span></th>
+
+      <th class="group-ex hdr" data-key="h_tmr_ns">H<sub>tmr</sub><span class="arrow">↕</span></th>
+      <th class="group-ex hdr" data-key="ex_mean">μ<sub>EX</sub><span class="arrow">↕</span></th>
+      <th class="group-ex hdr" data-key="ex_std">σ<sub>EX</sub><span class="arrow">↕</span></th>
+      <th class="group-ex hdr" data-key="ex_min">min<sub>EX</sub><span class="arrow">↕</span></th>
+      <th class="group-ex hdr" data-key="ex_max">max<sub>EX</sub><span class="arrow">↕</span></th>
+
+      <th class="group-session hdr" data-key="sess_mean">μ<sub>sess</sub><span class="arrow">↕</span></th>
+      <th class="group-session hdr" data-key="sess_std">σ<sub>sess</sub><span class="arrow">↕</span></th>
+      <th class="group-session hdr" data-key="sess_min">min<sub>sess</sub><span class="arrow">↕</span></th>
+      <th class="group-session hdr" data-key="sess_max">max<sub>sess</sub><span class="arrow">↕</span></th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<script>
+const qs = new URLSearchParams(window.location.search);
+const session_id = qs.get('session_id') || qs.get('session') || '';
+const scope = qs.get('scope') || '__main__';
+document.title = `FISH cb-stats — ${session_id}`;
+
+if (!session_id) {
+  document.body.innerHTML = `<div id="empty">Missing <code>?session_id=...</code></div>`;
+} else {
+  fetch(`/api/cb-stats?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`)
+    .then(async r => {
+      const txt = await r.text();
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${txt.slice(0,200)}`);
+      return JSON.parse(txt);
+    })
+    .then(render)
+    .catch(err => document.body.innerHTML = `<div id="empty">Error: ${err.message || err}</div>`);
+}
+
+function fmtNs(ns) {
+  if (ns == null) return '<span class="nullv">—</span>';
+  if (ns < 1e6)   return `${(ns/1e3).toFixed(1)} µs`;
+  if (ns < 1e9)   return `${(ns/1e6).toFixed(1)} ms`;
+  return `${(ns/1e9).toFixed(2)} s`;
+}
+function fmtNum(v, dp=2) {
+  if (v == null) return '<span class="nullv">—</span>';
+  return Number(v).toFixed(dp);
+}
+function shortSym(s) {
+  if (!s) return '';
+  // d/r common namespace clutter strip
+  return s
+    .replace(/^void\s+/, '')
+    .replace(/std::__cxx11::basic_string<char,[^>]+>/g, 'std::string')
+    .replace(/std::allocator<[^>]+>/g, '')
+    .slice(0, 180);
+}
+
+let DATA = null;
+let SORT = {key: 'n_total', dir: -1};
+
+function flatten(r) {
+  // Promote nested stats into top-level fields for sorting/filtering
+  const e = r.ex_stats || {};
+  const s = r.sess_stats || {};
+  return {
+    ...r,
+    ex_mean: e.mean ?? null, ex_std: e.std ?? null,
+    ex_min:  e.min  ?? null, ex_max: e.max ?? null,
+    ex_n_windows: e.n_windows ?? null,
+    sess_mean: s.mean ?? null, sess_std: s.std ?? null,
+    sess_min:  s.min  ?? null, sess_max: s.max ?? null,
+    sess_n_windows: s.n_windows ?? null,
+  };
+}
+
+function render(d) {
+  DATA = {meta: d, rows: d.rows.map(flatten)};
+  document.getElementById('meta').innerHTML =
+    `<b>session:</b> <code>${d.session_id}</code> &nbsp; ` +
+    `<b>scope:</b> <code>${d.scope}</code> &nbsp; ` +
+    `<b>duration:</b> ${fmtNs(d.session_duration_ns)} &nbsp; ` +
+    `<b>H<sub>session</sub>:</b> ${fmtNs(d.h_session_tmr_only_ns)}`;
+  attachHeaderHandlers();
+  attachFilterHandlers();
+  refresh();
+}
+
+function attachHeaderHandlers() {
+  document.querySelectorAll('thead th[data-key]').forEach(th => {
+    th.onclick = () => {
+      const k = th.dataset.key;
+      if (SORT.key === k) SORT.dir = -SORT.dir;
+      else { SORT.key = k; SORT.dir = -1; }
+      refresh();
+    };
+  });
+}
+function attachFilterHandlers() {
+  document.getElementById('q').oninput = refresh;
+  document.getElementById('hide-aperiodic').onchange = refresh;
+  document.getElementById('hide-zero').onchange = refresh;
+}
+
+function refresh() {
+  const q = document.getElementById('q').value.toLowerCase().trim();
+  const hideAperiodic = document.getElementById('hide-aperiodic').checked;
+  const hideZero      = document.getElementById('hide-zero').checked;
+  let rows = DATA.rows.slice();
+
+  if (q) rows = rows.filter(r =>
+    (r.cb_addr||'').toLowerCase().includes(q) ||
+    (r.symbol||'').toLowerCase().includes(q)  ||
+    (r.node||'').toLowerCase().includes(q)    ||
+    (r.entity||'').toLowerCase().includes(q)  ||
+    (r.ex_label||'').toLowerCase().includes(q));
+  if (hideAperiodic) rows = rows.filter(r => !/(aperiodic|unknown)/.test(r.period_source||''));
+  if (hideZero)      rows = rows.filter(r => r.n_total > 0);
+
+  const dir = SORT.dir;
+  rows.sort((a, b) => {
+    const av = a[SORT.key], bv = b[SORT.key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+    return String(av).localeCompare(String(bv)) * dir;
+  });
+
+  document.querySelectorAll('thead th').forEach(th => {
+    th.classList.toggle('sorted', th.dataset.key === SORT.key);
+    const a = th.querySelector('.arrow');
+    if (a) a.textContent = (th.dataset.key === SORT.key) ? (dir > 0 ? '↑' : '↓') : '↕';
+  });
+
+  const tbody = document.querySelector('#tbl tbody');
+  tbody.innerHTML = rows.map(r => {
+    const rowCls =
+      r.period_source === 'tmr-oneshot' ? 'oneshot' :
+      /(aperiodic|unknown)/.test(r.period_source||'') ? 'aperiodic' : '';
+    return `<tr class="${rowCls}">
+      <td>${escapeHtml(r.ex_label||'')} <span class="cb">[${r.pid}]</span></td>
+      <td>${escapeHtml(r.node||'')}</td>
+      <td>${escapeHtml(r.entity||'')}</td>
+      <td class="sym" title="${escapeAttr(r.symbol||'')}\n${r.cb_addr||''}">${escapeHtml(shortSym(r.symbol))}</td>
+      <td><span class="src-${r.period_source}">${r.period_source||''}</span></td>
+      <td class="num">${fmtNs(r.period_ns)}</td>
+      <td class="num">${r.n_total}</td>
+
+      <td class="num group-ex">${fmtNs(r.h_tmr_ns)}</td>
+      <td class="num group-ex">${fmtNum(r.ex_mean)}</td>
+      <td class="num group-ex">${fmtNum(r.ex_std)}</td>
+      <td class="num group-ex">${r.ex_min ?? '<span class="nullv">—</span>'}</td>
+      <td class="num group-ex">${r.ex_max ?? '<span class="nullv">—</span>'}</td>
+
+      <td class="num group-session">${fmtNum(r.sess_mean)}</td>
+      <td class="num group-session">${fmtNum(r.sess_std)}</td>
+      <td class="num group-session">${r.sess_min ?? '<span class="nullv">—</span>'}</td>
+      <td class="num group-session">${r.sess_max ?? '<span class="nullv">—</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('cnt').textContent =
+    `${rows.length} / ${DATA.rows.length} callbacks shown`;
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeAttr(s) { return escapeHtml(s); }
+</script>
+</body>
+</html>
