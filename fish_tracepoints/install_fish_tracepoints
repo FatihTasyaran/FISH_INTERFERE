@@ -1567,6 +1567,107 @@ PATCH_RCLCPP_SCHED
     log "  rclcpp built with scheduler tracepoints"
 }
 
+# ─── Patch and build isaac_ros_nitros (NITROS publisher attribution) ─────────
+# Isaac ROS NITROS publishes via its own NitrosPublisher::publish() entry that
+# bypasses rclcpp::Publisher::publish() — so our rcl_publish-based
+# fish_rclcpp_publish_link patch never fires for NITROS topics. This patch
+# fires the same tracepoint at the C++ entry point so NITROS publishers get
+# attributed to their active callback. See notes/immediate_work.txt TASK #0.
+patch_and_build_isaac_ros_nitros() {
+    local NITROS_SRC="/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/src/nitros_publisher.cpp"
+    if [ ! -f "$NITROS_SRC" ]; then
+        log "  isaac_ros_nitros source not present at $NITROS_SRC — skipping NITROS patch"
+        return 0
+    fi
+    step "Patching isaac_ros_nitros (nitros_publisher.cpp) ..."
+
+    python3 <<'PATCH_NITROS'
+import sys
+path = "/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/src/nitros_publisher.cpp"
+with open(path) as f:
+    content = f.read()
+
+if "FISH: NitrosPublisher attribution" in content:
+    print("    nitros_publisher.cpp already patched, skipping")
+    sys.exit(0)
+
+# 1) Add tracetools include + extern __fish_active_callback at top of the
+#    file, right after the last #include line we can anchor on.
+include_anchor = '#include "rclcpp/rclcpp.hpp"'
+include_addition = (
+    '#include "rclcpp/rclcpp.hpp"\n'
+    '#include "tracetools/tracetools.h"   // FISH\n'
+    'extern "C" __thread const void * __fish_active_callback;  // FISH\n'
+)
+if include_anchor not in content:
+    print("    WARNING: nitros_publisher.cpp include anchor not found")
+    sys.exit(1)
+content = content.replace(include_anchor, include_addition, 1)
+
+# 2) Inject TRACEPOINT at the start of
+#    void NitrosPublisher::publish(NitrosTypeBase & base_msg)
+old_block = """void NitrosPublisher::publish(NitrosTypeBase & base_msg)
+{
+  {
+    std::stringstream nvtx_tag_name;"""
+new_block = """void NitrosPublisher::publish(NitrosTypeBase & base_msg)
+{
+  // FISH: NitrosPublisher attribution — fires fish_rclcpp_publish_link with
+  // compatible_pub_'s rcl handle so the publish event is attributed to the
+  // currently active user callback. Catches all 4 publish() overloads via
+  // delegation (the other three all call publish(NitrosTypeBase &)).
+  if (compatible_pub_) {
+    TRACEPOINT(
+      fish_rclcpp_publish_link,
+      static_cast<const void *>(compatible_pub_->get_publisher_handle().get()),
+      __fish_active_callback);
+  }
+  {
+    std::stringstream nvtx_tag_name;"""
+if old_block not in content:
+    print("    WARNING: nitros_publisher.cpp publish() anchor not found")
+    sys.exit(1)
+content = content.replace(old_block, new_block, 1)
+
+with open(path, "w") as f:
+    f.write(content)
+print("    nitros_publisher.cpp patched — fish_rclcpp_publish_link in NitrosPublisher::publish")
+PATCH_NITROS
+
+    # ament_cmake_auto autodiscovers deps from package.xml — add tracetools there.
+    local NITROS_PKG_XML="/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/package.xml"
+    if [ -f "$NITROS_PKG_XML" ] && ! grep -q "tracetools" "$NITROS_PKG_XML"; then
+        log "  package.xml: adding <depend>tracetools</depend>"
+        python3 <<'PATCH_PKG'
+path = "/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/package.xml"
+with open(path) as f:
+    c = f.read()
+if "tracetools" in c:
+    print("  tracetools already in package.xml")
+else:
+    anchor = "<depend>rclcpp</depend>"
+    if anchor in c:
+        c = c.replace(anchor, anchor + "\n  <depend>tracetools</depend>", 1)
+        with open(path, "w") as f:
+            f.write(c)
+        print("  package.xml: tracetools dep added")
+    else:
+        print("  WARN: rclcpp depend anchor not found in package.xml")
+PATCH_PKG
+    fi
+
+    # Build isaac_ros_nitros
+    set +u && source /root/ros_ws/install/setup.bash && set -u
+    cd /root/ros_ws
+    colcon build \
+        --packages-select isaac_ros_nitros \
+        --cmake-args \
+            -DBUILD_TESTING=OFF \
+        2>&1 | tail -10
+
+    log "  isaac_ros_nitros built with NITROS publisher tracepoints"
+}
+
 # ─── Patch and build rcl (link fire points) ──────────────────────────────────
 patch_and_build_rcl() {
     step "Patching and building rcl (publisher.c, client.c) ..."
@@ -2968,6 +3069,9 @@ main() {
     $DO_ACTION    && patch_and_build_rclcpp_action
     $DO_CLIENT    && patch_and_build_rclcpp_client
     $DO_SCHEDULER && patch_and_build_rclcpp_scheduler
+    # NITROS patch: only relevant when --link is on (fires fish_rclcpp_publish_link).
+    # Always runs but skips gracefully if isaac_ros_nitros source isn't present.
+    $DO_LINK      && patch_and_build_isaac_ros_nitros
     if $DO_RCLPY; then
         install_rclpy_tracepoints
     fi
