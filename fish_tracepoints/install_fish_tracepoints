@@ -1034,7 +1034,9 @@ void TRACEPOINT(
   const void * subscription_handle,
   const void * callback)
 {
-  if (callback == NULL) { return; }
+  /* Note: do NOT skip on callback==NULL here. NitrosSubscriber::subscriberCallback
+     may run outside a tracked callback context if dispatched via GXF/Waitable,
+     and we still want the subscription_handle attribution. */
   if (fish_link_seen(fish_rcv_cache, &fish_rcv_cache_n,
                      subscription_handle, callback)) { return; }
   CONDITIONAL_TP(
