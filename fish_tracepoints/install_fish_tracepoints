@@ -849,6 +849,19 @@ TRACEPOINT_EVENT(
   )
 )
 
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_rclcpp_receive_link,
+  TP_ARGS(
+    const void *, subscription_handle_arg,
+    const void *, callback_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, subscription_handle, subscription_handle_arg)
+    ctf_integer_hex(const void *, callback, callback_arg)
+  )
+)
+
 """
     content = content.replace(INSERT_BEFORE, new_events + INSERT_BEFORE)
     with open(path, "w") as f:
@@ -876,6 +889,14 @@ DECLARE_TRACEPOINT(
 DECLARE_TRACEPOINT(
   fish_rclcpp_client_link,
   const void * client_handle,
+  const void * callback)
+
+/// `fish_rclcpp_receive_link` — associates subscription_handle to active callback
+/// at the moment data is received. Counterpart of fish_rclcpp_publish_link for
+/// transports we can't see on the publish side (NITROS GXF / shared memory).
+DECLARE_TRACEPOINT(
+  fish_rclcpp_receive_link,
+  const void * subscription_handle,
   const void * callback)
 
 /// Thread-local: the callback currently being dispatched by the executor.
@@ -959,6 +980,8 @@ static __thread fish_link_pair_t fish_pub_cache[FISH_LINK_CACHE_SIZE];
 static __thread int fish_pub_cache_n = 0;
 static __thread fish_link_pair_t fish_cli_cache[FISH_LINK_CACHE_SIZE];
 static __thread int fish_cli_cache_n = 0;
+static __thread fish_link_pair_t fish_rcv_cache[FISH_LINK_CACHE_SIZE];
+static __thread int fish_rcv_cache_n = 0;
 
 static int
 fish_link_seen(fish_link_pair_t * cache, int * n,
@@ -1003,6 +1026,20 @@ void TRACEPOINT(
   CONDITIONAL_TP(
     fish_rclcpp_client_link,
     client_handle,
+    callback);
+}
+
+void TRACEPOINT(
+  fish_rclcpp_receive_link,
+  const void * subscription_handle,
+  const void * callback)
+{
+  if (callback == NULL) { return; }
+  if (fish_link_seen(fish_rcv_cache, &fish_rcv_cache_n,
+                     subscription_handle, callback)) { return; }
+  CONDITIONAL_TP(
+    fish_rclcpp_receive_link,
+    subscription_handle,
     callback);
 }
 
@@ -1756,6 +1793,66 @@ with open(path, "w") as f:
     f.write(content)
 print("    nitros_publisher.cpp patched — fish_rclcpp_publish_link in NitrosPublisher::publish")
 PATCH_NITROS
+
+    # Receive-side: patch NitrosSubscriber::subscriberCallback to fire
+    # fish_rclcpp_receive_link with the compatible_sub_ subscription handle +
+    # the active executor callback. This catches data delivery regardless of
+    # whether the transport was DDS, GXF MessageRelay, or CUDA IPC.
+    python3 <<'PATCH_NITROS_SUB'
+import sys
+path = "/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/src/nitros_subscriber.cpp"
+try:
+    with open(path) as f:
+        content = f.read()
+except FileNotFoundError:
+    print(f"    skipping (file not found): {path}")
+    sys.exit(0)
+
+if "FISH: NitrosSubscriber attribution" in content:
+    print("    nitros_subscriber.cpp already patched, skipping")
+    sys.exit(0)
+
+# Add tracetools include + extern __fish_active_callback at the top
+include_anchor = '#include "rclcpp/rclcpp.hpp"'
+if include_anchor in content and "tracetools/tracetools.h" not in content:
+    include_addition = (
+        '#include "rclcpp/rclcpp.hpp"\n'
+        '#include "tracetools/tracetools.h"   // FISH\n'
+        'extern "C" __thread const void * __fish_active_callback;  // FISH\n'
+    )
+    content = content.replace(include_anchor, include_addition, 1)
+
+# Inject TRACEPOINT at the start of NitrosSubscriber::subscriberCallback
+old_block = """void NitrosSubscriber::subscriberCallback(
+  NitrosTypeBase & msg_base,
+  const std::string data_format_name)
+{
+  std::stringstream nvtx_tag_name;"""
+new_block = """void NitrosSubscriber::subscriberCallback(
+  NitrosTypeBase & msg_base,
+  const std::string data_format_name)
+{
+  // FISH: NitrosSubscriber attribution — fires fish_rclcpp_receive_link at the
+  // moment data is received (regardless of transport — DDS, GXF MessageRelay,
+  // or CUDA IPC). Pairs the compatible_sub_ subscription handle with the
+  // executor's active callback. The receive-side counterpart to
+  // fish_rclcpp_publish_link.
+  if (compatible_sub_) {
+    TRACEPOINT(
+      fish_rclcpp_receive_link,
+      static_cast<const void *>(compatible_sub_->get_subscription_handle().get()),
+      __fish_active_callback);
+  }
+  std::stringstream nvtx_tag_name;"""
+if old_block not in content:
+    print("    WARNING: nitros_subscriber.cpp subscriberCallback anchor not found")
+    sys.exit(1)
+content = content.replace(old_block, new_block, 1)
+
+with open(path, "w") as f:
+    f.write(content)
+print("    nitros_subscriber.cpp patched — fish_rclcpp_receive_link in subscriberCallback")
+PATCH_NITROS_SUB
 
     # ament_cmake_auto autodiscovers deps from package.xml — add tracetools there.
     local NITROS_PKG_XML="/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/package.xml"
@@ -3065,6 +3162,7 @@ if do_link:
     fish_groups.append([
         "fish_rclcpp_publish_link",
         "fish_rclcpp_client_link",
+        "fish_rclcpp_receive_link",
     ])
 if do_scheduler:
     fish_groups.append([
