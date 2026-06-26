@@ -1,0 +1,160 @@
+FISH — Important Implementation Details
+========================================
+
+This file catalogs non-obvious aspects of the FISH instrumentation that
+are easy to forget when reasoning about traces / model output. Anything
+that's "obvious from the code" goes in code comments; anything that
+spans multiple files or requires context lives here.
+
+
+1. FISH Tracepoint Inventory + Patch Sites
+-------------------------------------------
+
+FISH adds a family of `ros2:fish_*` tracepoints on top of stock ROS 2.
+Each tracepoint requires THREE artifacts:
+  (a) Definition in tracetools/include/tracetools/tp_call.h (LTTng schema)
+  (b) Declaration + wrapper in tracetools/include/tracetools/tracetools.h
+      + implementation in tracetools/src/tracetools.c
+  (c) Call-site patch(es) in the relevant library source.
+
+Plus the event name must appear in TWO whitelists:
+  - tracetools_trace/tools/names.py — for `ros2 trace` Python wrapper
+  - config/fish_events.txt          — for the LTTng `-u $EVENTS` command
+                                       in install_fish.sh's start_session
+                                       (the one that ACTUALLY enables
+                                       events in the LTTng channel)
+
+If a tracepoint exists in code + tracetools but is missing from
+fish_events.txt, **0 events will be captured** (the LTTng channel
+silently filters them). Symptom: tracepoint fires at runtime but
+babeltrace shows nothing. Fixed by adding to fish_events.txt.
+
+
+### Standard ROS 2 patches (rcl / rclcpp / rclpy)
+
+Catch publish/take operations at the ROS framework level. These cover
+ALL nodes that link against the patched libraries.
+
+| Tracepoint                              | Patch site (file)                             | Catches |
+|-----------------------------------------|-----------------------------------------------|---------|
+| fish_rclcpp_publish_link  (a)           | rcl/src/rcl/publisher.c — rcl_publish         | regular inter-process publish via DDS |
+| fish_rclcpp_publish_link  (b)           | rcl/src/rcl/publisher.c — rcl_publish_serialized_message | rosbag2 PlayerImpl, generic publishers |
+| fish_rclcpp_publish_link  (c)           | rcl/src/rcl/publisher.c — rcl_publish_loaned_message     | iceoryx / shared-mem inter-process zero-copy |
+| fish_rclcpp_publish_link  (d, intra)    | rclcpp/include/rclcpp/publisher.hpp — do_intra_process_publish + ros_message_publish + and_return_shared | template-baked: only effective for code rebuilt against patched header |
+| fish_rclcpp_publish_link  (e, executor) | rclcpp/src/rclcpp/executor.cpp — (not yet wired here, only receive_link is patched at executor) | — |
+| fish_rclcpp_client_link                 | rcl/src/rcl/client.c — rcl_send_request        | service client requests |
+| fish_rclcpp_receive_link (rclcpp)       | rclcpp/src/rclcpp/executor.cpp — Executor::execute_subscription | per-subscription receive on inter-process path; __fish_active_callback typically NULL at top of execute_subscription, dedup yields one event per subscription_handle (sufficient for sub-entity identification) |
+| fish_rclcpp_subscription_init / _callback_added (GenericSubscription) | rclcpp/include/rclcpp/generic_subscription.hpp ctor | GenericSubscription's ctor lacks the standard subscription tracepoints upstream — FISH adds them so ros2 bag / ros2 topic echo / ros2_benchmark MonitorNode land an F vertex |
+| fish_rclcpp_timer_init                  | rclcpp + rclpy timer initialization paths      | atomic period at timer create time |
+| fish_rclcpp_executor_init               | rclcpp/include/rclcpp/executors/...            | executor lifecycle / threading model |
+| fish_rclcpp_callback_group_init         | rclcpp/include/rclcpp/callback_group.cpp       | callback group identity for L0/L1 mapping |
+| fish_rclcpp_cbgroup_add                 | rclcpp/include/rclcpp/callback_group.cpp       | adds a callback into a group |
+| fish_rclcpp_executor_add_cbgroup        | rclcpp/include/rclcpp/executor.cpp             | binds a callback group to an executor |
+| fish_rclcpp_action_*                    | rclcpp_action — server/client lifecycle hooks  | action server/goal/cancel/result |
+| fish_rclcpp_client_request_sent         | rclcpp/include/rclcpp/client.hpp               | client req side |
+| fish_rclcpp_client_response_received    | rclcpp/include/rclcpp/client.hpp               | client resp side |
+| fish_rclpy_*                            | rclpy bindings: subscription_callback_added, service_callback_added, timer_callback_added, timer_init, callback_register | Python-side; rclpy doesn't go through rclcpp so it needs its own attribution path |
+
+
+### Isaac ROS NITROS patches
+
+NITROS bypasses the standard rcl publish path for hot data via GXF
+MessageRelay components + CUDA IPC / shared GPU memory. Standard
+rcl_publish-level hooks see only the initial negotiation handshake
+(2 events out of ~4500 actual publishes per topic). FISH patches the
+NITROS C++ wrappers directly:
+
+| Tracepoint                | Patch site                                                                     | Catches |
+|---------------------------|--------------------------------------------------------------------------------|---------|
+| fish_rclcpp_publish_link  | isaac_ros_nitros/src/nitros_publisher.cpp — NitrosPublisher::publish(NitrosTypeBase&) | NITROS publishes via compatible_pub_; deduped to per-(pub_handle, cb) pair |
+| fish_rclcpp_receive_link  | isaac_ros_nitros/src/nitros_subscriber.cpp — NitrosSubscriber::subscriberCallback | NITROS receives via compatible_sub_; __fish_active_callback IS set here (rclcpp executor invoked the wrapping lambda → callback_start fired) → proper F-level attribution |
+
+The NitrosSubscriber patch is the highest-value one — it captures
+NITROS data flow regardless of whether the underlying transport was
+DDS, GXF MessageRelay, or CUDA IPC. The NITROS publisher patch is
+mostly belt-and-suspenders (handshake-time fires anyway through
+compatible_pub_->publish → standard rcl path).
+
+
+### Naming convention note
+
+All FISH tracepoints use the `fish_rclcpp_*` or `fish_rclpy_*` prefix,
+matching the framework family. The NITROS patches use the GENERIC name
+`fish_rclcpp_receive_link` (no "nitros" in the name) — same tracepoint
+fires from both the rclcpp executor.cpp hook AND from
+NitrosSubscriber::subscriberCallback. This keeps a single semantic
+("a subscription received data") with two complementary call sites.
+
+If you ever need to distinguish "received via NITROS GXF" vs "received
+via DDS", look at the active callback or correlate with the
+subscription_handle's owning Node type. Don't fork the tracepoint.
+
+
+2. The __fish_active_callback thread-local
+-------------------------------------------
+
+FISH installs `__thread const void * __fish_active_callback` in
+libtracetools.so. It is:
+
+  - SET     by the patched `callback_start(cb_addr, is_intra_process)` tracepoint
+  - CLEARED by the patched `callback_end(cb_addr)` tracepoint
+
+All `fish_*_link` tracepoints read this to attribute their event to
+"the callback currently running on this thread". If a call site fires
+OUTSIDE any active callback (e.g., from a Waitable's execute() that
+isn't wrapped by callback_start/_end, or from initial setup code),
+__fish_active_callback is NULL.
+
+We previously dropped the `if (callback == NULL) return` guard inside
+fish_rclcpp_receive_link's wrapper so that null-callback events still
+fire — useful for receive-side hooks where the cb context isn't
+guaranteed (e.g., GXF-triggered NitrosPublisher::publish paths).
+publish_link and client_link still guard on NULL.
+
+
+3. Dedup cache
+---------------
+
+All `fish_*_link` tracepoints share a thread-local dedup mechanism:
+each (handle, callback) pair fires AT MOST ONCE per thread. This is
+intentional — the FISH model needs the (entity → topic) attribution
+exactly once, not once per message. The dedup keeps overhead low
+(O(1) hash lookup) and trace size small.
+
+This means: counting fish_*_link events DOES NOT measure traffic
+volume. It measures the number of unique (handle, cb) attribution
+pairs. To measure traffic, use ros2:callback_start counts or
+rcl_publish counts (when enabled).
+
+
+4. Where to look when a tracepoint doesn't fire
+------------------------------------------------
+
+Symptom: a fish_* event is missing from the trace despite the patch
+being in place.
+
+Checklist (in order of likelihood):
+  1. config/fish_events.txt — is the event listed? (most common miss)
+  2. tracetools_trace/tools/names.py — is the event in DEFAULT_EVENTS_ROS?
+     (install_fish_tracepoints patches this automatically — but only on
+     a fresh setup_fish run; pre-built images may have stale names.py)
+  3. Was the library that calls the tracepoint actually rebuilt?
+     Check `nm -D <lib>.so | grep ros_trace_fish_*` — if U (undefined
+     external), the call exists. Then check libtracetools.so for T
+     (defined). Then check ldd to confirm the patched libs are loaded.
+  4. Is the patch a TEMPLATE in a header (e.g., rclcpp/include/...)?
+     Only NEWLY-compiled binaries see template patches. Pre-built Isaac
+     ROS packages, etc., still have the old template instantiated.
+  5. Does the code path even reach the patch site? NITROS bypasses
+     rcl for hot data — patches at the rcl level won't fire for NITROS.
+
+
+5. Cross-FISH-boundary scenarios
+---------------------------------
+
+If a non-FISH publisher (e.g., third-party node not patched) publishes
+to a topic, fish_rclcpp_publish_link won't fire on the publisher side.
+But if the SUBSCRIBER is FISH-patched (either via the rclcpp executor
+hook or via NitrosSubscriber), fish_rclcpp_receive_link still fires.
+This lets the model attribute "external publisher → known sub" edges
+even when one end of the conversation isn't traced.

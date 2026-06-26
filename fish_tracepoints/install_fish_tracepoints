@@ -1612,6 +1612,81 @@ PATCH_RCLCPP_SCHED
 # entry points in rclcpp's publisher.hpp template. Closes the last gap in publish
 # coverage (rcl_publish + rcl_publish_serialized_message + rcl_publish_loaned_message
 # + these intra paths = every publish in the system).
+patch_rclcpp_executor_receive() {
+    step "Patching rclcpp Executor::execute_subscription (receive_link generic hook) ..."
+    python3 <<'PATCH_EXEC'
+import sys
+path = "/root/trace_overlay_ws/src/rclcpp/src/rclcpp/executor.cpp"
+with open(path) as f:
+    content = f.read()
+
+# Add include if missing
+if "tracetools/tracetools.h" not in content:
+    # Anchor: any existing include
+    inc_anchor = "#include \"rclcpp/executor.hpp\""
+    if inc_anchor in content:
+        content = content.replace(inc_anchor,
+            inc_anchor + "\n#include \"tracetools/tracetools.h\"   // FISH", 1)
+
+# Extern declaration once
+if "FISH __fish_active_callback extern executor.cpp" not in content:
+    anchor = "using namespace std::chrono_literals;"
+    if anchor in content:
+        content = content.replace(anchor,
+            'extern "C" __thread const void * __fish_active_callback;'
+            '  // FISH __fish_active_callback extern executor.cpp\n\n' + anchor, 1)
+    else:
+        # Fallback: insert before the first 'using' declaration
+        anchor2 = "\nnamespace rclcpp"
+        if anchor2 in content:
+            content = content.replace(anchor2,
+                '\nextern "C" __thread const void * __fish_active_callback;'
+                '  // FISH __fish_active_callback extern executor.cpp\n'
+                + anchor2, 1)
+
+# Inject receive_link at the START of Executor::execute_subscription
+old_block = """Executor::execute_subscription(rclcpp::SubscriptionBase::SharedPtr subscription)
+{
+  rclcpp::MessageInfo message_info;
+  message_info.get_rmw_message_info().from_intra_process = false;"""
+new_block = """Executor::execute_subscription(rclcpp::SubscriptionBase::SharedPtr subscription)
+{
+  // FISH: receive-side attribution for any (non-NITROS) subscription. Fires
+  // fish_rclcpp_receive_link with subscription_handle. __fish_active_callback
+  // is typically NULL here (executor between callbacks); dedup yields one
+  // event per subscription_handle, sufficient to mark the subscription as
+  // active. F-level cb attribution comes from rclcpp_subscription_callback_added.
+  TRACEPOINT(
+    fish_rclcpp_receive_link,
+    static_cast<const void *>(subscription->get_subscription_handle().get()),
+    __fish_active_callback);
+  rclcpp::MessageInfo message_info;
+  message_info.get_rmw_message_info().from_intra_process = false;"""
+
+if "FISH: receive-side attribution" in content:
+    print("    executor.cpp already patched")
+elif old_block in content:
+    content = content.replace(old_block, new_block, 1)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    executor.cpp patched — fish_rclcpp_receive_link in execute_subscription")
+else:
+    print("    WARN: execute_subscription anchor not found")
+PATCH_EXEC
+
+    # Build rclcpp
+    set +u && source "$OVERLAY_WS/install/setup.bash" && set -u
+    cd "$OVERLAY_WS"
+    colcon build \
+        --packages-select rclcpp \
+        --cmake-args \
+            -DBUILD_TESTING=OFF \
+            "-Dtracetools_DIR=$OVERLAY_WS/install/tracetools/share/tracetools/cmake" \
+        2>&1 | tail -5
+
+    log "  rclcpp built with executor.cpp receive_link hook"
+}
+
 patch_rclcpp_publisher_intra() {
     step "Patching rclcpp publisher.hpp (intra-process tracepoints) ..."
     python3 <<'PATCH_INTRA'
@@ -3335,6 +3410,7 @@ main() {
     # rclcpp intra-process publisher patch — same fish_rclcpp_publish_link
     # tracepoint, fires for same-process pub→sub that bypasses rcl entirely.
     $DO_LINK      && patch_rclcpp_publisher_intra
+    $DO_LINK      && patch_rclcpp_executor_receive
     # NITROS patch: only relevant when --link is on (fires fish_rclcpp_publish_link).
     # Always runs but skips gracefully if isaac_ros_nitros source isn't present.
     $DO_LINK      && patch_and_build_isaac_ros_nitros
