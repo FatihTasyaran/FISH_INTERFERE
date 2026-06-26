@@ -1,6 +1,67 @@
 Immediate Work Items
 ====================
 
+*** WCC SHAPE DETECTION — per-probe binary signatures (added 2026-06-26) ***
+Goal
+----
+Apply the GPU-DAG "skeleton + shape + embed" pattern to WCC instances,
+using the pipeline's natural period (≈7.5 ms in disparity_graph) as the
+bucket. With period = natural rate, each F fires AT MOST ONCE per period,
+so signature collapses to a binary fire-vector — drop patterns become
+2^N shapes (very tractable).
+
+Validated baseline (session fish_20260626_172710, disparity_graph,
+WCC#2 = Disparity+PointCloud+Monitor chain):
+  - Steady-state period (probe #3, 134 Hz target): 7.476 ms input,
+    7.495 ms monitor; 99.5 % end-to-end retention.
+  - Probe #2 (258 Hz target): PointCloud Codelet drops to 0 → "input-only"
+    shape dominant. Bottleneck = PointCloud, not Disparity.
+  - Probe #5 (165 Hz): pcout = 10 Hz → up-to-Disparity shape baskın.
+
+Three subtasks (do in order):
+
+(1) Per-probe binary signature histogram.
+    - Anchor probes via `/r2b/play_messages` service fires (9 fire = 9
+      probe trial in this benchmark; matches binary search trial count).
+    - For each probe window (anchor → anchor + 5 s), bucket time into
+      period-sized slots (≈7.5 ms for disparity_graph; pipeline-specific).
+    - For each WCC and each window slot, build a binary signature
+      [F1_fired, F2_fired, …, Fn_fired].
+    - Output: per-probe shape histogram — distinct signatures with
+      counts. Expect ~3-5 shapes per probe in practice.
+
+(2) Bottleneck characterization by shape.
+    - For each high-rate probe, identify the dominant non-happy shape.
+    - Map drop pattern → bottleneck stage (which F first transitions
+      from 1 to 0). E.g., "input-only" shape baskınsa Disparity Codelet
+      pair-sync limit'i, "up-to-Disparity" baskınsa PointCloud Codelet
+      compute limit'i.
+    - Output: per-WCC "sustainable rate" estimate + bottleneck label.
+
+(3) Integration into wcc_view.html.
+    - Canonical "happy shape" (skeleton overlay) + drop variants
+      (faded nodes). Frequency badge per shape.
+    - Optional: timeline strip — x = probe index, y categorical = shape,
+      cell color = shape id.
+    - Reuse existing _wcc_to_dot DOT renderer; parametrise it with a
+      "fade these node ids" set.
+
+Building blocks already in place:
+  - /api/wcc-svg returns nodes_meta keyed by F id (used here as
+    signature bit positions).
+  - mark_phases already separates data F's from init/zero_exec; only
+    "data" F's contribute to signature.
+  - extract_taskset.py computes hyperperiod / period boundaries
+    (per-executor + session-level) — reusable as bucket source if we
+    want session-natural period instead of pipeline-natural.
+
+Dependencies:
+  - Pipeline-natural period must be either (a) computed from observed
+    steady-state inter-arrival (probe #3 style), or (b) declared as a
+    parameter. Mixed-rate pipelines (e.g. timer-driven mixed with
+    sensor-driven) need per-WCC period.
+
+
 *** TASK #0 — Edge extraction validation + publisher coverage (added 2026-06-25) ***
 Background
 ----------
