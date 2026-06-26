@@ -68,6 +68,7 @@ NITROS C++ wrappers directly:
 |---------------------------|--------------------------------------------------------------------------------|---------|
 | fish_rclcpp_publish_link  | isaac_ros_nitros/src/nitros_publisher.cpp — NitrosPublisher::publish(NitrosTypeBase&) | NITROS publishes via compatible_pub_; deduped to per-(pub_handle, cb) pair |
 | fish_rclcpp_receive_link  | isaac_ros_nitros/src/nitros_subscriber.cpp — NitrosSubscriber::subscriberCallback | NITROS receives via compatible_sub_; __fish_active_callback IS set here (rclcpp executor invoked the wrapping lambda → callback_start fired) → proper F-level attribution |
+| callback_start/callback_end (synthetic) | isaac_ros_nitros/src/nitros_publisher.cpp — NitrosPublisherWaitable::execute | Wraps the Waitable's execute() window with callback_start(this)/callback_end(this) so __fish_active_callback IS set during the publishes inside extractMessagesFromGXF. Without this, NITROS data publishes triggered via the GXF MessageRelay path bypass attribution (rcl_publish fires but our publish_link wrapper's null-callback guard skips). Mirrors the pattern FISH already uses in patch_and_build_rclcpp_client (client.hpp response continuation). |
 
 The NitrosSubscriber patch is the highest-value one — it captures
 NITROS data flow regardless of whether the underlying transport was
