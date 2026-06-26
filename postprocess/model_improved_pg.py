@@ -643,6 +643,20 @@ def _gpu_pids_from_pg(session_id: str) -> set[int]:
 def attribute_aspects(session_id, executors, nodes, entities):
     t0 = time.time()
     cb_to_entity = {}
+    node_to_entities: dict = {}   # node_id → [e_id, ...]
+    for n_id, node in nodes.items():
+        for e_id in node.Z_v:
+            if e_id in entities:
+                node_to_entities.setdefault(n_id, []).append(e_id)
+    e_to_node = {e_id: n_id for n_id, ents in node_to_entities.items() for e_id in ents}
+    # Build pub_handle → owning Node lookup (from rcl_publisher_init)
+    nh_to_node = {n.A_v["node_handle"]: n_id for n_id, n in nodes.items()}
+    pub_handle_to_node = {}
+    for d in _all_events(session_id, "ros2:rcl_publisher_init"):
+        nh = d["payload"].get("node_handle")
+        ph = d["payload"].get("publisher_handle")
+        if nh in nh_to_node and ph:
+            pub_handle_to_node[ph] = nh_to_node[nh]
     for e_id, e in entities.items():
         cb = e.A_v.get("cb_addr")
         if cb and cb != "NA":
@@ -650,10 +664,12 @@ def attribute_aspects(session_id, executors, nodes, entities):
 
     publish_links = _all_events(session_id, "ros2:fish_rclcpp_publish_link")
     client_links = _all_events(session_id, "ros2:fish_rclcpp_client_link")
+    receive_links = _all_events(session_id, "ros2:fish_rclcpp_receive_link")
 
     if publish_links or client_links:
         log(f"attribute_aspects: tracepoint method "
-            f"({len(publish_links)} pub links, {len(client_links)} cli links)")
+            f"({len(publish_links)} pub links, {len(client_links)} cli links, "
+            f"{len(receive_links)} recv links)")
 
         pub_handle_to_topic = {
             d["payload"]["publisher_handle"]: d["payload"]["topic_name"]
@@ -663,8 +679,112 @@ def attribute_aspects(session_id, executors, nodes, entities):
             d["payload"]["client_handle"]: d["payload"]["service_name"]
             for d in _all_events(session_id, "ros2:rcl_client_init")
         }
-        seen_pub, seen_cli = set(), set()
-        total_pub = total_cli = 0
+        sub_handle_to_topic = {
+            d["payload"]["subscription_handle"]: d["payload"]["topic_name"]
+            for d in _all_events(session_id, "ros2:rcl_subscription_init")
+        }
+        seen_pub, seen_cli, seen_recv = set(), set(), set()
+        total_pub = total_cli = total_recv = 0
+        # NOTE on order: process receive_link FIRST so that publish_link
+        # augmentation (below) can prefer sub aspects with received=True.
+        for d in receive_links:
+            p = d["payload"]
+            topic = sub_handle_to_topic.get(p["subscription_handle"])
+            if not topic:
+                continue
+            if SKIP_PARAMSERVICE and _is_param_service(topic):
+                continue
+            pair = cb_to_entity.get(p["callback"])
+            if not pair:
+                for e_id, e in entities.items():
+                    for a in e.A_v.get("aspects", []):
+                        if a.get("aspect") == "sub" and a.get("topic") == topic:
+                            if (e_id, topic) not in seen_recv:
+                                seen_recv.add((e_id, topic))
+                                a["received"] = True
+                                total_recv += 1
+                            break
+                continue
+            e_id, entity = pair
+            if (e_id, topic) in seen_recv:
+                continue
+            seen_recv.add((e_id, topic))
+            for a in entity.A_v.get("aspects", []):
+                if a.get("aspect") == "sub" and a.get("topic") == topic:
+                    a["received"] = True
+                    a.setdefault("recv_cb_addrs", []).append(p["callback"])
+                    total_recv += 1
+                    break
+            else:
+                entity.A_v["aspects"].append({
+                    "aspect": "sub", "topic": topic, "received": True,
+                    "recv_cb_addrs": [p["callback"]],
+                })
+                total_recv += 1
+
+        # For publish_link events whose callback isn't a known entity-cb
+        # (e.g., NitrosPublisherWaitable's `this` pointer, GenericPublisher
+        # wrapper), fall back to "any entity in the publisher's owning Node
+        # that has an active sub aspect". The heuristic: a node that publishes
+        # X probably has an input sub Y that the data is derived from.
+        # We prefer entities with `received=True` (confirmed active via
+        # receive_link); among them, pick the first.
+        def _resolve_pub_entity(pub_handle, cb_addr):
+            pair = cb_to_entity.get(cb_addr)
+            if pair:
+                return pair
+            n_id = pub_handle_to_node.get(pub_handle)
+            if n_id is None:
+                return None
+            # Helper: is this aspect's topic/service a control-plane noise sub?
+            def _is_data_sub(a):
+                if a.get("aspect") != "sub":
+                    return False
+                t = a.get("topic")
+                if not t:
+                    return False
+                if _is_param_service(t):
+                    return False
+                # Strip /rosout, /_supported_types, etc.
+                if any(p in t for p in ("/parameter_events", "/rosout", "/_supported_types")):
+                    return False
+                return True
+            # First preference: active DATA sub entity in this node
+            for e_id in node_to_entities.get(n_id, []):
+                ent = entities[e_id]
+                for a in ent.A_v.get("aspects", []):
+                    if _is_data_sub(a) and a.get("received") is True:
+                        return (e_id, ent)
+            # Second: any DATA sub entity in this node
+            for e_id in node_to_entities.get(n_id, []):
+                ent = entities[e_id]
+                for a in ent.A_v.get("aspects", []):
+                    if _is_data_sub(a):
+                        return (e_id, ent)
+            # Third: timer entity (timer-driven publisher pattern)
+            for e_id in node_to_entities.get(n_id, []):
+                ent = entities[e_id]
+                if ent.A_v.get("etype") == "tmr":
+                    return (e_id, ent)
+            # Last resort: any entity (including control-plane)
+            for e_id in node_to_entities.get(n_id, []):
+                return (e_id, entities[e_id])
+            return None
+
+        total_pub_fallback = 0
+        # Find node's primary data sub (for "serv → data sub" augmentation).
+        def _primary_data_sub_entity(n_id):
+            for e_id in node_to_entities.get(n_id, []):
+                ent = entities[e_id]
+                for a in ent.A_v.get("aspects", []):
+                    if (a.get("aspect") == "sub" and a.get("topic")
+                            and not _is_param_service(a["topic"])
+                            and not any(p in a["topic"] for p in
+                                        ("/parameter_events", "/rosout", "/_supported_types"))
+                            and a.get("received") is True):
+                        return (e_id, ent)
+            return None
+
         for d in publish_links:
             p = d["payload"]
             topic = pub_handle_to_topic.get(p["publisher_handle"])
@@ -672,15 +792,34 @@ def attribute_aspects(session_id, executors, nodes, entities):
                 continue
             if SKIP_PARAMSERVICE and _is_param_service(topic):
                 continue
-            pair = cb_to_entity.get(p["callback"])
+            pair = _resolve_pub_entity(p["publisher_handle"], p["callback"])
             if not pair:
                 continue
+            if p["callback"] not in cb_to_entity:
+                total_pub_fallback += 1
             e_id, entity = pair
-            if (e_id, topic) in seen_pub:
-                continue
-            seen_pub.add((e_id, topic))
-            entity.A_v["aspects"].append({"aspect": "pub", "topic": topic})
-            total_pub += 1
+            if (e_id, topic) not in seen_pub:
+                seen_pub.add((e_id, topic))
+                entity.A_v["aspects"].append({"aspect": "pub", "topic": topic})
+                total_pub += 1
+            # Augmentation: if the resolved entity is a service (i.e., the
+            # publish_link came from a one-time negotiation cb on a service),
+            # also attribute to the node's primary active data sub. This
+            # captures the actual runtime data path (typically a Waitable
+            # under a sub→process→pub pipeline pattern).
+            if entity.A_v.get("etype") == "serv" and not _is_param_service(topic):
+                n_id = e_to_node.get(e_id)
+                if n_id is not None:
+                    aug = _primary_data_sub_entity(n_id)
+                    if aug:
+                        aug_eid, aug_entity = aug
+                        if (aug_eid, topic) not in seen_pub:
+                            seen_pub.add((aug_eid, topic))
+                            aug_entity.A_v["aspects"].append({
+                                "aspect": "pub", "topic": topic,
+                                "via_serv_augment": True,
+                            })
+                            total_pub += 1
         for d in client_links:
             p = d["payload"]
             service = cli_handle_to_service.get(p["client_handle"])
@@ -697,7 +836,8 @@ def attribute_aspects(session_id, executors, nodes, entities):
             seen_cli.add((e_id, service))
             entity.A_v["aspects"].append({"aspect": "cli", "service": service})
             total_cli += 1
-        log(f"  Tracepoint attribution: {total_pub} pub, {total_cli} cli")
+        log(f"  Tracepoint attribution: {total_pub} pub ({total_pub_fallback} via fallback), "
+            f"{total_cli} cli, {total_recv} recv")
     else:
         log("attribute_aspects: fallback (runtime callback window scan)")
         _attribute_via_runtime(session_id, executors, nodes, entities, cb_to_entity)
@@ -1148,9 +1288,13 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
             meta = topic_meta.get(topic, {})
             for pub_e, pub_n in pub_entities:
                 for sub_e, sub_n in sub_list:
-                    if pub_n == sub_n:
-                        continue
+                    # Do NOT skip same-node pub→sub: intra-process self-feedback
+                    # (e.g., NegotiatedPublisher in-node compat path) is a valid
+                    # graph edge. Tag it so consumers can filter.
+                    intra_node = (pub_n == sub_n)
                     attrs = {"rel": "comm", "level": "L2", "nature": "msg", "topic": topic}
+                    if intra_node:
+                        attrs["intra_node"] = True
                     if meta.get("msg_type"):
                         attrs["msg_type"] = meta["msg_type"]
                     if meta.get("avg_rate_hz"):
@@ -1162,12 +1306,12 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
         if cli_entities:
             for cli_e, cli_n in cli_entities:
                 for srv_e, srv_n in srv_list:
-                    if cli_n == srv_n:
-                        continue
+                    intra_node = (cli_n == srv_n)
+                    extra = {"intra_node": True} if intra_node else {}
                     G.add_edge(cli_e, srv_e, rel="comm", level="L2",
-                               nature="dep", service=service, direction="request")
+                               nature="dep", service=service, direction="request", **extra)
                     G.add_edge(srv_e, cli_e, rel="comm", level="L2",
-                               nature="dep", service=service, direction="response")
+                               nature="dep", service=service, direction="response", **extra)
                     l2_count += 2
     log(f"  L2 edges: {l2_count}")
 
@@ -1219,15 +1363,51 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
     if ext_count:
         log(f"  External boundary: {ext_count} edges")
 
-    # L3 propagation
+    # L3 propagation — direction-aware, no longer cartesian.
+    #
+    # Background: every entity owns ONE main F (the original callback),
+    # plus optionally a "continuation" F (created by split_callbacks for
+    # entities with `cli` aspect — handles the async response). The old
+    # logic took src × dst cartesian, which (1) sent topic publishes to
+    # response continuations and (2) sent response edges to request F's.
+    # Now we route:
+    #   topic msg edge: main F → main F (skip continuations both sides)
+    #   service request edge: cli main → srv main
+    #   service response edge: srv main → cli continuation (only)
+    #
+    # Filters use the F's `split` attr set by split_callbacks:
+    #   None or "request" → main / request F
+    #   "response"        → continuation F
+    def _funcs_main(entity_id):
+        return [f for f in entities[entity_id].Z_v
+                if f in functions
+                and functions[f].A_v.get("split") != "response"]
+
+    def _funcs_continuation(entity_id):
+        return [f for f in entities[entity_id].Z_v
+                if f in functions
+                and functions[f].A_v.get("split") == "response"]
+
     l3_count = 0
     for u, v, data in list(G.edges(data=True)):
         if data.get("level") != "L2" or data.get("rel") != "comm":
             continue
         if u not in entities or v not in entities:
             continue
-        src_funcs = [f for f in entities[u].Z_v if f in functions]
-        dst_funcs = [f for f in entities[v].Z_v if f in functions]
+        nature = data.get("nature")
+        direction = data.get("direction")
+        if nature == "dep" and direction == "response":
+            # Service response: srv main → cli continuation only
+            src_funcs = _funcs_main(u)
+            dst_funcs = _funcs_continuation(v)
+            if not dst_funcs:
+                # Fallback if no continuation was split out (no client_link
+                # event captured): treat the cli's main F as the receiver too.
+                dst_funcs = _funcs_main(v)
+        else:
+            # Topic msg, service request: main → main
+            src_funcs = _funcs_main(u)
+            dst_funcs = _funcs_main(v)
         for sf in src_funcs:
             for df in dst_funcs:
                 G.add_edge(sf, df, rel="comm", level="L3",
