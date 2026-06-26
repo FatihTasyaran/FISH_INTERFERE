@@ -201,6 +201,94 @@ binaries (they still call the same template, the template just calls
 into librclcpp now).
 
 
+FOLLOW-UP 2026-06-26 13:30 — MULTI-CONTAINER TEST DEFINITIVE RESULT
+====================================================================
+User pointed out: multi-executor setup should bypass intra-process
+issue. Built and ran a multi-container variant of
+isaac_ros_disparity_node.py (each ComposableNode in its own container)
+in /tmp/multic_test, session fish_20260626_111110.
+
+Setup verified: 6 separate component_container_mt processes
+(pid 1662 cnt_data_loader, 1807 cnt_prep_left, 1808 cnt_prep_right,
+1809 cnt_disparity, 1810 cnt_monitor, 1811 cnt_playback).
+
+PUBLISHER ANALYSIS for /r2b/left/image_rect:
+  Publisher: pid 1811 (cnt_playback / isaac_ros_benchmark::NitrosPlaybackNode)
+  Subscriber: pid 1809 cnt_disparity DisparityNode
+  Cross-process → MUST go through DDS
+
+Subscriber-side activity (cb 0x77032C3A2338 in pid 1809): 4024 fires
+Publisher-side publish_link events (cb 0x... in pid 1811): 2 events
+Coverage: <0.05% — IDENTICAL TO SINGLE-CONTAINER
+
+CONCLUSION: NITROS data flow takes an out-of-band channel that
+bypasses rcl entirely, even across processes. All our publish_link
+patches (rcl_publish, rcl_publish_serialized_message,
+rcl_publish_loaned_message, do_intra_process_publish) are ineffective
+for NITROS-NITROS pub-sub.
+
+Verified librcl.so has all 3 patches (disassembled rcl_publish:
+`call ros_trace_fish_rclcpp_publish_link@plt` right after `ros_trace_rcl_publish`).
+Patches are in place but not hit for NITROS data path.
+
+LIKELY MECHANISM: NITROS uses CUDA IPC + shared GPU memory via GXF
+MessageRelay components. Negotiation succeeds → publisher routes
+data through GXF graph layer → subscriber's NitrosSubscriber receives
+via GXF egress, NOT via DDS. ROS-level publish/subscribe is reserved
+for the negotiation handshake (which is the 2 events we see).
+
+ROOT CAUSE THESIS
+=================
+The publish_link attribution is structurally insufficient for
+NITROS-based pipelines. NITROS optimizes the data path to avoid
+ROS entirely once negotiated; we can't see what we can't trace.
+
+RECOMMENDED STRATEGY PIVOT
+==========================
+Stop hunting for the publish entry — instrument the RECEIVE side.
+NitrosSubscriber::subscriberCallback fires once per data delivery
+regardless of how the data arrived (DDS, CUDA IPC, shared mem).
+Add tracepoint:
+
+  TRACEPOINT(fish_nitros_receive_link,
+             static_cast<const void*>(compatible_sub_->get_subscription_handle().get()),
+             __fish_active_callback);
+
+This gives:
+  - subscription_handle → join with rcl_subscription_init → topic
+  - active callback at receive time → ownership entity
+  - per-message granularity (4024 events for our test case)
+
+Edge construction in model_improved_pg.py becomes:
+  - Pub_entity: any entity owning rcl_publisher_init for topic T
+  - Sub_entity: from rclcpp_subscription_callback_added → cb_addr → entity
+  - Edge T pub→sub: just join on topic name, no publish_link needed
+  - F-level: use rcl_publisher_init.node_handle to find the publishing
+    Node, then attribute to a representative F (or skip F-level pub
+    attribution and only do N→N edges if no F can be resolved).
+
+OPTIONAL: also instrument NitrosPublisher::extractMessagesFromGXF
+or NitrosPublisherWaitable::execute to capture data-DEPARTURE events
+for the GPU-side timing. But the receive side gives us the edge
+structure on its own.
+
+NEXT CONCRETE ACTIONS
+=====================
+1. Add fish_nitros_receive_link tracepoint patch to install_fish_tracepoints
+   (modify isaac_ros_nitros/src/nitros_subscriber.cpp at start of
+   NitrosSubscriber::subscriberCallback). Maps subscription_handle to
+   active callback, fires per-message.
+2. Refactor model_improved_pg.py:
+   (a) Build N→N edges from rcl_publisher_init + rcl_subscription_init
+       + topic match (STATIC, always available).
+   (b) For F-level, try publish_link AND new fish_nitros_receive_link;
+       fall back to N-level when F is ambiguous.
+3. Revert / keep the NITROS-side publish patch (negligible benefit,
+   adds maintenance — but it's already in install script).
+4. Continue with TASK #0 steps 3, 4, 5 (L3 cartesian, same-node, edge
+   validation harness).
+
+
 *** TOP PRIORITY (talk-driven, added 2026-05-28) ***
 GPU plugin keyword list -> fish_settings.ini (configurable, like tracepoints)
 -----------------------------------------------------------------------------
