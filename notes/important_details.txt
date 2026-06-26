@@ -44,6 +44,8 @@ ALL nodes that link against the patched libraries.
 | fish_rclcpp_publish_link  (e, executor) | rclcpp/src/rclcpp/executor.cpp — (not yet wired here, only receive_link is patched at executor) | — |
 | fish_rclcpp_client_link                 | rcl/src/rcl/client.c — rcl_send_request        | service client requests |
 | fish_rclcpp_receive_link (rclcpp)       | rclcpp/src/rclcpp/executor.cpp — Executor::execute_subscription | per-subscription receive on inter-process path; __fish_active_callback typically NULL at top of execute_subscription, dedup yields one event per subscription_handle (sufficient for sub-entity identification) |
+| fish_rclcpp_waitable_init               | rclcpp/src/rclcpp/node_interfaces/node_waitables.cpp — NodeWaitables::add_waitable | one-shot at Waitable registration; records (waitable_ptr, node_handle, callback_group). Makes Waitable a first-class entity peer to sub/serv/tmr |
+| callback_start / callback_end (waitable wrap) | rclcpp/src/rclcpp/executor.cpp — Executor::execute_any_executable, around `any_exec.waitable->execute(...)` | Wraps the Waitable dispatch with callback_start(this) / callback_end(this), using the Waitable's `this` ptr as the cb-id. This makes __fish_active_callback non-NULL inside Waitable::execute(), so any publish_link / client_link fired from within (e.g. NitrosPublisherWaitable extractMessagesFromGXF) attributes to the Waitable entity rather than being dropped or attached to an unrelated callback. The same `this` matches what fish_rclcpp_waitable_init recorded → exact lookup in cb_to_entity, no heuristics. |
 | fish_rclcpp_subscription_init / _callback_added (GenericSubscription) | rclcpp/include/rclcpp/generic_subscription.hpp ctor | GenericSubscription's ctor lacks the standard subscription tracepoints upstream — FISH adds them so ros2 bag / ros2 topic echo / ros2_benchmark MonitorNode land an F vertex |
 | fish_rclcpp_timer_init                  | rclcpp + rclpy timer initialization paths      | atomic period at timer create time |
 | fish_rclcpp_executor_init               | rclcpp/include/rclcpp/executors/...            | executor lifecycle / threading model |
@@ -68,13 +70,70 @@ NITROS C++ wrappers directly:
 |---------------------------|--------------------------------------------------------------------------------|---------|
 | fish_rclcpp_publish_link  | isaac_ros_nitros/src/nitros_publisher.cpp — NitrosPublisher::publish(NitrosTypeBase&) | NITROS publishes via compatible_pub_; deduped to per-(pub_handle, cb) pair |
 | fish_rclcpp_receive_link  | isaac_ros_nitros/src/nitros_subscriber.cpp — NitrosSubscriber::subscriberCallback | NITROS receives via compatible_sub_; __fish_active_callback IS set here (rclcpp executor invoked the wrapping lambda → callback_start fired) → proper F-level attribution |
-| callback_start/callback_end (synthetic) | isaac_ros_nitros/src/nitros_publisher.cpp — NitrosPublisherWaitable::execute | Wraps the Waitable's execute() window with callback_start(this)/callback_end(this) so __fish_active_callback IS set during the publishes inside extractMessagesFromGXF. Without this, NITROS data publishes triggered via the GXF MessageRelay path bypass attribution (rcl_publish fires but our publish_link wrapper's null-callback guard skips). Mirrors the pattern FISH already uses in patch_and_build_rclcpp_client (client.hpp response continuation). |
+| fish_nitros_sub_link      | isaac_ros_nitros/src/nitros_node.cpp — NitrosNode::postNegotiationCallback (after sub/pub linking loop) | one-shot per NitrosSubscriber. Records (node_handle, group_addr, subscription_handle, entity_name, component_name) — links rclcpp sub → its GXF Receiver port |
+| fish_nitros_pub_link      | isaac_ros_nitros/src/nitros_node.cpp — NitrosNode::postNegotiationCallback (after sub/pub linking loop) | one-shot per NitrosPublisher. Records (node_handle, group_addr, publisher_handle, waitable_handle, entity_name, component_name) — links rclcpp pub + Waitable → its GXF Transmitter port |
+
+The NITROS-specific NitrosPublisherWaitable::execute callback_start/end
+wrap was REMOVED — the generic Executor::execute_waitable wrap (in
+rclcpp/src/rclcpp/executor.cpp) covers ALL Waitable subclasses,
+including NitrosPublisherWaitable, with the Waitable's `this` ptr as
+the cb-id. Combined with fish_rclcpp_waitable_init's record at
+NodeWaitables::add_waitable, every Waitable is a first-class entity
+peer to sub/serv/tmr — its publishes/clients attribute to it via
+exact cb_to_entity lookup, no heuristics needed.
 
 The NitrosSubscriber patch is the highest-value one — it captures
 NITROS data flow regardless of whether the underlying transport was
 DDS, GXF MessageRelay, or CUDA IPC. The NITROS publisher patch is
 mostly belt-and-suspenders (handshake-time fires anyway through
 compatible_pub_->publish → standard rcl path).
+
+
+### NITROS GXF topology (static, no msg correlation)
+
+The pub/sub + Waitable instrumentation captures the rclcpp boundary
+of every NitrosNode (input subscriptions, output Waitables) but the
+INTERNAL data flow inside a NitrosNode goes through GXF MessageRelay
+components + Codelet.tick(). This is opaque to rclcpp-level
+instrumentation. Without intra-node linking, an N-input M-output
+NitrosNode shows up as N disconnected input subs + M disconnected
+output Waitables in the FISH graph.
+
+`fish_nitros_sub_link` + `fish_nitros_pub_link` close this gap.
+Together they encode the static GXF topology (Codelet I/O wiring):
+
+  - Patch site: NitrosNode::postNegotiationCallback in
+    isaac_ros_nitros/src/nitros_node.cpp, after the loop that links
+    NitrosSubscriber/Publisher to their GXF Receiver/Transmitter
+    pointers (~line 700, just before `runGraphAsync()`). At this
+    point compatible_sub_ + waitable_ are both ready.
+  - For each NitrosPublisherSubscriberGroup (= one GraphIOGroup =
+    one Codelet chain), fire one sub_link per ingress and one
+    pub_link per egress. The (node_handle, group_addr) pair is the
+    join key.
+  - Header patches in nitros_subscriber.hpp + nitros_publisher.hpp
+    add public getters `getCompatibleSubscriber()`,
+    `getCompatiblePublisher()`, `getNitrosWaitable()` so the dump
+    loop can read the rclcpp handles without exposing internals.
+
+Postprocess model side: for each group with non-empty ingress AND
+non-empty egress, generate cross-product L3 edges
+sub_F → waitable_F with nature="gxf_internal" + intra_node=True.
+This makes a node-internal "input data feeds output data" link
+without requiring per-message correlation or any runtime overhead
+beyond the one-shot init tracepoints. msg_id correlation IS NOT
+NEEDED for graph extraction (it would only be needed for per-frame
+latency analysis, which is a separate concern).
+
+Validated on the multi-container stereo_image_proc_benchmark
+pipeline (`fish_20260626_155010`):
+  - 8 sub_link + 5 pub_link events → 3 GraphIOGroups joined
+  - 12 intra-node L3 edges added (PrepLeft 2×2, PrepRight 2×2,
+    Disparity 4×1)
+  - Pipeline collapsed from 7 disconnected WCCs (Waitable-only
+    attribution) to 2 (the second split is PlaybackNode, which is
+    raw rclcpp test-harness — not a NitrosNode — and has its own
+    internal buffer→replay timer logic outside the GXF scope).
 
 
 ### Naming convention note

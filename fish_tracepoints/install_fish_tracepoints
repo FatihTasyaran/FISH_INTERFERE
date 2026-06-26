@@ -862,6 +862,61 @@ TRACEPOINT_EVENT(
   )
 )
 
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_rclcpp_waitable_init,
+  TP_ARGS(
+    const void *, waitable_arg,
+    const void *, node_handle_arg,
+    const void *, callback_group_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, waitable, waitable_arg)
+    ctf_integer_hex(const void *, node_handle, node_handle_arg)
+    ctf_integer_hex(const void *, callback_group, callback_group_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_nitros_sub_link,
+  TP_ARGS(
+    const void *, node_handle_arg,
+    const void *, group_addr_arg,
+    const void *, subscription_handle_arg,
+    const char *, entity_name_arg,
+    const char *, component_name_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, node_handle, node_handle_arg)
+    ctf_integer_hex(const void *, group_addr, group_addr_arg)
+    ctf_integer_hex(const void *, subscription_handle, subscription_handle_arg)
+    ctf_string(entity_name, entity_name_arg)
+    ctf_string(component_name, component_name_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_nitros_pub_link,
+  TP_ARGS(
+    const void *, node_handle_arg,
+    const void *, group_addr_arg,
+    const void *, publisher_handle_arg,
+    const void *, waitable_handle_arg,
+    const char *, entity_name_arg,
+    const char *, component_name_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, node_handle, node_handle_arg)
+    ctf_integer_hex(const void *, group_addr, group_addr_arg)
+    ctf_integer_hex(const void *, publisher_handle, publisher_handle_arg)
+    ctf_integer_hex(const void *, waitable_handle, waitable_handle_arg)
+    ctf_string(entity_name, entity_name_arg)
+    ctf_string(component_name, component_name_arg)
+  )
+)
+
 """
     content = content.replace(INSERT_BEFORE, new_events + INSERT_BEFORE)
     with open(path, "w") as f:
@@ -898,6 +953,45 @@ DECLARE_TRACEPOINT(
   fish_rclcpp_receive_link,
   const void * subscription_handle,
   const void * callback)
+
+/// `fish_rclcpp_waitable_init` — fires when a Waitable is added to a node's
+/// callback group. Records the Waitable's `this` pointer + the node_handle it
+/// belongs to. Lets FISH model Waitable as a first-class execution unit
+/// (peer to subscription/timer/service) instead of attributing its actions
+/// to other entities via heuristics.
+DECLARE_TRACEPOINT(
+  fish_rclcpp_waitable_init,
+  const void * waitable,
+  const void * node_handle,
+  const void * callback_group)
+
+/// `fish_nitros_sub_link` — fires once at NitrosNode postNegotiation for
+/// every NitrosSubscriber. Links rclcpp subscription_handle to its GXF
+/// I/O group + ComponentInfo (entity_name/component_name = receiver port
+/// in the NITROS GXF graph). The (node_handle, group_addr) pair joins
+/// with corresponding fish_nitros_pub_link events to recover the per-Codelet
+/// intra-node data flow topology.
+DECLARE_TRACEPOINT(
+  fish_nitros_sub_link,
+  const void * node_handle,
+  const void * group_addr,
+  const void * subscription_handle,
+  const char * entity_name,
+  const char * component_name)
+
+/// `fish_nitros_pub_link` — fires once at NitrosNode postNegotiation for
+/// every NitrosPublisher. Links rclcpp publisher_handle + Waitable's `this`
+/// to its GXF I/O group + ComponentInfo (entity_name/component_name =
+/// transmitter port in the NITROS GXF graph). Joins with fish_nitros_sub_link
+/// via (node_handle, group_addr) to give exact intra-node sub→waitable edges.
+DECLARE_TRACEPOINT(
+  fish_nitros_pub_link,
+  const void * node_handle,
+  const void * group_addr,
+  const void * publisher_handle,
+  const void * waitable_handle,
+  const char * entity_name,
+  const char * component_name)
 
 /// Thread-local: the callback currently being dispatched by the executor.
 extern __thread const void * __fish_active_callback;
@@ -1043,6 +1137,64 @@ void TRACEPOINT(
     fish_rclcpp_receive_link,
     subscription_handle,
     callback);
+}
+
+void TRACEPOINT(
+  fish_rclcpp_waitable_init,
+  const void * waitable,
+  const void * node_handle,
+  const void * callback_group)
+{
+  /* No dedup — each Waitable is registered exactly once. */
+  CONDITIONAL_TP(
+    fish_rclcpp_waitable_init,
+    waitable,
+    node_handle,
+    callback_group);
+}
+
+void TRACEPOINT(
+  fish_nitros_sub_link,
+  const void * node_handle,
+  const void * group_addr,
+  const void * subscription_handle,
+  const char * entity_name,
+  const char * component_name)
+{
+  /* No dedup — each NitrosSubscriber's topology is recorded exactly once
+     at NitrosNode postNegotiation time. */
+  if (entity_name == NULL) entity_name = "";
+  if (component_name == NULL) component_name = "";
+  CONDITIONAL_TP(
+    fish_nitros_sub_link,
+    node_handle,
+    group_addr,
+    subscription_handle,
+    entity_name,
+    component_name);
+}
+
+void TRACEPOINT(
+  fish_nitros_pub_link,
+  const void * node_handle,
+  const void * group_addr,
+  const void * publisher_handle,
+  const void * waitable_handle,
+  const char * entity_name,
+  const char * component_name)
+{
+  /* No dedup — each NitrosPublisher's topology is recorded exactly once
+     at NitrosNode postNegotiation time. */
+  if (entity_name == NULL) entity_name = "";
+  if (component_name == NULL) component_name = "";
+  CONDITIONAL_TP(
+    fish_nitros_pub_link,
+    node_handle,
+    group_addr,
+    publisher_handle,
+    waitable_handle,
+    entity_name,
+    component_name);
 }
 
 """
@@ -1612,8 +1764,8 @@ PATCH_RCLCPP_SCHED
 # entry points in rclcpp's publisher.hpp template. Closes the last gap in publish
 # coverage (rcl_publish + rcl_publish_serialized_message + rcl_publish_loaned_message
 # + these intra paths = every publish in the system).
-patch_rclcpp_executor_receive() {
-    step "Patching rclcpp Executor::execute_subscription (receive_link generic hook) ..."
+patch_rclcpp_executor_attribution() {
+    step "Patching rclcpp executor.cpp + node_waitables.cpp (receive_link + waitable as first-class entity) ..."
     python3 <<'PATCH_EXEC'
 import sys
 path = "/root/trace_overlay_ws/src/rclcpp/src/rclcpp/executor.cpp"
@@ -1664,17 +1816,97 @@ new_block = """Executor::execute_subscription(rclcpp::SubscriptionBase::SharedPt
   message_info.get_rmw_message_info().from_intra_process = false;"""
 
 if "FISH: receive-side attribution" in content:
-    print("    executor.cpp already patched")
+    print("    executor.cpp execute_subscription already patched")
+elif old_block in content:
+    content = content.replace(old_block, new_block, 1)
+    print("    executor.cpp patched — fish_rclcpp_receive_link in execute_subscription")
+else:
+    print("    WARN: execute_subscription anchor not found")
+
+# Wrap any_exec.waitable->execute(...) with callback_start/callback_end so
+# Waitable becomes a first-class F vertex. Active-cb thread-local is set to
+# the Waitable's `this` pointer for the duration of execute(), letting any
+# publishes/services issued from within the Waitable's execute() attribute
+# correctly through fish_rclcpp_publish_link / client_link.
+wait_old = (
+    "  if (any_exec.waitable) {\n"
+    "    any_exec.waitable->execute(any_exec.data);\n"
+    "  }"
+)
+wait_new = (
+    "  if (any_exec.waitable) {\n"
+    "    // FISH: dispatch a Waitable as a first-class callback. cb-id is the\n"
+    "    // Waitable's `this` pointer; matches what fish_rclcpp_waitable_init\n"
+    "    // recorded at node_interfaces::NodeWaitables::add_waitable().\n"
+    "    const void * __fish_w_cb = static_cast<const void *>(any_exec.waitable.get());\n"
+    "    TRACEPOINT(callback_start, __fish_w_cb, false);\n"
+    "    any_exec.waitable->execute(any_exec.data);\n"
+    "    TRACEPOINT(callback_end, __fish_w_cb);\n"
+    "  }"
+)
+if "FISH: dispatch a Waitable" in content:
+    print("    executor.cpp execute_waitable already wrapped")
+elif wait_old in content:
+    content = content.replace(wait_old, wait_new, 1)
+    print("    executor.cpp patched — callback_start/end wrap around execute_waitable")
+else:
+    print("    WARN: execute_waitable anchor not found")
+
+with open(path, "w") as f:
+    f.write(content)
+PATCH_EXEC
+
+    python3 <<'PATCH_NODEWAIT'
+import sys
+path = "/root/trace_overlay_ws/src/rclcpp/src/rclcpp/node_interfaces/node_waitables.cpp"
+with open(path) as f:
+    content = f.read()
+
+# Include tracetools
+if "tracetools/tracetools.h" not in content:
+    # Anchor: existing include of node_waitables.hpp
+    inc_anchor = '#include "rclcpp/node_interfaces/node_waitables.hpp"'
+    if inc_anchor in content:
+        content = content.replace(inc_anchor,
+            inc_anchor + '\n#include "tracetools/tracetools.h"   // FISH', 1)
+
+# Patch add_waitable to fire fish_rclcpp_waitable_init at top.
+old_block = (
+    "void\n"
+    "NodeWaitables::add_waitable(\n"
+    "  rclcpp::Waitable::SharedPtr waitable_ptr,\n"
+    "  rclcpp::CallbackGroup::SharedPtr group)\n"
+    "{\n"
+)
+new_block = (
+    "void\n"
+    "NodeWaitables::add_waitable(\n"
+    "  rclcpp::Waitable::SharedPtr waitable_ptr,\n"
+    "  rclcpp::CallbackGroup::SharedPtr group)\n"
+    "{\n"
+    "  // FISH: register Waitable as a first-class entity. Records its `this`\n"
+    "  // pointer + the node_handle it belongs to + the callback_group (if any\n"
+    "  // explicit, else default). The same `this` is later passed to\n"
+    "  // TRACEPOINT(callback_start/_end) around Executor::execute_any_executable.\n"
+    "  TRACEPOINT(\n"
+    "    fish_rclcpp_waitable_init,\n"
+    "    static_cast<const void *>(waitable_ptr.get()),\n"
+    "    static_cast<const void *>(node_base_->get_shared_rcl_node_handle().get()),\n"
+    "    static_cast<const void *>(group.get()));\n"
+)
+
+if "FISH: register Waitable as a first-class entity" in content:
+    print("    node_waitables.cpp already patched")
 elif old_block in content:
     content = content.replace(old_block, new_block, 1)
     with open(path, "w") as f:
         f.write(content)
-    print("    executor.cpp patched — fish_rclcpp_receive_link in execute_subscription")
+    print("    node_waitables.cpp patched — fish_rclcpp_waitable_init at add_waitable")
 else:
-    print("    WARN: execute_subscription anchor not found")
-PATCH_EXEC
+    print("    WARN: add_waitable anchor not found")
+PATCH_NODEWAIT
 
-    # Build rclcpp
+    # Build rclcpp once (covers both executor.cpp + node_waitables.cpp changes)
     set +u && source "$OVERLAY_WS/install/setup.bash" && set -u
     cd "$OVERLAY_WS"
     colcon build \
@@ -1684,7 +1916,7 @@ PATCH_EXEC
             "-Dtracetools_DIR=$OVERLAY_WS/install/tracetools/share/tracetools/cmake" \
         2>&1 | tail -5
 
-    log "  rclcpp built with executor.cpp receive_link hook"
+    log "  rclcpp built with executor attribution hooks (receive_link + waitable as first-class entity)"
 }
 
 patch_rclcpp_publisher_intra() {
@@ -1871,59 +2103,14 @@ with open(path, "w") as f:
 print("    nitros_publisher.cpp patched — fish_rclcpp_publish_link in NitrosPublisher::publish")
 PATCH_NITROS
 
-    # Publisher Waitable: wrap NitrosPublisherWaitable::execute with
-    # callback_start/callback_end. Without this, NITROS publishes that originate
-    # from the GXF-triggered Waitable path have __fish_active_callback=NULL
-    # (Waitable::execute is not a "callback" in the rclcpp instrumentation
-    # sense — rcl_publish fires ~25K times for the stereo benchmark but our
-    # publish_link wrapper's `if (callback == NULL) return` guard skips all
-    # of them). Wrapping with callback_start/end (the same pattern FISH uses
-    # for service client response continuation in client.hpp) makes the
-    # Waitable instance pointer the active callback for the duration of
-    # extractMessagesFromGXF, so publish_link captures it (deduped to one
-    # event per (publisher_handle, waitable_addr) pair).
-    python3 <<'PATCH_NITROS_WAITABLE'
-import sys
-path = "/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/src/nitros_publisher.cpp"
-with open(path) as f:
-    content = f.read()
-
-if "FISH: NitrosPublisherWaitable callback_start" in content:
-    print("    nitros_publisher.cpp Waitable::execute already patched")
-else:
-    old_block = """void NitrosPublisherWaitable::execute(std::shared_ptr<void> & data)
-{
-  (void)data;  // unused"""
-    new_block = """void NitrosPublisherWaitable::execute(std::shared_ptr<void> & data)
-{
-  // FISH: NitrosPublisherWaitable callback_start — wrap the Waitable's execute
-  // window so __fish_active_callback is set during the publishes inside.
-  // Mirrors the client.hpp response-continuation pattern.
-  TRACEPOINT(callback_start, static_cast<const void *>(this), false);
-  (void)data;  // unused"""
-    if old_block in content:
-        content = content.replace(old_block, new_block, 1)
-        # Add callback_end before the closing brace of execute (it ends with
-        # `  nvtxRangePopWrapper();\n}`)
-        old_tail = """  nvtxRangePopWrapper();
-}
-
-void NitrosPublisherWaitable::add_to_wait_set"""
-        new_tail = """  nvtxRangePopWrapper();
-  TRACEPOINT(callback_end, static_cast<const void *>(this));
-}
-
-void NitrosPublisherWaitable::add_to_wait_set"""
-        if old_tail in content:
-            content = content.replace(old_tail, new_tail, 1)
-            with open(path, "w") as f:
-                f.write(content)
-            print("    nitros_publisher.cpp Waitable::execute wrapped (callback_start/end)")
-        else:
-            print("    WARN: Waitable::execute tail anchor not found")
-    else:
-        print("    WARN: Waitable::execute head anchor not found")
-PATCH_NITROS_WAITABLE
+    # Note: NitrosPublisherWaitable::execute is no longer wrapped here. The
+    # generic Executor::execute_waitable callback_start/end wrap installed by
+    # patch_rclcpp_executor_attribution covers ALL Waitable subclasses
+    # (including NitrosPublisherWaitable) with the Waitable's `this` pointer
+    # as the cb-id. That same `this` was recorded by fish_rclcpp_waitable_init
+    # at NodeWaitables::add_waitable(), so the Waitable shows up as a
+    # first-class F vertex bound to its owning node + callback_group. No
+    # NITROS-specific patch needed.
 
     # Receive-side: patch NitrosSubscriber::subscriberCallback to fire
     # fish_rclcpp_receive_link with the compatible_sub_ subscription handle +
@@ -1984,6 +2171,213 @@ with open(path, "w") as f:
     f.write(content)
 print("    nitros_subscriber.cpp patched — fish_rclcpp_receive_link in subscriberCallback")
 PATCH_NITROS_SUB
+
+    # ──────────────────────────────────────────────────────────────────
+    # FISH NITROS topology dump — adds two tracepoints fired at
+    # NitrosNode::postNegotiationCallback after sub/pub setup is complete.
+    # Each (sub_link, pub_link) pair with the same (node_handle, group_addr)
+    # belongs to one GraphIOGroup (= one Codelet chain). The model joins
+    # these to produce exact intra-node L3 edges (sub → waitable) without
+    # heuristics.
+    # ──────────────────────────────────────────────────────────────────
+
+    # Add getters to NitrosSubscriber header (compatible_sub_ accessor).
+    python3 <<'PATCH_NITROS_SUB_HPP'
+import sys
+path = "/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/include/isaac_ros_nitros/nitros_subscriber.hpp"
+try:
+    with open(path) as f:
+        content = f.read()
+except FileNotFoundError:
+    print(f"    skipping (file not found): {path}")
+    sys.exit(0)
+
+if "getCompatibleSubscriber" in content:
+    print("    nitros_subscriber.hpp already has getter, skipping")
+    sys.exit(0)
+
+# Insert public getter before the first "private:" or class body end
+anchor = "  std::shared_ptr<rclcpp::SubscriptionBase> compatible_sub_{nullptr};"
+if anchor not in content:
+    print("    WARN: compatible_sub_ field anchor not found")
+    sys.exit(1)
+
+# Add a public getter before this private field's surrounding section
+# Strategy: find the closest "private:" before the field and add public getter before it.
+field_idx = content.find(anchor)
+private_idx = content.rfind("private:", 0, field_idx)
+if private_idx < 0:
+    print("    WARN: private: section not found before compatible_sub_")
+    sys.exit(1)
+
+getter = (
+    "  // FISH: expose compatible subscriber for GXF topology tracepoint\n"
+    "  std::shared_ptr<rclcpp::SubscriptionBase> getCompatibleSubscriber() const\n"
+    "  {\n"
+    "    return compatible_sub_;\n"
+    "  }\n\n"
+)
+content = content[:private_idx] + getter + content[private_idx:]
+with open(path, "w") as f:
+    f.write(content)
+print("    nitros_subscriber.hpp patched — getCompatibleSubscriber() added")
+PATCH_NITROS_SUB_HPP
+
+    # Add getters to NitrosPublisher header (compatible_pub_ + waitable_).
+    python3 <<'PATCH_NITROS_PUB_HPP'
+import sys
+path = "/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/include/isaac_ros_nitros/nitros_publisher.hpp"
+try:
+    with open(path) as f:
+        content = f.read()
+except FileNotFoundError:
+    print(f"    skipping (file not found): {path}")
+    sys.exit(0)
+
+if "getCompatiblePublisher" in content:
+    print("    nitros_publisher.hpp already has getters, skipping")
+    sys.exit(0)
+
+anchor = "  std::shared_ptr<rclcpp::PublisherBase> compatible_pub_{nullptr};"
+if anchor not in content:
+    print("    WARN: compatible_pub_ field anchor not found")
+    sys.exit(1)
+
+field_idx = content.find(anchor)
+private_idx = content.rfind("private:", 0, field_idx)
+if private_idx < 0:
+    print("    WARN: private: section not found before compatible_pub_")
+    sys.exit(1)
+
+getter = (
+    "  // FISH: expose compatible publisher + Waitable for GXF topology tracepoint\n"
+    "  std::shared_ptr<rclcpp::PublisherBase> getCompatiblePublisher() const\n"
+    "  {\n"
+    "    return compatible_pub_;\n"
+    "  }\n\n"
+    "  std::shared_ptr<NitrosPublisherWaitable> getNitrosWaitable() const\n"
+    "  {\n"
+    "    return waitable_;\n"
+    "  }\n\n"
+)
+content = content[:private_idx] + getter + content[private_idx:]
+with open(path, "w") as f:
+    f.write(content)
+print("    nitros_publisher.hpp patched — getCompatiblePublisher() + getNitrosWaitable() added")
+PATCH_NITROS_PUB_HPP
+
+    # Patch nitros_node.cpp postNegotiationCallback to dump GXF I/O topology
+    # after sub/pub pointers are linked (i.e., after the existing pub/sub
+    # setup loop). This is the single point where compatible_sub_ + waitable_
+    # are both guaranteed to exist for every NitrosPublisher/Subscriber.
+    python3 <<'PATCH_NITROS_NODE'
+import sys
+path = "/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/src/nitros_node.cpp"
+try:
+    with open(path) as f:
+        content = f.read()
+except FileNotFoundError:
+    print(f"    skipping (file not found): {path}")
+    sys.exit(0)
+
+if "FISH: GXF I/O group topology dump" in content:
+    print("    nitros_node.cpp already patched, skipping")
+    sys.exit(0)
+
+# Add tracetools include
+if "tracetools/tracetools.h" not in content:
+    inc_anchor = '#include "isaac_ros_nitros/nitros_node.hpp"'
+    if inc_anchor in content:
+        content = content.replace(inc_anchor,
+            inc_anchor + '\n#include "tracetools/tracetools.h"   // FISH', 1)
+
+# Find the end of the post-negotiation pub/sub linking loop — anchor on
+# the closing brace pattern that precedes the "Run the loaded application"
+# or whatever comes after the for-loop over nitros_pub_sub_groups_.
+# Strategy: anchor on the closing of the per-group for-loop. The line that
+# terminates the LAST inner loop and outer brace is recognisable by
+# context. We insert immediately after the for-loop closing brace.
+#
+# Safer anchor: insert just before the "// Run the loaded application"
+# or the "// Setup callback group" line, whichever appears first after
+# the per-group setup.
+import re
+
+# Try several anchors that are stable across NITROS minor versions.
+candidates = [
+    "  // Run the loaded application",
+    "  // Setup callback groups",
+    "  // Run all the registered callbacks",
+    "  code = nitros_context_ptr_->runGraphAsync",
+    "  RCLCPP_INFO(get_logger(), \"[NitrosNode] Starting heartbeat\");",
+]
+anchor_used = None
+for c in candidates:
+    if c in content:
+        anchor_used = c
+        break
+if anchor_used is None:
+    # Fallback: find ` runGraphAsync` (any indentation)
+    m = re.search(r'\n( *)code = nitros_context_ptr_->runGraphAsync', content)
+    if m:
+        anchor_used = m.group(0).lstrip("\n")
+if anchor_used is None:
+    print("    WARN: nitros_node.cpp postNegotiationCallback anchor not found")
+    sys.exit(1)
+
+topology_block = '''
+  // FISH: GXF I/O group topology dump. Fire fish_nitros_{sub,pub}_link
+  // tracepoints for every NitrosPublisher/Subscriber. Each group's
+  // (sub_link, pub_link) tuple share the same group_addr — joined at
+  // postprocess time to recover the exact intra-node data dependency
+  // (ingress receivers → Codelet chain → egress transmitters).
+  {
+    const void * fish_node_handle = static_cast<const void *>(
+      get_node_base_interface()->get_shared_rcl_node_handle().get());
+    for (const auto & fish_grp : nitros_pub_sub_groups_) {
+      const void * fish_group_addr = static_cast<const void *>(fish_grp.get());
+      for (const auto & fish_sub : fish_grp->getNitrosSubscribers()) {
+        const auto & fish_ci = fish_sub->getComponentInfo();
+        auto fish_compat = fish_sub->getCompatibleSubscriber();
+        const void * fish_sub_h = fish_compat
+          ? static_cast<const void *>(fish_compat->get_subscription_handle().get())
+          : nullptr;
+        TRACEPOINT(
+          fish_nitros_sub_link,
+          fish_node_handle,
+          fish_group_addr,
+          fish_sub_h,
+          fish_ci.entity_name.c_str(),
+          fish_ci.component_name.c_str());
+      }
+      for (const auto & fish_pub : fish_grp->getNitrosPublishers()) {
+        const auto & fish_ci = fish_pub->getComponentInfo();
+        auto fish_compat_p = fish_pub->getCompatiblePublisher();
+        auto fish_waitable_p = fish_pub->getNitrosWaitable();
+        const void * fish_pub_h = fish_compat_p
+          ? static_cast<const void *>(fish_compat_p->get_publisher_handle().get())
+          : nullptr;
+        const void * fish_w_h = fish_waitable_p
+          ? static_cast<const void *>(fish_waitable_p.get())
+          : nullptr;
+        TRACEPOINT(
+          fish_nitros_pub_link,
+          fish_node_handle,
+          fish_group_addr,
+          fish_pub_h,
+          fish_w_h,
+          fish_ci.entity_name.c_str(),
+          fish_ci.component_name.c_str());
+      }
+    }
+  }
+'''
+
+content = content.replace(anchor_used, topology_block + "\n" + anchor_used, 1)
+with open(path, "w") as f:
+    f.write(content)
+print(f"    nitros_node.cpp patched — fish_nitros_*_link dump (anchor: {anchor_used.strip()[:60]})")
+PATCH_NITROS_NODE
 
     # ament_cmake_auto autodiscovers deps from package.xml — add tracetools there.
     local NITROS_PKG_XML="/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/package.xml"
@@ -3294,6 +3688,9 @@ if do_link:
         "fish_rclcpp_publish_link",
         "fish_rclcpp_client_link",
         "fish_rclcpp_receive_link",
+        "fish_rclcpp_waitable_init",
+        "fish_nitros_sub_link",
+        "fish_nitros_pub_link",
     ])
 if do_scheduler:
     fish_groups.append([
@@ -3464,7 +3861,7 @@ main() {
     # rclcpp intra-process publisher patch — same fish_rclcpp_publish_link
     # tracepoint, fires for same-process pub→sub that bypasses rcl entirely.
     $DO_LINK      && patch_rclcpp_publisher_intra
-    $DO_LINK      && patch_rclcpp_executor_receive
+    $DO_LINK      && patch_rclcpp_executor_attribution
     # NITROS patch: only relevant when --link is on (fires fish_rclcpp_publish_link).
     # Always runs but skips gracefully if isaac_ros_nitros source isn't present.
     $DO_LINK      && patch_and_build_isaac_ros_nitros

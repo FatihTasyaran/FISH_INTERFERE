@@ -307,6 +307,20 @@ def _node_info_for(session_id: str, node_full_name: str) -> dict:
 def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
     entities: dict[int, FishVertex] = {}
 
+    # Waitable registrations (FISH custom — fish_rclcpp_waitable_init). Indexed
+    # by owning node_handle. A Waitable is a first-class entity peer to
+    # sub/serv/tmr: it dispatches via Executor::execute_waitable and we wrap
+    # that dispatch with callback_start/end using the Waitable's `this` ptr
+    # as the cb-id. The same `this` is the entity's cb_addr.
+    waitables_by_node: dict[str, list[tuple[str, str]]] = {}
+    for d in _all_events(session_id, "ros2:fish_rclcpp_waitable_init"):
+        p = d["payload"]
+        nh = p.get("node_handle")
+        wp = p.get("waitable")
+        cg = p.get("callback_group")
+        if nh and wp:
+            waitables_by_node.setdefault(nh, []).append((wp, cg))
+
     for node_id, node in nodes.items():
         full_name = node.A_v["full_name"]
         node_handle = node.A_v["node_handle"]
@@ -378,10 +392,29 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
             node.Z_v.append(e.id_v)
             entities[e.id_v] = e
 
+        for waitable_ptr, cb_group in waitables_by_node.get(node_handle, []):
+            short = waitable_ptr[-6:] if waitable_ptr and waitable_ptr.startswith("0x") else waitable_ptr
+            e_A = {
+                "label": f"waitable@{short}", "etype": "waitable",
+                # The Waitable's `this` ptr IS the cb_addr — no resolution
+                # needed. Executor::execute_waitable wraps dispatch with
+                # callback_start(this), so any publish_link / client_link
+                # fired from within will look up cb_to_entity[this].
+                "cb_addr": waitable_ptr,
+                "waitable_handle": waitable_ptr,
+                "callback_group": cb_group,
+                # Aspects populated by publish_link / receive_link attribution.
+                "aspects": [],
+            }
+            e = FishVertex("E", next(vertex_counter), e_A, [], 2)
+            node.Z_v.append(e.id_v)
+            entities[e.id_v] = e
+
     log(f"Entities: {len(entities)} "
         f"(sub={sum(1 for e in entities.values() if e.A_v['etype']=='sub')}, "
         f"serv={sum(1 for e in entities.values() if e.A_v['etype']=='serv')}, "
-        f"tmr={sum(1 for e in entities.values() if e.A_v['etype']=='tmr')})")
+        f"tmr={sum(1 for e in entities.values() if e.A_v['etype']=='tmr')}, "
+        f"waitable={sum(1 for e in entities.values() if e.A_v['etype']=='waitable')})")
     return entities
 
 
@@ -588,6 +621,17 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                         cb_ptr = rclpy_tmr_cb_by_handle.get(th)
                         if cb_ptr:
                             cb_info = _resolve_cb(cb_ptr)
+            elif etype == "waitable":
+                # The Waitable's `this` ptr is the cb_addr (set in
+                # identify_entities). It is also the value passed to
+                # TRACEPOINT(callback_start) by our executor.cpp wrap. No
+                # rclcpp_callback_register fires for Waitable subclasses, so
+                # the symbol is not available — fall back to the entity label
+                # (e.g. "waitable@abcdef").
+                wp = entity.A_v.get("waitable_handle")
+                if wp:
+                    sym = symbol_by_cb.get(wp) or entity.A_v["label"]
+                    cb_info = {"callback": wp, "symbol": sym}
 
             if cb_info:
                 entity.A_v["cb_addr"] = cb_info["callback"]
@@ -679,14 +723,26 @@ def attribute_aspects(session_id, executors, nodes, entities):
             d["payload"]["client_handle"]: d["payload"]["service_name"]
             for d in _all_events(session_id, "ros2:rcl_client_init")
         }
-        sub_handle_to_topic = {
-            d["payload"]["subscription_handle"]: d["payload"]["topic_name"]
-            for d in _all_events(session_id, "ros2:rcl_subscription_init")
-        }
+        sub_handle_to_topic = {}
+        sub_handle_to_node: dict[str, int] = {}
+        for d in _all_events(session_id, "ros2:rcl_subscription_init"):
+            p = d["payload"]
+            sh = p.get("subscription_handle")
+            if not sh:
+                continue
+            sub_handle_to_topic[sh] = p.get("topic_name")
+            nh = p.get("node_handle")
+            if nh in nh_to_node:
+                sub_handle_to_node[sh] = nh_to_node[nh]
         seen_pub, seen_cli, seen_recv = set(), set(), set()
         total_pub = total_cli = total_recv = 0
-        # NOTE on order: process receive_link FIRST so that publish_link
-        # augmentation (below) can prefer sub aspects with received=True.
+        total_pub_unattributed = 0
+
+        # Process receive_link first — sub_handle uniquely identifies the
+        # sub entity (via owning node + topic). __fish_active_callback may
+        # be NULL when the executor is between callbacks (DDS path through
+        # execute_subscription); in that case fall back to the sub_handle
+        # → (node, topic) → entity lookup. This is exact, not a heuristic.
         for d in receive_links:
             p = d["payload"]
             topic = sub_handle_to_topic.get(p["subscription_handle"])
@@ -696,14 +752,30 @@ def attribute_aspects(session_id, executors, nodes, entities):
                 continue
             pair = cb_to_entity.get(p["callback"])
             if not pair:
-                for e_id, e in entities.items():
-                    for a in e.A_v.get("aspects", []):
+                # sub_handle → owning node → sub entity in that node with
+                # matching topic. 1-to-1; not a heuristic.
+                n_id = sub_handle_to_node.get(p["subscription_handle"])
+                if n_id is None:
+                    continue
+                target = None
+                for e_id in node_to_entities.get(n_id, []):
+                    ent = entities[e_id]
+                    if ent.A_v.get("etype") != "sub":
+                        continue
+                    for a in ent.A_v.get("aspects", []):
                         if a.get("aspect") == "sub" and a.get("topic") == topic:
-                            if (e_id, topic) not in seen_recv:
-                                seen_recv.add((e_id, topic))
-                                a["received"] = True
-                                total_recv += 1
+                            target = (e_id, ent, a)
                             break
+                    if target:
+                        break
+                if not target:
+                    continue
+                e_id, entity, aspect = target
+                if (e_id, topic) in seen_recv:
+                    continue
+                seen_recv.add((e_id, topic))
+                aspect["received"] = True
+                total_recv += 1
                 continue
             e_id, entity = pair
             if (e_id, topic) in seen_recv:
@@ -722,69 +794,11 @@ def attribute_aspects(session_id, executors, nodes, entities):
                 })
                 total_recv += 1
 
-        # For publish_link events whose callback isn't a known entity-cb
-        # (e.g., NitrosPublisherWaitable's `this` pointer, GenericPublisher
-        # wrapper), fall back to "any entity in the publisher's owning Node
-        # that has an active sub aspect". The heuristic: a node that publishes
-        # X probably has an input sub Y that the data is derived from.
-        # We prefer entities with `received=True` (confirmed active via
-        # receive_link); among them, pick the first.
-        def _resolve_pub_entity(pub_handle, cb_addr):
-            pair = cb_to_entity.get(cb_addr)
-            if pair:
-                return pair
-            n_id = pub_handle_to_node.get(pub_handle)
-            if n_id is None:
-                return None
-            # Helper: is this aspect's topic/service a control-plane noise sub?
-            def _is_data_sub(a):
-                if a.get("aspect") != "sub":
-                    return False
-                t = a.get("topic")
-                if not t:
-                    return False
-                if _is_param_service(t):
-                    return False
-                # Strip /rosout, /_supported_types, etc.
-                if any(p in t for p in ("/parameter_events", "/rosout", "/_supported_types")):
-                    return False
-                return True
-            # First preference: active DATA sub entity in this node
-            for e_id in node_to_entities.get(n_id, []):
-                ent = entities[e_id]
-                for a in ent.A_v.get("aspects", []):
-                    if _is_data_sub(a) and a.get("received") is True:
-                        return (e_id, ent)
-            # Second: any DATA sub entity in this node
-            for e_id in node_to_entities.get(n_id, []):
-                ent = entities[e_id]
-                for a in ent.A_v.get("aspects", []):
-                    if _is_data_sub(a):
-                        return (e_id, ent)
-            # Third: timer entity (timer-driven publisher pattern)
-            for e_id in node_to_entities.get(n_id, []):
-                ent = entities[e_id]
-                if ent.A_v.get("etype") == "tmr":
-                    return (e_id, ent)
-            # Last resort: any entity (including control-plane)
-            for e_id in node_to_entities.get(n_id, []):
-                return (e_id, entities[e_id])
-            return None
-
-        total_pub_fallback = 0
-        # Find node's primary data sub (for "serv → data sub" augmentation).
-        def _primary_data_sub_entity(n_id):
-            for e_id in node_to_entities.get(n_id, []):
-                ent = entities[e_id]
-                for a in ent.A_v.get("aspects", []):
-                    if (a.get("aspect") == "sub" and a.get("topic")
-                            and not _is_param_service(a["topic"])
-                            and not any(p in a["topic"] for p in
-                                        ("/parameter_events", "/rosout", "/_supported_types"))
-                            and a.get("received") is True):
-                        return (e_id, ent)
-            return None
-
+        # publish_link: cb_to_entity look-up only. With Waitable as a
+        # first-class entity (and Executor::execute_waitable wrapped with
+        # callback_start using the Waitable's `this`), every legitimate
+        # publish_link should resolve to a registered entity (sub/tmr/serv/
+        # waitable). If it does not, log + drop — no heuristic fallback.
         for d in publish_links:
             p = d["payload"]
             topic = pub_handle_to_topic.get(p["publisher_handle"])
@@ -792,34 +806,15 @@ def attribute_aspects(session_id, executors, nodes, entities):
                 continue
             if SKIP_PARAMSERVICE and _is_param_service(topic):
                 continue
-            pair = _resolve_pub_entity(p["publisher_handle"], p["callback"])
+            pair = cb_to_entity.get(p["callback"])
             if not pair:
+                total_pub_unattributed += 1
                 continue
-            if p["callback"] not in cb_to_entity:
-                total_pub_fallback += 1
             e_id, entity = pair
             if (e_id, topic) not in seen_pub:
                 seen_pub.add((e_id, topic))
                 entity.A_v["aspects"].append({"aspect": "pub", "topic": topic})
                 total_pub += 1
-            # Augmentation: if the resolved entity is a service (i.e., the
-            # publish_link came from a one-time negotiation cb on a service),
-            # also attribute to the node's primary active data sub. This
-            # captures the actual runtime data path (typically a Waitable
-            # under a sub→process→pub pipeline pattern).
-            if entity.A_v.get("etype") == "serv" and not _is_param_service(topic):
-                n_id = e_to_node.get(e_id)
-                if n_id is not None:
-                    aug = _primary_data_sub_entity(n_id)
-                    if aug:
-                        aug_eid, aug_entity = aug
-                        if (aug_eid, topic) not in seen_pub:
-                            seen_pub.add((aug_eid, topic))
-                            aug_entity.A_v["aspects"].append({
-                                "aspect": "pub", "topic": topic,
-                                "via_serv_augment": True,
-                            })
-                            total_pub += 1
         for d in client_links:
             p = d["payload"]
             service = cli_handle_to_service.get(p["client_handle"])
@@ -836,7 +831,8 @@ def attribute_aspects(session_id, executors, nodes, entities):
             seen_cli.add((e_id, service))
             entity.A_v["aspects"].append({"aspect": "cli", "service": service})
             total_cli += 1
-        log(f"  Tracepoint attribution: {total_pub} pub ({total_pub_fallback} via fallback), "
+        log(f"  Tracepoint attribution: {total_pub} pub "
+            f"({total_pub_unattributed} dropped — unknown cb), "
             f"{total_cli} cli, {total_recv} recv")
     else:
         log("attribute_aspects: fallback (runtime callback window scan)")
@@ -1036,6 +1032,10 @@ def attach_callback_groups(session_id, executors, nodes, entities, functions):
         rcl_handle = None
         if etype == "tmr":
             rcl_handle = e.A_v.get("timer_handle")
+        elif etype == "waitable":
+            # cbgroup_add fires with entity_kind="wait" and entity_ptr = waitable_ptr,
+            # which is what we stored in A_v["waitable_handle"].
+            rcl_handle = e.A_v.get("waitable_handle")
         elif etype in ("sub", "serv"):
             label = e.A_v.get("label")
             parent_nh = None
@@ -1172,6 +1172,151 @@ def detect_actions(entities):
         log(f"Actions detected: {cnt} component entities tagged")
 
 
+def mark_phases(session_id, executors, entities, functions):
+    """Tag every F vertex with phase ∈ {data, init, zero_exec, unknown}.
+
+    Rationale: ROS/NITROS bringup fires many one-shot callbacks
+    (TimeSource attach, ComponentManager parameter broadcast, Negotiated
+    handshake, supported-types exchange, …) before the runtime data
+    pipeline starts ticking. They form a big WCC of "boot noise" that
+    obscures the real pipeline. We define:
+
+      data_phase_start_ns[executor] :=
+          min(first_fire) over the executor's non-one-shot timer cbs
+          (n_fires ≥ 2; one-shot timers are typically NITROS
+          startNitrosNode triggers, themselves part of init).
+
+      session_data_start_ns :=
+          min(data_phase_start_ns[ex]) across all executors that have
+          any periodic timer.  Used as a fallback for executors that
+          themselves carry no periodic timer (mirrors the gantt's
+          session-level hyperperiod anchor).
+
+      F.phase :=
+          "data"      — ANY fire of this F's cb is ≥ data_phase_start
+                       (its executor's, or the session fallback).
+          "init"      — all fires precede that boundary.
+          "zero_exec" — cb was registered but NEVER fired during the
+                       trace (no callback_start observed). Typical:
+                       /<node>/get_parameters, /<node>/set_parameters,
+                       and other admin services that exist on every
+                       ROS node but no one ever calls.
+          "unknown"   — cb fired, but the session has no periodic
+                       timer anywhere, so no anchor to compare to.
+                       Rare; only matters for sessions without any
+                       periodic timer at all.
+
+    External (ptype="ext") boundary F vertices have no cb and are
+    tagged "data" — they are connection terminals, never noise.
+    """
+    t0 = time.time()
+    cb_starts = _all_events(session_id, "ros2:callback_start")
+    if not cb_starts:
+        log("mark_phases: no callback_start events, skipping")
+        return
+
+    # Per-cb: first + last start ts, fire count.
+    cb_first_start: dict[str, int] = {}
+    cb_last_start: dict[str, int] = {}
+    cb_fire_count: dict[str, int] = {}
+    for d in cb_starts:
+        cb = d["payload"].get("callback")
+        if not cb:
+            continue
+        ts = int(d["ts_ns"])
+        cb_fire_count[cb] = cb_fire_count.get(cb, 0) + 1
+        if cb not in cb_first_start or ts < cb_first_start[cb]:
+            cb_first_start[cb] = ts
+        if cb not in cb_last_start or ts > cb_last_start[cb]:
+            cb_last_start[cb] = ts
+
+    # entity_id → executor_id (via callback_group).
+    cg_to_executor: dict[str, int] = {}
+    for ex_id, ex in executors.items():
+        for cg in ex.A_v.get("cb_groups", []):
+            cg_id = cg.get("id")
+            if cg_id:
+                cg_to_executor[cg_id] = ex_id
+    entity_to_executor: dict[int, int] = {}
+    for e_id, e in entities.items():
+        cg = e.A_v.get("callback_group")
+        if cg and cg.get("id") in cg_to_executor:
+            entity_to_executor[e_id] = cg_to_executor[cg["id"]]
+    cb_to_executor: dict[str, int] = {}
+    for e_id, e in entities.items():
+        cb = e.A_v.get("cb_addr")
+        if cb and cb != "NA":
+            ex_id = entity_to_executor.get(e_id)
+            if ex_id is not None:
+                cb_to_executor[cb] = ex_id
+
+    # Per-executor data_phase_start: min first_start of all periodic
+    # (n_fires ≥ 2) timer cbs belonging to this executor's entities.
+    exec_data_start: dict[int, int] = {}
+    for e_id, e in entities.items():
+        if e.A_v.get("etype") != "tmr":
+            continue
+        cb = e.A_v.get("cb_addr")
+        if not cb or cb == "NA":
+            continue
+        if cb_fire_count.get(cb, 0) < 2:
+            continue  # one-shot — part of init
+        first = cb_first_start.get(cb)
+        if first is None:
+            continue
+        ex_id = entity_to_executor.get(e_id)
+        if ex_id is None:
+            continue
+        cur = exec_data_start.get(ex_id)
+        if cur is None or first < cur:
+            exec_data_start[ex_id] = first
+
+    # Session-level fallback: earliest data_phase_start across all
+    # executors that have one. Used for cbs on executors without a
+    # periodic timer of their own — mirrors the gantt's session
+    # hyperperiod anchor.
+    session_data_start: int | None = (
+        min(exec_data_start.values()) if exec_data_start else None
+    )
+
+    n_init = n_data = n_zero = n_unknown = 0
+    n_fallback = 0
+    for f_id, f in functions.items():
+        # External (boundary) F vertices have ptype="ext" and no cb_addr.
+        if f.A_v.get("ptype") == "ext":
+            f.A_v["phase"] = "data"
+            n_data += 1
+            continue
+        cb = f.A_v.get("cb_addr")
+        if not cb or cb == "NA" or cb not in cb_last_start:
+            # cb registered but never fired.
+            f.A_v["phase"] = "zero_exec"
+            n_zero += 1
+            continue
+        ex_id = cb_to_executor.get(cb)
+        data_start = exec_data_start.get(ex_id) if ex_id is not None else None
+        if data_start is None:
+            data_start = session_data_start
+            if data_start is not None:
+                n_fallback += 1
+        if data_start is None:
+            # cb did fire, but no periodic timer anywhere — no anchor.
+            f.A_v["phase"] = "unknown"
+            n_unknown += 1
+            continue
+        # "any fire ≥ data_start" ⇔ "last fire ≥ data_start"
+        if cb_last_start[cb] >= data_start:
+            f.A_v["phase"] = "data"
+            n_data += 1
+        else:
+            f.A_v["phase"] = "init"
+            n_init += 1
+    log(f"mark_phases DONE in {time.time()-t0:.1f}s — "
+        f"{n_data} data, {n_init} init, {n_zero} zero_exec, {n_unknown} unknown "
+        f"({len(exec_data_start)}/{len(executors)} executors had a "
+        f"periodic timer; {n_fallback} F's used session-level fallback)")
+
+
 def split_callbacks(session_id, entities, functions):
     has_req = pg_store.fetch_one(
         "SELECT 1 FROM ros2_trace WHERE session_id = %s "
@@ -1198,7 +1343,10 @@ def split_callbacks(session_id, entities, functions):
             cont_A = {"label": f"{orig_label}::continuation",
                       "ptype": "cpu",
                       "cb_addr": func.A_v.get("cb_addr"),
-                      "split": "response"}
+                      "split": "response",
+                      # Inherit phase from the original F (continuation is just
+                      # the response half of the same logical callback).
+                      "phase": func.A_v.get("phase", "unknown")}
             cont = FishVertex("F", next(vertex_counter), cont_A, [], 3)
             entity.Z_v.append(cont.id_v)
             functions[cont.id_v] = cont
@@ -1326,7 +1474,7 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
         ext_e = FishVertex("E", next(vertex_counter), ext_e_A, [], 2)
         entities[ext_e.id_v] = ext_e
         G.add_node(ext_e.id_v, v=ext_e)
-        ext_f_A = {"label": f"ext:{topic}", "ptype": "ext"}
+        ext_f_A = {"label": f"ext:{topic}", "ptype": "ext", "phase": "data"}
         ext_f = FishVertex("F", next(vertex_counter), ext_f_A, [], 3)
         functions[ext_f.id_v] = ext_f
         ext_e.Z_v.append(ext_f.id_v)
@@ -1349,7 +1497,7 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
         ext_e = FishVertex("E", next(vertex_counter), ext_e_A, [], 2)
         entities[ext_e.id_v] = ext_e
         G.add_node(ext_e.id_v, v=ext_e)
-        ext_f_A = {"label": f"ext:{topic}", "ptype": "ext"}
+        ext_f_A = {"label": f"ext:{topic}", "ptype": "ext", "phase": "data"}
         ext_f = FishVertex("F", next(vertex_counter), ext_f_A, [], 3)
         functions[ext_f.id_v] = ext_f
         ext_e.Z_v.append(ext_f.id_v)
@@ -1415,6 +1563,110 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
                 l3_count += 1
     log(f"  L3 propagated: {l3_count}")
 
+    # ──────────────────────────────────────────────────────────────────
+    # NITROS GXF intra-node edges (Option 1: static topology)
+    #
+    # Each NITROS Codelet chain ("GraphIOGroup") emits:
+    #   fish_nitros_sub_link  per ingress (NitrosSubscriber → GXF Receiver)
+    #   fish_nitros_pub_link  per egress  (NitrosPublisher  → GXF Transmitter)
+    # All events sharing the same (node_handle, group_addr) belong to one
+    # I/O group. Within a group, every ingress feeds every egress (because
+    # the GXF Codelet chain links them internally). We therefore generate
+    # cross-product L2+L3 edges: ingress sub entity → egress waitable entity.
+    #
+    # This closes the rclcpp pub/sub model's blind spot for NITROS data flow
+    # (input received via NitrosSubscriber → GXF MessageRelay → Codelet.tick
+    # → MessageRelay → NitrosPublisherWaitable.execute → output published).
+    # No msg_id correlation; the static topology is sufficient for graph
+    # extraction.
+    # ──────────────────────────────────────────────────────────────────
+    nitros_sub_links = _all_events(session_id, "ros2:fish_nitros_sub_link")
+    nitros_pub_links = _all_events(session_id, "ros2:fish_nitros_pub_link")
+    if nitros_sub_links or nitros_pub_links:
+        log(f"  NITROS topology: {len(nitros_sub_links)} sub_link, "
+            f"{len(nitros_pub_links)} pub_link events")
+
+        # Locally rebuild lookup maps (kept minimal — these match the maps in
+        # attribute_aspects but live in a different scope here).
+        _nh_to_node = {n.A_v["node_handle"]: n.id_v for n in nodes.values()}
+        _node_to_entities: dict = {}
+        for n_id, n in nodes.items():
+            for e_id in n.Z_v:
+                if e_id in entities:
+                    _node_to_entities.setdefault(n_id, []).append(e_id)
+
+        # sub_handle → owning sub entity id
+        sub_handle_to_entity_id: dict[str, int] = {}
+        for d in _all_events(session_id, "ros2:rcl_subscription_init"):
+            p = d["payload"]
+            sh = p.get("subscription_handle")
+            nh = p.get("node_handle")
+            topic = p.get("topic_name")
+            if not (sh and nh and topic):
+                continue
+            n_id = _nh_to_node.get(nh)
+            if n_id is None:
+                continue
+            for e_id in _node_to_entities.get(n_id, []):
+                ent = entities[e_id]
+                if ent.A_v.get("etype") == "sub" and ent.A_v.get("label") == topic:
+                    sub_handle_to_entity_id[sh] = e_id
+                    break
+
+        # waitable_handle → owning waitable entity id (1:1, since cb_addr ==
+        # waitable_handle for waitable entities — see identify_entities).
+        waitable_handle_to_entity_id: dict[str, int] = {}
+        for e_id, ent in entities.items():
+            if ent.A_v.get("etype") == "waitable":
+                wh = ent.A_v.get("waitable_handle")
+                if wh:
+                    waitable_handle_to_entity_id[wh] = e_id
+
+        # group_addr → {ingress: [(sub_handle, entity_id)],
+        #               egress:  [(pub_handle, waitable_handle, entity_id)]}
+        groups: dict[tuple, dict] = {}
+        for d in nitros_sub_links:
+            p = d["payload"]
+            key = (p.get("node_handle"), p.get("group_addr"))
+            ent_id = sub_handle_to_entity_id.get(p.get("subscription_handle"))
+            if ent_id is None:
+                continue
+            groups.setdefault(key, {"ingress": [], "egress": []})["ingress"].append(
+                (p["subscription_handle"], ent_id))
+        for d in nitros_pub_links:
+            p = d["payload"]
+            key = (p.get("node_handle"), p.get("group_addr"))
+            ent_id = waitable_handle_to_entity_id.get(p.get("waitable_handle"))
+            if ent_id is None:
+                continue
+            groups.setdefault(key, {"ingress": [], "egress": []})["egress"].append(
+                (p["publisher_handle"], p["waitable_handle"], ent_id))
+
+        nitros_l3_count = 0
+        nitros_groups_with_edges = 0
+        for (nh, ga), g in groups.items():
+            if not g["ingress"] or not g["egress"]:
+                continue
+            nitros_groups_with_edges += 1
+            for (_sh, src_eid) in g["ingress"]:
+                for (_ph, _wh, dst_eid) in g["egress"]:
+                    # E-level edge (L2-equivalent, nature="gxf_internal")
+                    G.add_edge(src_eid, dst_eid,
+                               rel="comm", level="L2",
+                               nature="gxf_internal", intra_node=True,
+                               nitros_group=str(ga))
+                    # F-level propagation: main F → main F
+                    for sf in _funcs_main(src_eid):
+                        for df in _funcs_main(dst_eid):
+                            G.add_edge(sf, df,
+                                       rel="comm", level="L3",
+                                       nature="gxf_internal",
+                                       intra_node=True,
+                                       nitros_group=str(ga))
+                            nitros_l3_count += 1
+        log(f"  NITROS intra-node: {nitros_groups_with_edges} groups, "
+            f"{nitros_l3_count} L3 edges added")
+
     # L1 aggregation
     node_pairs = {}
     for u, v, data in G.edges(data=True):
@@ -1479,6 +1731,7 @@ def extract(session_id: str, *, scope: str = graph_store_pg.STANDALONE_SCOPE,
     functions = identify_callbacks(session_id, nodes, entities, executors)
     attribute_aspects(session_id, executors, nodes, entities)
     attach_callback_groups(session_id, executors, nodes, entities, functions)
+    mark_phases(session_id, executors, entities, functions)
     detect_oort_threads(session_id, executors, nodes, entities, functions)
     detect_actions(entities)
     if not no_split:
