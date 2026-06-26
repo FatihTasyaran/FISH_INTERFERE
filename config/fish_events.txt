@@ -47,6 +47,7 @@ ros2:fish_rclcpp_timer_init
 # --- Callback-link attribution (FISH custom, all consumed) ---
 ros2:fish_rclcpp_publish_link
 ros2:fish_rclcpp_client_link
+ros2:fish_rclcpp_receive_link
 
 # --- Scheduler introspection (FISH custom, all consumed) ---
 ros2:fish_rclcpp_executor_init
