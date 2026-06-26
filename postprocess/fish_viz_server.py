@@ -526,6 +526,352 @@ def _serve_task_graphs(handler, qs):
     handler.wfile.write(body)
 
 
+def _fetch_wcc_payload(sid, scope, allowed):
+    """Shared backbone for /api/wcc and /api/wcc-svg.
+
+    Returns: (fnodes, edges, out_wccs, n_wccs) on success, raises on PG error.
+    """
+    import psycopg2
+    dsn = os.environ.get('FISH_PG_DSN',
+        'host=localhost port=5432 dbname=fish user=fish password=fish')
+    conn = psycopg2.connect(dsn)
+    cur = conn.cursor()
+
+    # F vertices with parent entity + node + executor + attrs (for phase, gpu_node)
+    cur.execute("""
+      WITH e_to_n AS (
+        SELECT e.session_id, e.scope, e.node_id AS e_id, n.label AS node_name
+        FROM graph_nodes e
+        JOIN graph_edges ge ON ge.session_id=e.session_id AND ge.scope=e.scope
+                           AND ge.target=e.node_id AND ge.rel='contains'
+        JOIN graph_nodes n  ON n.session_id=ge.session_id AND n.scope=ge.scope
+                           AND n.node_id=ge.source AND n.type='N'
+        WHERE e.session_id=%s AND e.scope=%s AND e.type='E'
+      )
+      SELECT f.node_id, f.cb_addr, f.label AS symbol, f.attrs,
+             e.etype, e.label AS entity_label,
+             COALESCE(en.node_name, '') AS node_name
+      FROM graph_nodes f
+      JOIN graph_edges ge_fe ON ge_fe.session_id=f.session_id AND ge_fe.scope=f.scope
+                            AND ge_fe.target=f.node_id AND ge_fe.rel='contains'
+      JOIN graph_nodes e ON e.session_id=ge_fe.session_id AND e.scope=ge_fe.scope
+                        AND e.node_id=ge_fe.source AND e.type='E'
+      LEFT JOIN e_to_n en ON en.e_id = e.node_id
+      WHERE f.session_id=%s AND f.scope=%s AND f.type='F'
+    """, (sid, scope, sid, scope))
+    fnodes = {}
+    for f_id, cb, sym, attrs, etype, ent_label, node_name in cur.fetchall():
+        attrs = attrs or {}
+        phase = attrs.get('phase', 'unknown')
+        if attrs.get('ptype') == 'ext':
+            phase = 'data'
+        if phase not in allowed:
+            continue
+        fnodes[f_id] = {
+            'id': f_id,
+            'cb_addr': cb or '',
+            'symbol': sym or '',
+            'etype': etype or 'ext',
+            'ent_label': ent_label or '',
+            'node': node_name or '',
+            'phase': phase,
+            'gpu_node': bool(attrs.get('gpu_node')),
+            'ptype': attrs.get('ptype', 'cpu'),
+        }
+
+    cur.execute("""
+      SELECT source, target, attrs
+      FROM graph_edges
+      WHERE session_id=%s AND scope=%s AND rel='comm' AND level = 'L3'
+    """, (sid, scope))
+    edges = []
+    for s, t, a in cur.fetchall():
+        if s in fnodes and t in fnodes:
+            a = a or {}
+            edges.append({
+                'src': s, 'dst': t,
+                'topic': a.get('topic') or a.get('service', ''),
+                'nature': a.get('nature', ''),
+                'intra_node': bool(a.get('intra_node')),
+            })
+
+    cur.execute("""
+      SELECT vpid, vtid, ts_ns, event, payload->>'callback' AS cb
+      FROM ros2_trace
+      WHERE session_id=%s
+        AND event IN ('ros2:callback_start', 'ros2:callback_end')
+        AND payload->>'callback' IS NOT NULL
+      ORDER BY vpid, vtid, ts_ns
+    """, (sid,))
+    durations = {}
+    open_starts = {}
+    for vpid, vtid, ts, ev, cb in cur.fetchall():
+        key = (vpid, vtid, cb)
+        ts = int(ts)
+        if ev == 'ros2:callback_start':
+            open_starts[key] = ts
+        else:
+            start_ts = open_starts.pop(key, None)
+            if start_ts is not None:
+                durations.setdefault(cb, []).append(ts - start_ts)
+    cb_stats = {}
+    for cb, ds in durations.items():
+        if not ds: continue
+        n = len(ds)
+        mean = sum(ds) / n
+        if n > 1:
+            var = sum((x - mean) ** 2 for x in ds) / n
+            std = var ** 0.5
+        else:
+            std = 0.0
+        cb_stats[cb] = {
+            'count': n, 'min_ns': min(ds), 'max_ns': max(ds),
+            'avg_ns': mean, 'std_ns': std,
+        }
+    conn.close()
+
+    for n in fnodes.values():
+        n['stats'] = cb_stats.get(n['cb_addr'])
+
+    und = {fid: set() for fid in fnodes}
+    for e in edges:
+        und[e['src']].add(e['dst'])
+        und[e['dst']].add(e['src'])
+    visited, wccs = set(), []
+    for start in fnodes:
+        if start in visited: continue
+        comp, queue = [], [start]
+        visited.add(start)
+        while queue:
+            c = queue.pop()
+            comp.append(c)
+            for nb in und[c]:
+                if nb not in visited:
+                    visited.add(nb); queue.append(nb)
+        wccs.append(set(comp))
+    wccs.sort(key=lambda c: -len(c))
+
+    out_wccs = []
+    for i, comp in enumerate(wccs):
+        if len(comp) < 2:
+            continue
+        wcc_nodes = [fnodes[f_id] for f_id in sorted(comp)]
+        wcc_edges = [e for e in edges if e['src'] in comp and e['dst'] in comp]
+        out_wccs.append({
+            'idx': i,
+            'n_cbs': len(comp),
+            'n_edges': len(wcc_edges),
+            'nodes': wcc_nodes,
+            'edges': wcc_edges,
+        })
+    return fnodes, edges, out_wccs, len(wccs)
+
+
+def _serve_wcc(handler, qs):
+    """Phase-filtered F-subgraph WCCs with full per-node + per-edge metadata.
+
+    Returns one record per WCC with embedded nodes + edges. Each node
+    carries: cb_addr, etype, ent_label, node (full ROS node name), full
+    symbol, phase, gpu_node flag, exec_stats (count, min/max/avg/std in
+    ns). Each edge carries: src, dst, topic, nature (gxf_internal vs
+    others).
+
+    Default filter: phase == "data". Override with ?include_init=1 or
+    ?include_unknown=1.
+    """
+    sid = (qs.get('session_id') or qs.get('session') or [''])[0]
+    scope = (qs.get('scope') or ['__main__'])[0]
+    if not sid:
+        handler.send_error(400, 'session_id required')
+        return
+    include_init      = (qs.get('include_init',      ['0'])[0] != '0')
+    include_zero_exec = (qs.get('include_zero_exec', ['0'])[0] != '0')
+    include_unknown   = (qs.get('include_unknown',   ['0'])[0] != '0')
+    allowed = {'data'}
+    if include_init:      allowed.add('init')
+    if include_zero_exec: allowed.add('zero_exec')
+    if include_unknown:   allowed.add('unknown')
+
+    try:
+        fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(sid, scope, allowed)
+    except Exception as e:
+        handler.send_error(500, f'PG error: {e}')
+        return
+
+    body = json.dumps({
+        'session_id': sid, 'scope': scope,
+        'allowed_phases': sorted(allowed),
+        'n_f_nodes': len(fnodes),
+        'n_edges': len(edges),
+        'n_wccs': n_wccs,
+        'wccs': out_wccs,
+    }).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.send_header('Access-Control-Allow-Origin', '*')
+    handler.send_header('Cache-Control', 'no-store')
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+_ETYPE_FILL = {
+    'sub':      '#bfe1f5',
+    'serv':     '#f5d6bf',
+    'tmr':      '#f5bfbf',
+    'waitable': '#fff2a3',
+    'ext':      '#dddddd',
+}
+
+
+def _dot_escape(s: str) -> str:
+    if s is None:
+        return ''
+    return s.replace('\\', '\\\\').replace('"', '\\"')
+
+
+def _wcc_to_dot(wcc: dict) -> str:
+    """Render one WCC's nodes+edges into Graphviz DOT source.
+
+    Each F vertex becomes a 2-line labelled box (line 1: '[etype] ent_label',
+    line 2: cb_addr). Boxes are clustered by their owning ROS node so the
+    DAG layout reflects per-node grouping. Edges colored: green for
+    GXF intra-node (nature=gxf_internal), grey otherwise. The full
+    metadata payload lives on the client side; here we only emit the
+    minimal text. Each node carries id="n<fid>" so client JS can attach
+    hover handlers via getElementById.
+    """
+    from collections import defaultdict
+    nodes = wcc['nodes']
+    edges = wcc['edges']
+
+    by_node = defaultdict(list)
+    for n in nodes:
+        by_node[n.get('node') or '__external__'].append(n)
+
+    out = []
+    out.append('digraph wcc {')
+    out.append('  rankdir=TB;')
+    out.append('  graph [fontname="Helvetica" fontsize=11 nodesep=0.30 ranksep=0.55 '
+               'bgcolor="white" splines=spline compound=true];')
+    out.append('  node  [shape=box style="filled,rounded" fontname="Helvetica" '
+               'fontsize=10 margin="0.12,0.06" width=2 height=0.55 fixedsize=false];')
+    out.append('  edge  [fontname="Helvetica" fontsize=8 color="#444"];')
+
+    # Clusters per ROS node
+    import re
+    for nm, items in sorted(by_node.items()):
+        safe = re.sub(r'\W+', '_', nm)
+        out.append(f'  subgraph cluster_{safe} {{')
+        out.append(f'    label="{_dot_escape(nm)}"; style="rounded"; '
+                   f'bgcolor="#fafafa"; color="#888"; fontsize=10;')
+        for n in items:
+            etype = n.get('etype', 'ext')
+            fill = _ETYPE_FILL.get(etype, '#ffffff')
+            border = '#d62728' if n.get('gpu_node') else '#888'
+            penw = '3' if n.get('gpu_node') else '1'
+            ent_label = n.get('ent_label') or n.get('symbol') or '?'
+            cb = n.get('cb_addr') or '–'
+            # Two-line label via DOT escape "\n"
+            line1 = f"[{etype}] {ent_label}" if etype != 'ext' else ent_label
+            label = f"{_dot_escape(line1)}\\n{_dot_escape(cb)}"
+            out.append(
+                f'    n{n["id"]} [id="n{n["id"]}" label="{label}" '
+                f'fillcolor="{fill}" color="{border}" penwidth={penw}];'
+            )
+        out.append('  }')
+
+    for e in edges:
+        topic = e.get('topic') or ''
+        if e.get('nature') == 'gxf_internal':
+            color = '#2ca02c'; pw = '2'
+            label = 'GXF'
+        else:
+            color = '#444'; pw = '1.2'
+            label = topic
+        out.append(
+            f'  n{e["src"]} -> n{e["dst"]} '
+            f'[label="{_dot_escape(label)}" color="{color}" penwidth={pw}];'
+        )
+    out.append('}')
+    return '\n'.join(out)
+
+
+def _render_dot_to_svg(dot_source: str) -> str:
+    """Pipe DOT source through `dot -Tsvg` and return the SVG string."""
+    import subprocess
+    p = subprocess.run(['dot', '-Tsvg'],
+                       input=dot_source.encode(),
+                       capture_output=True, timeout=30)
+    if p.returncode != 0:
+        raise RuntimeError(f'dot failed: {p.stderr.decode()[:400]}')
+    return p.stdout.decode()
+
+
+def _serve_wcc_svg(handler, qs):
+    """Same payload shape as /api/wcc but each WCC also carries a server-
+    rendered Graphviz SVG. Use `dot` for the layout (rankdir=TB, layered
+    DAG) and embed the SVG inline on the client side. Each <g class="node">
+    in the SVG gets id="n<fid>"; the client maps that id to the full
+    metadata (cb_addr / phase / stats / etc.) and attaches hover handlers.
+
+    Each WCC's nodes are clustered by their owning ROS node so the layout
+    surfaces per-node grouping the same way our gpu_dag skeletons do.
+    """
+    sid = (qs.get('session_id') or qs.get('session') or [''])[0]
+    scope = (qs.get('scope') or ['__main__'])[0]
+    if not sid:
+        handler.send_error(400, 'session_id required')
+        return
+    include_init      = (qs.get('include_init',      ['0'])[0] != '0')
+    include_zero_exec = (qs.get('include_zero_exec', ['0'])[0] != '0')
+    include_unknown   = (qs.get('include_unknown',   ['0'])[0] != '0')
+    allowed = {'data'}
+    if include_init:      allowed.add('init')
+    if include_zero_exec: allowed.add('zero_exec')
+    if include_unknown:   allowed.add('unknown')
+
+    try:
+        fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(sid, scope, allowed)
+    except Exception as e:
+        handler.send_error(500, f'PG error: {e}')
+        return
+
+    # Render SVG per WCC.
+    rendered = []
+    for w in out_wccs:
+        try:
+            dot_src = _wcc_to_dot(w)
+            svg = _render_dot_to_svg(dot_src)
+        except Exception as e:
+            svg = f"<!-- render failed: {e} -->"
+        # nodes_meta: id → full metadata so client can hover/lookup
+        meta = {str(n['id']): n for n in w['nodes']}
+        rendered.append({
+            'idx': w['idx'],
+            'n_cbs': w['n_cbs'],
+            'n_edges': w['n_edges'],
+            'svg': svg,
+            'nodes_meta': meta,
+        })
+
+    body = json.dumps({
+        'session_id': sid, 'scope': scope,
+        'allowed_phases': sorted(allowed),
+        'n_f_nodes': len(fnodes),
+        'n_edges': len(edges),
+        'n_wccs': n_wccs,
+        'wccs': rendered,
+    }).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.send_header('Access-Control-Allow-Origin', '*')
+    handler.send_header('Cache-Control', 'no-store')
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 def _serve_gantt_data(handler, qs):
     """JSON for per-thread gantt: one record per callback execution with
     {vtid, t0, t1, node, entity, etype, symbol, cb_addr}. Resolves cb_addr → E → N
@@ -764,6 +1110,8 @@ class H(BaseHTTPRequestHandler):
             _serve_file(self, os.path.join(HERE, 'gantt_cb.html'), 'text/html; charset=utf-8')
         elif path in ('/cb-stats', '/cb-stats.html'):
             _serve_file(self, os.path.join(HERE, 'cb_stats.html'), 'text/html; charset=utf-8')
+        elif path in ('/wcc', '/wcc.html', '/wcc-view', '/wcc_view.html'):
+            _serve_file(self, os.path.join(HERE, 'wcc_view.html'), 'text/html; charset=utf-8')
         elif path == '/fish_graph.json':
             _serve_graph(self, qs)
         elif path == '/api/gantt':
@@ -776,6 +1124,10 @@ class H(BaseHTTPRequestHandler):
             _serve_cb_stats(self, qs)
         elif path == '/api/task-graphs':
             _serve_task_graphs(self, qs)
+        elif path == '/api/wcc':
+            _serve_wcc(self, qs)
+        elif path == '/api/wcc-svg':
+            _serve_wcc_svg(self, qs)
         elif path == '/health':
             self.send_response(200); self.end_headers(); self.wfile.write(b'ok')
         else:

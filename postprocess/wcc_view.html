@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FISH — WCC View (DOT)</title>
+<style>
+body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;overflow:hidden;height:100vh}
+
+#controls{position:fixed;top:10px;left:10px;z-index:10;background:#fff;padding:12px 16px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.12);font-size:13px;line-height:1.7;max-width:380px}
+#controls b{font-size:15px}
+#controls label{margin-right:10px;font-size:12px}
+#controls input[type=text]{padding:3px 6px;border:1px solid #ccc;border-radius:3px;font-size:12px;width:200px}
+#controls select{padding:3px 6px;border:1px solid #ccc;border-radius:3px;font-size:12px;min-width:220px}
+.small-btn{padding:3px 10px;border:1px solid #ccc;border-radius:4px;font-size:11px;background:#e8e8e8;cursor:pointer}
+.small-btn:hover{background:#ddd}
+
+#summary{margin-top:6px;font-size:11px;color:#666}
+
+#stage{position:fixed;top:0;left:0;width:100vw;height:100vh;overflow:hidden;background:#f5f5f5}
+#stage-inner{transform-origin:0 0;transition:transform .08s ease-out}
+#stage-inner svg{display:block}
+
+#legend{position:fixed;bottom:10px;right:10px;z-index:10;background:rgba(255,255,255,.96);padding:8px 12px;border-radius:6px;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.1);line-height:1.6}
+.legend-box{display:inline-block;width:14px;height:11px;margin-right:4px;vertical-align:middle;border:1.5px solid #888;border-radius:2px}
+
+#hint{position:fixed;bottom:10px;left:10px;z-index:10;background:rgba(255,255,255,.95);padding:6px 12px;border-radius:6px;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.1);color:#555}
+
+/* Highlight hovered node */
+.wcc-hover ellipse, .wcc-hover polygon, .wcc-hover path{filter:brightness(1.05)}
+.wcc-hover{cursor:default}
+
+.tt{position:fixed;background:#222;color:#eee;padding:10px 14px;border-radius:6px;
+   font-size:11px;line-height:1.55;box-shadow:0 4px 14px rgba(0,0,0,.35);
+   max-width:520px;pointer-events:none;z-index:100;display:none;
+   font-family:'JetBrains Mono','Courier New',monospace}
+.tt .tt-title{font-size:12px;font-weight:700;margin-bottom:6px;color:#fff;
+   font-family:'Segoe UI',system-ui,sans-serif}
+.tt .tt-row{display:flex;gap:8px;margin:1px 0}
+.tt .tt-key{color:#9ad0ec;min-width:64px}
+.tt .tt-val{color:#fff;word-break:break-all;flex:1}
+.tt .tt-sym{color:#ffd479;word-break:break-all;font-size:10px;margin-top:4px;
+   border-top:1px solid #555;padding-top:4px;line-height:1.45}
+.tt .tt-stats{margin-top:6px;padding-top:4px;border-top:1px solid #555}
+</style>
+</head>
+<body>
+
+<div id="controls">
+  <b>FISH — WCC View (DOT)</b>
+  <div style="margin-top:4px">
+    <label>Session: <input type="text" id="sessionId" placeholder="fish_..."></label>
+    <button class="small-btn" id="loadBtn">Load</button>
+  </div>
+  <div style="margin-top:4px">
+    <label>WCC:
+      <select id="wccSelect"></select>
+    </label>
+  </div>
+  <div style="margin-top:4px">
+    <label><input type="checkbox" id="includeInit"> include init</label>
+    <label><input type="checkbox" id="includeZeroExec"> include zero-execution</label>
+  </div>
+  <div style="margin-top:2px">
+    <label><input type="checkbox" id="includeUnknown"> include unknown (no anchor; rare)</label>
+  </div>
+  <div style="margin-top:4px">
+    <button class="small-btn" id="fitBtn">Fit</button>
+    <button class="small-btn" id="resetZoomBtn">100%</button>
+  </div>
+  <div id="summary">load a session…</div>
+</div>
+
+<div id="legend">
+  <div><span class="legend-box" style="background:#bfe1f5"></span>sub
+       <span class="legend-box" style="background:#f5d6bf;margin-left:6px"></span>serv
+       <span class="legend-box" style="background:#f5bfbf;margin-left:6px"></span>tmr
+       <span class="legend-box" style="background:#fff2a3;margin-left:6px"></span>waitable
+       <span class="legend-box" style="background:#dddddd;margin-left:6px"></span>ext</div>
+  <div style="margin-top:3px">
+       <span class="legend-box" style="background:#fff;border-color:#d62728;border-width:3px"></span>GPU
+       <span style="margin-left:14px;color:#2ca02c">━━</span> GXF intra-node
+       <span style="margin-left:8px;color:#444">━━</span> ROS L3</div>
+</div>
+
+<div id="hint">scroll = zoom · drag = pan · hover node = details</div>
+
+<div id="stage">
+  <div id="stage-inner"></div>
+</div>
+
+<div class="tt" id="tooltip"></div>
+
+<script>
+let allData = null;
+let currentMeta = null;        // map id → metadata for the visible WCC
+let scale = 1, panX = 0, panY = 0;
+let dragging = false, dragStart = null;
+
+function fmtNs(ns){
+  if (ns == null) return '–';
+  if (ns < 1000) return ns.toFixed(0) + 'ns';
+  if (ns < 1e6)  return (ns/1e3).toFixed(1) + 'µs';
+  if (ns < 1e9)  return (ns/1e6).toFixed(2) + 'ms';
+  return (ns/1e9).toFixed(2) + 's';
+}
+
+function truncate(s, n){ return s && s.length > n ? s.slice(0, n-1) + '…' : (s || ''); }
+
+function nodeLine1(d){
+  if (d.ptype === 'ext' || d.etype === 'ext')
+    return d.ent_label || d.symbol || '?';
+  return `[${d.etype}] ${d.ent_label || '?'}`;
+}
+
+function tooltipHTML(d){
+  const lines = [`<div class="tt-title">${truncate(nodeLine1(d), 80)}</div>`];
+  lines.push(`<div class="tt-row"><span class="tt-key">node</span><span class="tt-val">${d.node || 'external'}</span></div>`);
+  lines.push(`<div class="tt-row"><span class="tt-key">etype</span><span class="tt-val">${d.etype}</span></div>`);
+  lines.push(`<div class="tt-row"><span class="tt-key">phase</span><span class="tt-val">${d.phase}${d.gpu_node ? '  ·  GPU' : ''}</span></div>`);
+  lines.push(`<div class="tt-row"><span class="tt-key">cb_addr</span><span class="tt-val">${d.cb_addr || '–'}</span></div>`);
+  if (d.symbol){
+    const sym = d.symbol.replace(/(.{72})/g, '$1<br>');
+    lines.push(`<div class="tt-sym">${sym}</div>`);
+  }
+  if (d.stats){
+    const s = d.stats;
+    lines.push(`<div class="tt-stats">`);
+    lines.push(`<div class="tt-row"><span class="tt-key">fires</span><span class="tt-val">${s.count}</span></div>`);
+    lines.push(`<div class="tt-row"><span class="tt-key">min</span><span class="tt-val">${fmtNs(s.min_ns)}</span></div>`);
+    lines.push(`<div class="tt-row"><span class="tt-key">max</span><span class="tt-val">${fmtNs(s.max_ns)}</span></div>`);
+    lines.push(`<div class="tt-row"><span class="tt-key">avg</span><span class="tt-val">${fmtNs(s.avg_ns)}</span></div>`);
+    lines.push(`<div class="tt-row"><span class="tt-key">std</span><span class="tt-val">${fmtNs(s.std_ns)}</span></div>`);
+    lines.push(`</div>`);
+  }
+  return lines.join('');
+}
+
+function showTip(evt, d){
+  const tt = document.getElementById('tooltip');
+  tt.innerHTML = tooltipHTML(d);
+  tt.style.display = 'block';
+  const W = window.innerWidth, H = window.innerHeight;
+  const r = tt.getBoundingClientRect();
+  let x = evt.clientX + 14, y = evt.clientY + 12;
+  if (x + r.width  > W - 8) x = evt.clientX - r.width  - 14;
+  if (y + r.height > H - 8) y = evt.clientY - r.height - 12;
+  tt.style.left = x + 'px';
+  tt.style.top  = y + 'px';
+}
+function hideTip(){ document.getElementById('tooltip').style.display = 'none'; }
+
+function applyTransform(){
+  const el = document.getElementById('stage-inner');
+  el.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+}
+
+function fitToStage(){
+  const inner = document.getElementById('stage-inner');
+  const svg = inner.querySelector('svg');
+  if (!svg) return;
+  // Use viewBox for natural size
+  const vb = svg.viewBox && svg.viewBox.baseVal;
+  const w = (vb && vb.width)  || svg.clientWidth  || 800;
+  const h = (vb && vb.height) || svg.clientHeight || 600;
+  // Make SVG explicit size = its viewBox so our transform scaling works
+  svg.setAttribute('width', w);
+  svg.setAttribute('height', h);
+  const W = window.innerWidth, H = window.innerHeight;
+  const PAD = 80;
+  const s = Math.min((W - PAD*2) / w, (H - PAD*2) / h, 1.5);
+  scale = s;
+  panX = (W - w * s) / 2;
+  panY = (H - h * s) / 2;
+  applyTransform();
+}
+
+function attachHover(){
+  const inner = document.getElementById('stage-inner');
+  inner.querySelectorAll('g.node').forEach(g => {
+    const id = (g.getAttribute('id') || '').replace(/^n/, '');
+    const meta = currentMeta && currentMeta[id];
+    if (!meta) return;
+    g.classList.add('wcc-hover');
+    g.addEventListener('mouseenter', e => showTip(e, meta));
+    g.addEventListener('mousemove',  e => showTip(e, meta));
+    g.addEventListener('mouseleave', hideTip);
+  });
+}
+
+function renderWCC(wcc){
+  const inner = document.getElementById('stage-inner');
+  // Drop <?xml?> + <!DOCTYPE> prolog so the SVG inlines cleanly
+  let svg = wcc.svg.replace(/<\?xml[^?]*\?>/, '').replace(/<!DOCTYPE[^>]*>/, '');
+  inner.innerHTML = svg;
+  currentMeta = wcc.nodes_meta;
+  attachHover();
+  fitToStage();
+  document.getElementById('summary').innerHTML =
+    `<b>WCC#${wcc.idx}</b> · <b>${wcc.n_cbs}</b> F · <b>${wcc.n_edges}</b> edges`;
+}
+
+function populateSelect(){
+  const sel = document.getElementById('wccSelect');
+  sel.innerHTML = '';
+  if (!allData || !allData.wccs.length){
+    const opt = document.createElement('option');
+    opt.textContent = '(no WCCs)'; sel.appendChild(opt);
+    return;
+  }
+  for (const w of allData.wccs){
+    const opt = document.createElement('option');
+    opt.value = w.idx;
+    opt.textContent = `WCC#${w.idx} — ${w.n_cbs} F, ${w.n_edges} edges`;
+    sel.appendChild(opt);
+  }
+}
+
+async function loadSession(){
+  const sid = document.getElementById('sessionId').value.trim();
+  if (!sid){ document.getElementById('summary').textContent = 'enter a session_id'; return; }
+  const incInit  = document.getElementById('includeInit').checked  ? 1 : 0;
+  const incZero  = document.getElementById('includeZeroExec').checked ? 1 : 0;
+  const incUnk   = document.getElementById('includeUnknown').checked ? 1 : 0;
+  document.getElementById('summary').textContent = 'loading…';
+  try {
+    const r = await fetch(`/api/wcc-svg?session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}`);
+    if (!r.ok){ document.getElementById('summary').textContent = 'error: ' + r.status; return; }
+    allData = await r.json();
+    populateSelect();
+    if (allData.wccs.length) renderWCC(allData.wccs[0]);
+    else {
+      document.getElementById('stage-inner').innerHTML = '';
+      document.getElementById('summary').textContent = 'no WCCs found';
+    }
+  } catch (e){
+    document.getElementById('summary').textContent = 'fetch error: ' + e.message;
+  }
+}
+
+document.getElementById('loadBtn').addEventListener('click', loadSession);
+document.getElementById('sessionId').addEventListener('keydown', e => {
+  if (e.key === 'Enter') loadSession();
+});
+document.getElementById('wccSelect').addEventListener('change', e => {
+  const idx = parseInt(e.target.value, 10);
+  const w = allData && allData.wccs.find(x => x.idx === idx);
+  if (w) renderWCC(w);
+});
+['includeInit','includeZeroExec','includeUnknown'].forEach(id =>
+  document.getElementById(id).addEventListener('change', loadSession));
+document.getElementById('fitBtn').addEventListener('click', fitToStage);
+document.getElementById('resetZoomBtn').addEventListener('click', () => {
+  scale = 1; panX = 0; panY = 0; applyTransform();
+});
+
+// Pan + zoom on stage
+const stage = document.getElementById('stage');
+stage.addEventListener('wheel', e => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
+  // Zoom around cursor
+  const rect = stage.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  const nx = (cx - panX) / scale, ny = (cy - panY) / scale;
+  scale *= factor;
+  scale = Math.max(0.05, Math.min(8, scale));
+  panX = cx - nx * scale;
+  panY = cy - ny * scale;
+  applyTransform();
+}, { passive: false });
+stage.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  dragging = true;
+  dragStart = { x: e.clientX - panX, y: e.clientY - panY };
+});
+window.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  panX = e.clientX - dragStart.x;
+  panY = e.clientY - dragStart.y;
+  applyTransform();
+});
+window.addEventListener('mouseup', () => { dragging = false; });
+
+// ?session=… autoload
+const params = new URLSearchParams(location.search);
+if (params.has('session')){
+  document.getElementById('sessionId').value = params.get('session');
+  loadSession();
+}
+</script>
+</body>
+</html>
