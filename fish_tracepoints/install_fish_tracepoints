@@ -1871,6 +1871,60 @@ with open(path, "w") as f:
 print("    nitros_publisher.cpp patched — fish_rclcpp_publish_link in NitrosPublisher::publish")
 PATCH_NITROS
 
+    # Publisher Waitable: wrap NitrosPublisherWaitable::execute with
+    # callback_start/callback_end. Without this, NITROS publishes that originate
+    # from the GXF-triggered Waitable path have __fish_active_callback=NULL
+    # (Waitable::execute is not a "callback" in the rclcpp instrumentation
+    # sense — rcl_publish fires ~25K times for the stereo benchmark but our
+    # publish_link wrapper's `if (callback == NULL) return` guard skips all
+    # of them). Wrapping with callback_start/end (the same pattern FISH uses
+    # for service client response continuation in client.hpp) makes the
+    # Waitable instance pointer the active callback for the duration of
+    # extractMessagesFromGXF, so publish_link captures it (deduped to one
+    # event per (publisher_handle, waitable_addr) pair).
+    python3 <<'PATCH_NITROS_WAITABLE'
+import sys
+path = "/root/ros_ws/src/isaac_ros_nitros/isaac_ros_nitros/src/nitros_publisher.cpp"
+with open(path) as f:
+    content = f.read()
+
+if "FISH: NitrosPublisherWaitable callback_start" in content:
+    print("    nitros_publisher.cpp Waitable::execute already patched")
+else:
+    old_block = """void NitrosPublisherWaitable::execute(std::shared_ptr<void> & data)
+{
+  (void)data;  // unused"""
+    new_block = """void NitrosPublisherWaitable::execute(std::shared_ptr<void> & data)
+{
+  // FISH: NitrosPublisherWaitable callback_start — wrap the Waitable's execute
+  // window so __fish_active_callback is set during the publishes inside.
+  // Mirrors the client.hpp response-continuation pattern.
+  TRACEPOINT(callback_start, static_cast<const void *>(this), false);
+  (void)data;  // unused"""
+    if old_block in content:
+        content = content.replace(old_block, new_block, 1)
+        # Add callback_end before the closing brace of execute (it ends with
+        # `  nvtxRangePopWrapper();\n}`)
+        old_tail = """  nvtxRangePopWrapper();
+}
+
+void NitrosPublisherWaitable::add_to_wait_set"""
+        new_tail = """  nvtxRangePopWrapper();
+  TRACEPOINT(callback_end, static_cast<const void *>(this));
+}
+
+void NitrosPublisherWaitable::add_to_wait_set"""
+        if old_tail in content:
+            content = content.replace(old_tail, new_tail, 1)
+            with open(path, "w") as f:
+                f.write(content)
+            print("    nitros_publisher.cpp Waitable::execute wrapped (callback_start/end)")
+        else:
+            print("    WARN: Waitable::execute tail anchor not found")
+    else:
+        print("    WARN: Waitable::execute head anchor not found")
+PATCH_NITROS_WAITABLE
+
     # Receive-side: patch NitrosSubscriber::subscriberCallback to fire
     # fish_rclcpp_receive_link with the compatible_sub_ subscription handle +
     # the active executor callback. This catches data delivery regardless of
