@@ -1,0 +1,300 @@
+Noticing Waitables — postmortem
+================================
+
+How rclcpp::Waitable was an unseen 5th executor dispatch category for
+months despite multiple passes through rclcpp + NITROS source. Written
+2026-06-26 after the fact, to remember the deduction chain (and so
+future similar "missing dispatch path" gaps are easier to spot).
+
+
+Why Waitables hide
+------------------
+
+1. No public `Node::create_waitable()` API. Sub/Tmr/Serv all have
+   first-class ergonomic factories:
+     node->create_subscription<MsgT>(topic, qos, cb)
+     node->create_wall_timer(dur, cb)
+     node->create_service<SrvT>(name, cb)
+   Waitable's registration is verbose and library-author-facing:
+     node->get_node_waitables_interface()->add_waitable(ptr, group)
+   It does not appear in any rclcpp tutorial or beginner doc, only in
+   rclcpp::Client / rclcpp_action / QoS event handler internals and
+   in library extensions (NitrosPublisherWaitable, rosbag2 PlayerImpl,
+   …). So a normal user grep ("subscription", "publisher", "timer")
+   finds them everywhere; "waitable" mostly hits base-class scaffolding
+   and the wait_set plumbing — looks like internal mechanics, not an
+   application concept.
+
+2. Concrete subclasses live in scattered packages. There is no
+   canonical "list of Waitables". Each library that needs to plug a
+   custom dispatch path into the executor defines its own subclass.
+   Verified subclasses in our rclcpp + rclcpp_action tree:
+     - rclcpp::QOSEventHandlerBase           (QoS event delivery)
+     - rclcpp::SubscriptionIntraProcessBase  (intra-process sub
+                                              dispatch — see note
+                                              about coverage below)
+     - rclcpp_action::ClientBase             (action client)
+     - rclcpp_action::ServerBase             (action server)
+     - isaac_ros::NitrosPublisherWaitable    (NITROS-output publish
+                                              via GXF MessageRelay)
+     - rosbag2::PlayerImpl                   (rosbag2)
+   IMPORTANT: rclcpp::Client is NOT a Waitable subclass — it
+   dispatches via branch 4 (execute_client). The "rclcpp::Client
+   response continuation" wording in earlier notes was inaccurate;
+   client response handling is wrapped separately via FISH's
+   patch_and_build_rclcpp_client patch on handle_response.
+
+3. NITROS wires it deep inside a multi-step lifecycle method,
+   NitrosNode::postNegotiationCallback → enableNitrosPublisherWaitable
+   → add_waitable. Public ComposableNode constructor never mentions
+   it. A reader chasing what NitrosPublisher::publish() does follows
+   the obvious compatible_pub_->publish() (standard rclcpp) path and
+   misses the GXF-mediated Waitable path entirely.
+
+4. In Executor::execute_any_executable() the dispatch is 5 branches:
+     if (any_exec.timer)        execute_timer(...)
+     if (any_exec.subscription) execute_subscription(...)
+     if (any_exec.service)      execute_service(...)
+     if (any_exec.client)       execute_client(...)
+     if (any_exec.waitable)     any_exec.waitable->execute(...)
+   The first 4 are first-class named dispatch fns. The 5th is a
+   polymorphic catch-all — its body is just `->execute(data)`, with
+   no hint of what runs underneath. Reading the file top-to-bottom
+   you can easily file it as "wait_set plumbing for guard conditions"
+   and move on.
+
+
+How the gap was first detected
+------------------------------
+
+Direct cause was a sanity-check count comparison. To make sense of
+that, first separate two tracepoints that look superficially similar:
+
+  ros2:rcl_publish
+    - upstream ros2_tracing tracepoint, defined by ros2_tracing.
+    - call site: rcl/src/rcl/publisher.c — rcl_publish() function.
+    - fires once per actual rcl_publish() call.
+    - payload: publisher_handle, message_addr.
+    - NO callback context, NO dedup. Pure raw count.
+    - Disabled by default in FISH's fish_events.txt whitelist (high
+      volume); we enable it only for sanity checks like this one.
+
+  ros2:fish_rclcpp_publish_link
+    - FISH custom tracepoint, defined by us.
+    - call site: SAME rcl/src/rcl/publisher.c — rcl_publish() (plus
+      rcl_publish_serialized_message and rcl_publish_loaned_message),
+      AND the rclcpp intra-process template in publisher.hpp, AND
+      isaac_ros_nitros/nitros_publisher.cpp. Multiple emission sites
+      because publish happens via multiple paths.
+    - payload: publisher_handle, callback (the currently-active
+      callback on this thread, read from __fish_active_callback).
+    - has a thread-local DEDUP CACHE: (publisher_handle, callback)
+      pair fires AT MOST ONCE per thread. Intentional: the model
+      only needs the (entity → topic) attribution once, not once
+      per message. Keeps overhead low and trace size small.
+    - originally also had an early-out guard:
+        if (cb == NULL) return;   // skip publishes with no active cb
+
+So three layers of filtering between "every publish" and "publish_link
+event in the trace":
+    layer 0: rcl_publish itself fires per publish (high count)
+    layer 1: publish_link wrapper dedups by (pub_handle, callback)
+              (drops to ~ unique pub-cb pairs per thread)
+    layer 2: cb==NULL guard drops events where __fish_active_callback
+              was NULL at publish time (massive drop on NITROS code path)
+
+Trace summary for the multi-container stereo benchmark, with all
+three layers on:
+
+  ros2:rcl_publish                events  ≈  25,789   (raw, every publish)
+  ros2:fish_rclcpp_publish_link   events  ≈     103   (deduped + NULL-guarded)
+
+That 250× gap is impossible to reach from dedup alone (real pipeline
+has ~30 distinct (pub_handle, cb) pairs at most), so layer 2 — the
+NULL guard — must be eating the bulk. Which means most publishes
+were firing while __fish_active_callback was NULL.
+
+Conclusion-1: a large class of publishes is happening on threads
+that never went through callback_start (= entered some dispatch
+category that isn't sub/tmr/serv/client, because those are wrapped).
+
+
+The NULL signal in the trace
+----------------------------
+
+Temporarily disabling the cb==NULL guard let the events through
+with their literal payload:
+
+  fish_rclcpp_publish_link  publisher_handle=0xABC...  callback=0x0
+  fish_rclcpp_publish_link  publisher_handle=0xDEF...  callback=0x0
+  ...
+
+callback=0x0 = the __fish_active_callback thread-local was literal
+NULL at the moment rcl_publish was called. The thread had either
+never set it, or the previous dispatch's callback_end had cleared
+it and no new callback_start fired before the publish.
+
+Importantly, this NULL signal does NOT directly say "Waitable" — it
+says "something is running on this thread that didn't go through
+callback_start". Could in principle be:
+  - executor warm-up before first dispatch
+  - a non-rclcpp thread (DDS internal, RMW callback)
+  - a 5th dispatch category that's wrap-less
+
+
+Deduction chain to the actual cause
+-----------------------------------
+
+NULL signal → "what other dispatch categories exist?" → read
+executor.cpp top to bottom. Spotted the 5-branch dispatch in
+execute_any_executable. Branches 1-4 already had callback_start
+wraps. Branch 5 (any_exec.waitable->execute) did NOT. That single
+line was emitting all the missing context.
+
+From there:
+  - which Waitable subclasses fire in this session?
+    → grep `: public.*Waitable` over loaded packages → many
+      candidates; the relevant one for NITROS hot path is
+      NitrosPublisherWaitable.
+  - where is it registered?
+    → grep enableNitrosPublisherWaitable → only call site:
+      NitrosNode::postNegotiationCallback. Confirmed it goes
+      through add_waitable → which means the standard rclcpp
+      executor will dispatch it via branch 5.
+
+Loop closed.
+
+
+Why receive_link wasn't symptomatic the same way
+------------------------------------------------
+
+receive_link can attribute via subscription_handle alone (the
+sub_handle uniquely identifies one entity), so a NULL active
+callback during receive is recoverable downstream — we know which
+sub owns the message. publish_link, on the other hand, needs the
+active callback because pub_handle alone is ambiguous (a single
+publisher_handle in a node can be written by timer / sub / serv /
+waitable). That's why NULL on the publish side was the load-bearing
+gap.
+
+
+Generalisation — checklist for future dispatch-coverage gaps
+------------------------------------------------------------
+
+Whenever instrumenting "callbacks fire on a thread":
+  1. Enumerate every dispatch category the runtime supports. Read
+     the executor's dispatch loop top to bottom; do not infer from
+     "what the docs talk about".
+  2. For every category, confirm a callback_start (or moral
+     equivalent) wrap is in place. Branches without one will emit
+     events on otherwise tracked threads with a NULL active id.
+  3. As a one-shot sanity counter, compare the low-level event
+     count (rcl_publish, rmw_publish, raw rclcpp::Subscription
+     dispatch) against the FISH-wrapper count. A wide gap = a
+     missing dispatch wrap. Run this before trusting any trace
+     summary built on the wrapper.
+
+Repos to mentally check for "scattered Waitable subclasses" the next
+time we instrument a new framework:
+  - rclcpp (SubscriptionIntraProcessBase, QOSEventHandler,
+    GuardCondition handler — NOT rclcpp::Client; that goes through
+    its own execute_client branch)
+  - rclcpp_action (ClientBase, ServerBase)
+  - rosbag2 (PlayerImpl)
+  - isaac_ros_nitros (NitrosPublisherWaitable on hot path)
+  - any in-house extension that calls add_waitable
+
+Double-counting check (audited 2026-06-26 against the new generic
+Waitable wrap):
+
+  branch        existing FISH wrap         new Waitable wrap fires?  result
+  ---------     ------------------------   -----------------------   ---------------
+  client (4)    patch_and_build_rclcpp_    NO (different branch)     no double count
+                client on handle_response
+  waitable(5)   QOSEventHandler            new wrap is only wrap     single count
+                action ClientBase/ServerBase                          (clean)
+                NitrosPublisherWaitable
+                rosbag2 PlayerImpl
+  waitable(5)   SubscriptionIntraProcess   NESTED:                   no per-cb double:
+                Base (intra-process sub)   - our wrap fires             waitable_this
+                                             callback_start              fires +1
+                                             (waitable_this)           sub_cb_addr
+                                           - AnySubscriptionCallback     fires +1
+                                             ::dispatch fires           (different cb_
+                                             callback_start              addrs in trace)
+                                             (sub_cb_addr)
+                                                                       Net effect: total
+                                                                       callback_start event
+                                                                       count inflated for
+                                                                       intra-proc subs;
+                                                                       per-entity fire
+                                                                       counts NOT doubled.
+
+Coverage gap noted (2026-06-26):
+
+  SubscriptionIntraProcessBase Waitables are NOT picked up by
+  fish_rclcpp_waitable_init. Two-part reason — registration path
+  AND dispatch consequences.
+
+  Registration path. Standard Waitables (NitrosPublisherWaitable,
+  rosbag2 PlayerImpl, QoSEventHandler, action ClientBase/ServerBase)
+  are added to a node via:
+    node->get_node_waitables_interface()->add_waitable(ptr, group)
+  which lands in NodeWaitables::add_waitable() — that's our
+  fish_rclcpp_waitable_init patch site. Intra-process Waitables
+  bypass that path entirely. In Subscription's constructor (template
+  in rclcpp/include/rclcpp/subscription.hpp ~line 212), when
+  intra-process is enabled the SubscriptionIntraProcess is created
+  and registered via:
+    auto ipm = context->get_sub_context<IntraProcessManager>();
+    ipm->add_subscription(subscription_intra_process_);
+  IntraProcessManager::add_subscription (src/rclcpp/intra_process_
+  manager.cpp:62) keeps its own map of sub-id → Waitable; nothing
+  flows through add_waitable.
+
+  Dispatch consequence. The intra-process Waitable still gets
+  added to the executor's wait_set (via the IntraProcessManager
+  + executor coordination) and IS dispatched via branch 5
+  (any_exec.waitable->execute). Our generic executor.cpp wrap
+  fires:
+    callback_start(waitable_this)   ← waitable_this = intra-proc Waitable's `this`
+  Inside SubscriptionIntraProcessBase::execute() (header ~line 135),
+  the AnySubscriptionCallback's dispatch then fires:
+    callback_start(sub_cb_addr)     ← inner nested
+  user cb runs — publishes here read __fish_active_callback =
+  sub_cb_addr ✓ (correct attribution to parent sub entity).
+  callback_end(sub_cb_addr) → __fish_active_callback = NULL.
+  Outer callback_end(waitable_this) → NULL (already).
+
+  Why attribution still works: the inner nested callback_start
+  with sub_cb_addr takes precedence on the thread-local during
+  user-cb execution. The outer Waitable wrap's callback_start
+  /end pair is structurally redundant for intra-process subs but
+  doesn't break anything. The Waitable's `this` does appear as
+  a separate cb_addr in callback_start trace events — with no
+  matching entity in cb_to_entity — but no publish_link ever
+  fires inside the "between outer-start and inner-start" tiny
+  window, so no attribution is lost.
+
+  Symptom in our model: `0 dropped — unknown cb` is preserved
+  (verified for fish_20260626_172710). `[serv] /r2b/play_messages`
+  and other entities all show correct fire counts.
+
+  Fix recipe (optional, not implemented; the gap is benign):
+    (a) Add a TRACEPOINT(fish_rclcpp_waitable_init, …) emit in
+        rclcpp/src/rclcpp/intra_process_manager.cpp:add_subscription,
+        passing the intra-proc Waitable's `this`. node_handle and
+        callback_group are NOT directly available there — pass
+        nullptr placeholders.
+    (b) In model_improved_pg.identify_entities, when consuming
+        fish_rclcpp_waitable_init events, FILTER OUT entries
+        whose waitable ptr appears as a `subscription` value in
+        rclcpp_subscription_init events. Those are intra-proc
+        variants and are already covered by the parent sub entity.
+        Without this filter, you'd create singleton Waitable
+        entities that pollute the WCC view without adding
+        information.
+  Why deferred: attribution already works, model already returns
+  `0 dropped`, and the fix doesn't move any WCC connectivity. We
+  document it so the next person who notices "wait, why aren't
+  intra-proc Waitables in waitable_init counts?" has the answer.

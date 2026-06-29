@@ -1,6 +1,53 @@
 Immediate Work Items
 ====================
 
+*** INTRA-PROCESS WAITABLE COVERAGE FIX (added 2026-06-26) ***
+See notes/noticing_waitables.txt → "Coverage gap noted" for full
+context. Summary: SubscriptionIntraProcessBase Waitables register
+via IntraProcessManager (not NodeWaitables), so our existing
+fish_rclcpp_waitable_init patch (in NodeWaitables::add_waitable)
+misses them. They still dispatch via executor branch 5 and our
+generic Waitable wrap fires callback_start with their `this` —
+so the cb_addr appears in trace but has no matching entity in
+cb_to_entity. Attribution still ends up correct because the inner
+nested callback_start with sub_cb_addr takes precedence during
+user-cb execution, so this is benign in current sessions
+(`0 dropped — unknown cb` verified on fish_20260626_172710). But
+for trace completeness + symmetry with NITROS Waitables, close it.
+
+Steps:
+
+(a) Patch rclcpp/src/rclcpp/intra_process_manager.cpp:62
+    `IntraProcessManager::add_subscription(subscription)` to fire:
+      TRACEPOINT(
+        fish_rclcpp_waitable_init,
+        static_cast<const void *>(subscription.get()),
+        nullptr,   // node_handle — not directly available; model derives
+        nullptr);  // callback_group — N/A for intra-process Waitables
+    Wire this into fish_tracepoints/install_fish_tracepoints next
+    to the existing patch_rclcpp_executor_attribution; rebuild
+    rclcpp via the same colcon command.
+
+(b) In postprocess/model_improved_pg.py identify_entities, when
+    consuming fish_rclcpp_waitable_init events, FILTER OUT entries
+    whose waitable ptr also appears as a `subscription` value in
+    rclcpp_subscription_init events. Those are intra-process
+    variants and are already covered by the parent sub entity.
+    Without the filter, they create singleton Waitable entities
+    that pollute the WCC view without adding information.
+
+(c) Re-run disparity_graph (or any intra-process-heavy session),
+    confirm `fish_rclcpp_waitable_init` count goes up by N (the
+    number of intra-process subs in the session), and that the
+    model still reports `0 dropped — unknown cb` plus the same
+    WCC composition (no new singletons polluting).
+
+Estimated effort: ~1 hour (patch + filter + verify). Low priority
+because attribution is already correct; do this when next touching
+the tracepoint patch infrastructure or before publishing the FISH
+paper for completeness.
+
+
 *** WCC SHAPE DETECTION — per-probe binary signatures (added 2026-06-26) ***
 Goal
 ----
