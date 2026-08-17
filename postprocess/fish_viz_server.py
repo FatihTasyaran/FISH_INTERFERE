@@ -547,13 +547,21 @@ def _serve_task_graphs(handler, qs):
 # Override/extend the list via FISH_INFRA_TOPICS (comma-separated globs).
 import fnmatch as _fnmatch
 _INFRA_TOPIC_GLOBS = [
-    '/diagnostics', '/diagnostics_agg', '/diagnostics_toplevel_state',
+    # ROS 2 plumbing
     '/tf', '/tf_static',
     '/parameter_events', '/clock', '/rosout', '/service_log',
-    '*/debug/*', '*/processing_time_ms', '*/processing_time_detail_ms',
-    '*/cyclic_time_ms', '*/pipeline_latency_ms',
     '/*/describe_parameters', '/*/get_parameters', '/*/get_parameter_types',
     '/*/list_parameters', '/*/set_parameters', '/*/set_parameters_atomically',
+    # diagnostics / statistics (rqt_graph "Debug" quiet list: /clock /rosout
+    # /statistics /diag_agg /time — see rqt_graph/dotcode.py QUIET_NAMES)
+    '/diagnostics', '/diagnostics_agg', '/diagnostics_toplevel_state',
+    '/statistics', '/time', '/diag_agg',
+    # Autoware debug / timing side channels
+    '*/debug/*', '*/processing_time_ms', '*/processing_time_detail_ms',
+    '*/cyclic_time_ms', '*/pipeline_latency_ms',
+    # rqt_graph "hidden" convention: last name segment starting with '_'
+    # (e.g. /foo/_bar) — internal / hidden topics.
+    '*/_*',
 ]
 _env_globs = os.environ.get('FISH_INFRA_TOPICS')
 if _env_globs:
@@ -570,11 +578,48 @@ def topic_class(topic: str) -> str:
     return 'data'
 
 
-def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude'):
+def _glob_list(spec):
+    """rqt_graph-style include/exclude spec: comma-separated globs, '-' prefix
+    excludes. '' or '/' means include everything. Returns (includes, excludes)."""
+    inc, exc = [], []
+    for tok in (spec or '').split(','):
+        tok = tok.strip()
+        if not tok or tok == '/':
+            continue
+        if tok.startswith('-'):
+            exc.append(tok[1:])
+        else:
+            inc.append(tok)
+    return inc, exc
+
+
+def _glob_match(name, inc, exc):
+    if any(_fnmatch.fnmatchcase(name or '', g) for g in exc):
+        return False
+    if not inc:
+        return True
+    return any(_fnmatch.fnmatchcase(name or '', g) for g in inc)
+
+
+def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
+                       node_filter='', topic_filter='', ext_mode='show'):
     """Shared backbone for /api/wcc and /api/wcc-svg.
+
+    Filters (rqt_graph-inspired):
+      infra_mode   'exclude' (default) | 'include' — do infra topics glue FTs?
+      node_filter  comma-separated globs on the owning ROS node name; '-' prefix
+                   excludes (rqt_graph "Namespaces" box). Applied to F nodes.
+      topic_filter same, on edge topic (rqt_graph "Topics" box). Applied to edges.
+      ext_mode     'show' (default) | 'hide' — drop external boundary pseudo-F
+                   nodes (ptype='ext'): source-ext = topics published by nothing
+                   we traced (bag, other hosts), sink-ext = topics with no traced
+                   subscriber (rqt_graph "Dead sinks"). Their edges become
+                   boundary edges recorded per FT as n_ext_in / n_ext_out.
 
     Returns: (fnodes, edges, out_wccs, n_wccs) on success, raises on PG error.
     """
+    node_inc, node_exc = _glob_list(node_filter)
+    topic_inc, topic_exc = _glob_list(topic_filter)
     import psycopg2
     dsn = os.environ.get('FISH_PG_DSN',
         'host=localhost port=5432 dbname=fish user=fish password=fish')
@@ -584,7 +629,8 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude'):
     # F vertices with parent entity + node + executor + attrs (for phase, gpu_node)
     cur.execute("""
       WITH e_to_n AS (
-        SELECT e.session_id, e.scope, e.node_id AS e_id, n.label AS node_name
+        SELECT e.session_id, e.scope, e.node_id AS e_id, n.label AS node_name,
+               COALESCE(n.full_name, n.label) AS node_full
         FROM graph_nodes e
         JOIN graph_edges ge ON ge.session_id=e.session_id AND ge.scope=e.scope
                            AND ge.target=e.node_id AND ge.rel='contains'
@@ -592,9 +638,10 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude'):
                            AND n.node_id=ge.source AND n.type='N'
         WHERE e.session_id=%s AND e.scope=%s AND e.type='E'
       )
-      SELECT f.node_id, f.cb_addr, f.label AS symbol, f.attrs,
+      SELECT f.node_id, f.cb_addr, f.label AS symbol, f.attrs, f.ptype,
              e.etype, e.label AS entity_label,
-             COALESCE(en.node_name, '') AS node_name
+             COALESCE(en.node_name, '') AS node_name,
+             COALESCE(en.node_full, '') AS node_full
       FROM graph_nodes f
       JOIN graph_edges ge_fe ON ge_fe.session_id=f.session_id AND ge_fe.scope=f.scope
                             AND ge_fe.target=f.node_id AND ge_fe.rel='contains'
@@ -604,13 +651,28 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude'):
       WHERE f.session_id=%s AND f.scope=%s AND f.type='F'
     """, (sid, scope, sid, scope))
     fnodes = {}
-    for f_id, cb, sym, attrs, etype, ent_label, node_name in cur.fetchall():
+    for f_id, cb, sym, attrs, ptype_col, etype, ent_label, node_name, node_full in cur.fetchall():
         attrs = attrs or {}
+        # graph_store_pg lifts ptype into a column; older rows may still
+        # carry it in attrs.
+        ptype = ptype_col or attrs.get('ptype') or 'cpu'
         phase = attrs.get('phase', 'unknown')
-        if attrs.get('ptype') == 'ext':
+        is_ext = (ptype == 'ext')
+        if is_ext:
             phase = 'data'
         if phase not in allowed:
             continue
+        if ext_mode == 'hide' and is_ext:
+            continue
+        # node filter on the FULL ROS node name (e.g. /sensing/lidar/concatenate_data).
+        # ext pseudo-nodes have no owning node → keep them unless an explicit
+        # exclude glob matches their 'ext:<topic>' label.
+        if node_inc or node_exc:
+            if is_ext:
+                if node_exc and any(_fnmatch.fnmatchcase(sym or '', g) for g in node_exc):
+                    continue
+            elif not _glob_match(node_full or node_name or '', node_inc, node_exc):
+                continue
         fnodes[f_id] = {
             'id': f_id,
             'cb_addr': cb or '',
@@ -618,9 +680,10 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude'):
             'etype': etype or 'ext',
             'ent_label': ent_label or '',
             'node': node_name or '',
+            'node_full': node_full or '',
             'phase': phase,
             'gpu_node': bool(attrs.get('gpu_node')),
-            'ptype': attrs.get('ptype', 'cpu'),
+            'ptype': ptype,
         }
 
     cur.execute("""
@@ -629,10 +692,14 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude'):
       WHERE session_id=%s AND scope=%s AND rel='comm' AND level = 'L3'
     """, (sid, scope))
     edges = []
+    n_edges_topic_filtered = 0
     for s, t, a in cur.fetchall():
         if s in fnodes and t in fnodes:
             a = a or {}
             topic = a.get('topic') or a.get('service', '')
+            if (topic_inc or topic_exc) and not _glob_match(topic, topic_inc, topic_exc):
+                n_edges_topic_filtered += 1
+                continue
             edges.append({
                 'src': s, 'dst': t,
                 'topic': topic,
@@ -707,12 +774,17 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude'):
         wcc_nodes = [fnodes[f_id] for f_id in sorted(comp)]
         wcc_edges = [e for e in edges if e['src'] in comp and e['dst'] in comp]
         n_infra = sum(1 for e in wcc_edges if e['edge_class'] == 'infra')
+        n_ext_src = sum(1 for n in wcc_nodes if n['ptype'] == 'ext' and any(e['src'] == n['id'] for e in wcc_edges))
+        n_ext_snk = sum(1 for n in wcc_nodes if n['ptype'] == 'ext' and any(e['dst'] == n['id'] for e in wcc_edges))
         out_wccs.append({
             'idx': i,
             'n_cbs': len(comp),
+            'n_real_cbs': sum(1 for n in wcc_nodes if n['ptype'] != 'ext'),
             'n_edges': len(wcc_edges),
             'n_data_edges': len(wcc_edges) - n_infra,
             'n_infra_edges': n_infra,
+            'n_ext_sources': n_ext_src,
+            'n_ext_sinks': n_ext_snk,
             'nodes': wcc_nodes,
             'edges': wcc_edges,
         })
@@ -746,9 +818,15 @@ def _serve_wcc(handler, qs):
     infra_mode = (qs.get('infra', ['exclude'])[0] or 'exclude').lower()
     if infra_mode not in ('exclude', 'include'):
         infra_mode = 'exclude'
+    node_filter  = (qs.get('node',  [''])[0] or '')
+    topic_filter = (qs.get('topic', [''])[0] or '')
+    ext_mode = (qs.get('ext', ['show'])[0] or 'show').lower()
+    if ext_mode not in ('show', 'hide'):
+        ext_mode = 'show'
 
     try:
-        fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(sid, scope, allowed, infra_mode)
+        fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(
+            sid, scope, allowed, infra_mode, node_filter, topic_filter, ext_mode)
     except Exception as e:
         handler.send_error(500, f'PG error: {e}')
         return
@@ -759,6 +837,7 @@ def _serve_wcc(handler, qs):
         'allowed_phases': sorted(allowed),
         'infra_mode': infra_mode,
         'infra_topic_globs': _INFRA_TOPIC_GLOBS,
+        'node_filter': node_filter, 'topic_filter': topic_filter, 'ext_mode': ext_mode,
         'n_f_nodes': len(fnodes),
         'n_edges': len(edges),
         'n_data_edges': len(edges) - n_infra,
@@ -900,9 +979,15 @@ def _serve_wcc_svg(handler, qs):
     infra_mode = (qs.get('infra', ['exclude'])[0] or 'exclude').lower()
     if infra_mode not in ('exclude', 'include'):
         infra_mode = 'exclude'
+    node_filter  = (qs.get('node',  [''])[0] or '')
+    topic_filter = (qs.get('topic', [''])[0] or '')
+    ext_mode = (qs.get('ext', ['show'])[0] or 'show').lower()
+    if ext_mode not in ('show', 'hide'):
+        ext_mode = 'show'
 
     try:
-        fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(sid, scope, allowed, infra_mode)
+        fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(
+            sid, scope, allowed, infra_mode, node_filter, topic_filter, ext_mode)
     except Exception as e:
         handler.send_error(500, f'PG error: {e}')
         return
@@ -923,6 +1008,9 @@ def _serve_wcc_svg(handler, qs):
             'n_edges': w['n_edges'],
             'n_data_edges': w.get('n_data_edges', w['n_edges']),
             'n_infra_edges': w.get('n_infra_edges', 0),
+            'n_real_cbs': w.get('n_real_cbs', w['n_cbs']),
+            'n_ext_sources': w.get('n_ext_sources', 0),
+            'n_ext_sinks': w.get('n_ext_sinks', 0),
             'svg': svg,
             'nodes_meta': meta,
         })
@@ -932,6 +1020,7 @@ def _serve_wcc_svg(handler, qs):
         'session_id': sid, 'scope': scope,
         'allowed_phases': sorted(allowed),
         'infra_mode': infra_mode,
+        'node_filter': node_filter, 'topic_filter': topic_filter, 'ext_mode': ext_mode,
         'n_f_nodes': len(fnodes),
         'n_edges': len(edges),
         'n_data_edges': len(edges) - n_infra,

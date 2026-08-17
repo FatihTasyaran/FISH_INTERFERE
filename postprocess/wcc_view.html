@@ -63,8 +63,15 @@ body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;ove
   <div style="margin-top:2px">
     <label><input type="checkbox" id="includeUnknown"> include unknown (no anchor; rare)</label>
   </div>
-  <div style="margin-top:2px" title="Infra topics (/diagnostics, /tf, /tf_static, /parameter_events, /clock, /rosout, */debug/*, …) are drawn dashed-grey and, by default, do NOT glue callbacks into the same FT.">
+  <div style="margin-top:2px" title="Infra topics (/diagnostics, /tf, /tf_static, /parameter_events, /clock, /rosout, */debug/*, hidden _names …) are drawn dashed-grey and, by default, do NOT glue callbacks into the same FT. (rqt_graph: Debug / Hide tf / Hide parameters)">
     <label><input type="checkbox" id="includeInfra"> group by infra edges too (/tf, /diagnostics, …)</label>
+  </div>
+  <div style="margin-top:2px" title="Drop external boundary pseudo-nodes: source-ext = published by nothing we traced (bag, other hosts); sink-ext = no traced subscriber (rqt_graph: Dead sinks / Leaf topics).">
+    <label><input type="checkbox" id="hideExt"> hide external boundary nodes (ext:)</label>
+  </div>
+  <div style="margin-top:4px" title="rqt_graph-style globs, comma-separated, '-' prefix excludes. Node: owning ROS node name. Topic: edge topic.">
+    <label>Node <input type="text" id="nodeFilter" size="18" placeholder="/sensing/*,-*rviz*"></label>
+    <label>Topic <input type="text" id="topicFilter" size="18" placeholder="*/pointcloud*"></label>
   </div>
   <div style="margin-top:4px">
     <button class="small-btn" id="fitBtn">Fit</button>
@@ -201,6 +208,7 @@ function renderWCC(wcc){
   document.getElementById('summary').innerHTML =
     `<b>FT#${wcc.idx}</b> · <b>${wcc.n_cbs}</b> F · <b>${wcc.n_data_edges ?? wcc.n_edges}</b> data edges` +
     ((wcc.n_infra_edges) ? ` · <span style="color:#999">${wcc.n_infra_edges} infra (dashed)</span>` : '') +
+    ((wcc.n_ext_sources || wcc.n_ext_sinks) ? ` · <span style="color:#999">ext in ${wcc.n_ext_sources||0} / out ${wcc.n_ext_sinks||0}</span>` : '') +
     (allData && allData.n_wccs !== undefined ? ` · ${allData.wccs.length} FTs (≥2 F) / ${allData.n_wccs} comps` : '');
 }
 
@@ -227,9 +235,12 @@ async function loadSession(){
   const incZero  = document.getElementById('includeZeroExec').checked ? 1 : 0;
   const incUnk   = document.getElementById('includeUnknown').checked ? 1 : 0;
   const infra    = document.getElementById('includeInfra').checked ? 'include' : 'exclude';
+  const ext      = document.getElementById('hideExt').checked ? 'hide' : 'show';
+  const nodeF    = encodeURIComponent(document.getElementById('nodeFilter').value.trim());
+  const topicF   = encodeURIComponent(document.getElementById('topicFilter').value.trim());
   document.getElementById('summary').textContent = 'loading…';
   try {
-    const r = await fetch(`/api/wcc-svg?session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}&infra=${infra}`);
+    const r = await fetch(`/api/wcc-svg?session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}&infra=${infra}&ext=${ext}&node=${nodeF}&topic=${topicF}`);
     if (!r.ok){ document.getElementById('summary').textContent = 'error: ' + r.status; return; }
     allData = await r.json();
     populateSelect();
@@ -244,15 +255,14 @@ async function loadSession(){
 }
 
 document.getElementById('loadBtn').addEventListener('click', loadSession);
-document.getElementById('sessionId').addEventListener('keydown', e => {
-  if (e.key === 'Enter') loadSession();
-});
+['sessionId','nodeFilter','topicFilter'].forEach(id =>
+  document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') loadSession(); }));
 document.getElementById('wccSelect').addEventListener('change', e => {
   const idx = parseInt(e.target.value, 10);
   const w = allData && allData.wccs.find(x => x.idx === idx);
   if (w) renderWCC(w);
 });
-['includeInit','includeZeroExec','includeUnknown','includeInfra'].forEach(id =>
+['includeInit','includeZeroExec','includeUnknown','includeInfra','hideExt'].forEach(id =>
   document.getElementById(id).addEventListener('change', loadSession));
 document.getElementById('fitBtn').addEventListener('click', fitToStage);
 document.getElementById('resetZoomBtn').addEventListener('click', () => {

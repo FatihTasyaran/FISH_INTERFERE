@@ -143,3 +143,46 @@ Open follow-ups
   for the DDS-settings comparison figure.
 - The r5 XML regression: not related to the Waitable patch (r5 still emitted
   143 waitable_init); see notes/about_docs/autoware_dds_settings.txt.
+
+Intra-process PUBLISH side — closed 2026-08-17 (image -fishwait5, session fish_20260817_094147)
+--------------------------------------------------------------------------------------------
+Symptom: 15 same-process topics (per-lidar pointcloud_raw_ex → self_cropped →
+mirror_cropped → rectified, obstacle_segmentation/single_frame/pointcloud) had
+299 subscriber fires each but 0 fish_rclcpp_publish_link → the model made them
+external sources and the per-lidar preprocessing chains fell apart
+(/sensing/lidar/* view: 4 fragments of 2 F).
+Cause: rclcpp Publisher<T>::publish() never calls rcl_publish when every
+subscriber is intra-process (do_intra_process_publish only) → the rcl hook is
+blind; the June publisher.hpp hook is a class-template patch that downstream
+binaries (compiled against stock headers) never execute.
+Fix: fish_rclcpp_publish_link emitted from PublisherBase::
+get_intra_process_subscription_count() (publisher_base.cpp, non-template, in
+librclcpp.so — dynamically called by every downstream binary); every
+intra-capable publish() calls it exactly once; tracetools dedupes (handle,cb)
+per thread and skips NULL callback (rosbag2 player thread stays external).
+Result r8 vs r7: publish_link events 237 → 3924; pub aspects 323 → 435 (0
+dropped); /sensing/lidar/* = 3 complete chains × 6 F / 5 edges
+(velodyne_ros_wrapper → crop_box_self → crop_box_mirror → distortion →
+ring_outlier → concatenate_data); FT count 65 → 50 (lidar perception and
+localization now joined through concat → measurement_range → downsample → NDT,
+a real data dependency).
+Remaining subtlety: multi-input callbacks. concatenate_data has one F per
+input topic (3 lidars); only the callback that completes the concat publishes,
+so the other two lidar chains terminate at their concat F. True behaviour, but
+FT boundaries should be read with that in mind (candidate: node-level "join"
+annotation).
+
+FT grouping filters (fish_viz_server /api/wcc, wcc_view.html) — 2026-08-17
+------------------------------------------------------------------------
+Modelled after rqt_graph/dotcode.py (see /home/tue037807/rqt_graph):
+  infra=exclude|include  infra topics (/tf, /tf_static, /diagnostics*,
+                         /parameter_events, /clock, /rosout, /statistics,
+                         */debug/*, hidden */_*) do not glue FTs by default;
+                         drawn dashed. rqt: Debug / Hide tf / Hide parameters.
+  ext=show|hide          external boundary pseudo-F (source: bag/other hosts;
+                         sink: no traced subscriber). rqt: Dead sinks / Leaf.
+  node=<globs>           full ROS node name, ',' separated, '-' excludes.
+  topic=<globs>          edge topic. rqt: Namespaces / Topics boxes.
+Not adopted: Group tf/actions/images (topic-node grouping; FT nodes are
+callbacks, grouping happens per ROS node cluster already), Unreachable (ROS 1).
+On fish_20260816_165836: default 65 FTs; ext=hide 23; topic=*pointcloud* 8.
