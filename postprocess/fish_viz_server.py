@@ -687,6 +687,16 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
             'phase': phase,
             'gpu_node': bool(attrs.get('gpu_node')),
             'ptype': ptype,
+            # delivery path of a subscription F (see model detect: two live
+            # paths per intra-process-capable sub): 'ipc' | 'dds' | 'both'
+            'delivery': attrs.get('delivery'),
+            'ipc_capable': bool(attrs.get('ipc_capable')),
+            'ipc_waitable': attrs.get('ipc_waitable'),
+            'alt_cb_addrs': attrs.get('alt_cb_addrs') or [],
+            # join membership (detect_joins): output topic + role
+            'join_group': attrs.get('join_group'),
+            'join_role': attrs.get('join_role'),
+            'joins': attrs.get('joins') or {},
         }
 
     cur.execute("""
@@ -958,11 +968,26 @@ def _wcc_to_dot(wcc: dict) -> str:
             penw = '3' if n.get('gpu_node') else '1'
             ent_label = n.get('ent_label') or n.get('symbol') or '?'
             cb = n.get('cb_addr') or '–'
+            # Badge: how this F is reached + join role.
+            #   [waitable:sub·ipc]      intra-process delivery via SubscriptionIntraProcess Waitable (branch 5)
+            #   [waitable:sub·ipc+dds]  both paths fired this session
+            #   [sub·dds]               plain DDS delivery only
+            #   [sub]                   no delivery info (not ipc-capable / not measured)
+            #   ⋈completer / ⋈member / ⋈timeout   join membership (detect_joins)
+            tag = etype
+            if etype == 'sub':
+                d = n.get('delivery')
+                if d == 'ipc':    tag = 'waitable:sub·ipc'
+                elif d == 'both': tag = 'waitable:sub·ipc+dds'
+                elif d == 'dds':  tag = 'sub·dds'
+            jr = n.get('join_role')
+            jtag = f"  ⋈{jr}" if jr else ''
             # Two-line label via DOT escape "\n"
-            line1 = f"[{etype}] {ent_label}" if etype != 'ext' else ent_label
+            line1 = f"[{tag}]{jtag} {ent_label}" if etype != 'ext' else ent_label
             label = f"{_dot_escape(line1)}\\n{_dot_escape(cb)}"
+            style = 'filled,rounded' + (',dashed' if n.get('delivery') in ('ipc', 'both') else '')
             out.append(
-                f'    n{n["id"]} [id="n{n["id"]}" label="{label}" '
+                f'    n{n["id"]} [id="n{n["id"]}" label="{label}" style="{style}" '
                 f'fillcolor="{fill}" color="{border}" penwidth={penw}];'
             )
         out.append('  }')

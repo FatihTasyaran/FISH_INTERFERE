@@ -126,6 +126,18 @@ function tooltipHTML(d){
   const lines = [`<div class="tt-title">${truncate(nodeLine1(d), 80)}</div>`];
   lines.push(`<div class="tt-row"><span class="tt-key">node</span><span class="tt-val">${d.node || 'external'}</span></div>`);
   lines.push(`<div class="tt-row"><span class="tt-key">etype</span><span class="tt-val">${d.etype}</span></div>`);
+  if (d.delivery){
+    const how = d.delivery === 'ipc' ? 'intra-process (SubscriptionIntraProcess Waitable, executor branch 5)'
+              : d.delivery === 'dds' ? 'DDS (plain Subscription callback)'
+              : 'both paths fired (ipc Waitable + DDS)';
+    lines.push(`<div class="tt-row"><span class="tt-key">delivery</span><span class="tt-val">${d.delivery} — ${how}</span></div>`);
+    if (d.ipc_waitable) lines.push(`<div class="tt-row"><span class="tt-key">ipc waitable</span><span class="tt-val">${d.ipc_waitable}</span></div>`);
+    if (d.alt_cb_addrs && d.alt_cb_addrs.length) lines.push(`<div class="tt-row"><span class="tt-key">alt cbs</span><span class="tt-val">${d.alt_cb_addrs.join(', ')}</span></div>`);
+  }
+  if (d.join_role){
+    const js = d.joins && Object.keys(d.joins).length ? Object.entries(d.joins).map(([t,r]) => `${r} of ${t}`).join('<br>') : `${d.join_role} of ${d.join_group}`;
+    lines.push(`<div class="tt-row"><span class="tt-key">⋈ join</span><span class="tt-val">${js}</span></div>`);
+  }
   lines.push(`<div class="tt-row"><span class="tt-key">phase</span><span class="tt-val">${d.phase}${d.gpu_node ? '  ·  GPU' : ''}</span></div>`);
   lines.push(`<div class="tt-row"><span class="tt-key">cb_addr</span><span class="tt-val">${d.cb_addr || '–'}</span></div>`);
   if (d.symbol){
