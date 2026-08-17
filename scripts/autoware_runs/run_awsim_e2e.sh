@@ -1,5 +1,5 @@
 #!/bin/bash
-# r21 (TEST: awsim_sensor_kit velodyne_top_base_link yaw 1.575→0.0 container-local; AWSIM via lavapipe (CPU Vulkan), GPU only for RGL; FULL AWSIM-Demo nographics, init yaw +0.61 = EulerAngles z 35°; NDT NVTL threshold 2.3→1.5 in-container; init yaw -0.61 = -Unity_y, tight cov; TL empty pub; system_run_mode:=logging_simulation → pose_initializer stop_check off; AWSIM -nographics: no GNSS → explicit-pose init, gnss_enabled:=false; r12 + AWSIM -batchmode -nographics 478 MiB VRAM, goal_calls pre-generated): Autoware e2e_simulator against AWSIM (Unity, separate container awsim-sim),
+# r22 (calibration untouched; AWSIM via lavapipe (CPU Vulkan), GPU only for RGL; FULL AWSIM-Demo nographics, init yaw +0.61 = EulerAngles z 35°; NDT NVTL threshold 2.3→1.5 in-container; init yaw -0.61 = -Unity_y, tight cov; TL empty pub; system_run_mode:=logging_simulation → pose_initializer stop_check off; AWSIM -nographics: no GNSS → explicit-pose init, gnss_enabled:=false; r12 + AWSIM -batchmode -nographics 478 MiB VRAM, goal_calls pre-generated): Autoware e2e_simulator against AWSIM (Unity, separate container awsim-sim),
 # on -fishwait5 image + CURRENT fish_interfere (container_install route).
 # VRAM budget: AWSIM takes ~3.7 GB of 4 GB → perception without GPU models
 # (empty dynamic objects, no traffic-light recognition), rviz off.
@@ -79,14 +79,6 @@ timeout 1500 docker exec $NAME bash -lc '
     NDTY=/opt/autoware/share/autoware_launch/config/localization/ndt_scan_matcher/ndt_scan_matcher.param.yaml
     sed -i "s|converged_param_nearest_voxel_transformation_likelihood: 2.3|converged_param_nearest_voxel_transformation_likelihood: 1.5|" $NDTY
     grep -n "converged_param_nearest_voxel_transformation_likelihood" $NDTY | xargs echo "[run] NDT threshold (container-local):"
-    CAL=/opt/autoware/share/awsim_sensor_kit_description/config/sensor_kit_calibration.yaml
-    python3 - <<PYC
-import re
-p="$CAL"; t=open(p).read()
-t=re.sub(r"(velodyne_top_base_link:\n(?:.*\n){5}\s*yaw: )1\.575", r"\g<1>0.0", t)
-open(p,"w").write(t)
-PYC
-    grep -n -A6 "velodyne_top_base_link" $CAL | grep yaw | xargs echo "[run] velodyne_top yaw (container-local):"
     set +e
     timeout 1000 ros2 launch autoware_launch e2e_simulator.launch.xml \
         vehicle_model:=sample_vehicle sensor_model:=awsim_sensor_kit \

@@ -92,3 +92,28 @@ Follow-up r19–r21 (2026-08-17 night)
   (mode 2, is_autonomous_mode_available true) — the whole API path works;
   the car does not move because planning outputs stop (traffic-signal
   unknown in r19 with empty TL publish; off-lane in r21).
+
+ROOT CAUSE (r22, 2026-08-17 late) — settled with offline KD-tree tests
+-----------------------------------------------------------------------
+  Method: one /sensing/lidar/top/pointcloud_raw_ex scan vs the Shinjuku pcd
+  (KD-tree, non-ground points, inlier = map point within 0.5 m), sweep yaw/z/xy
+  around the GNSS position (81382.4, 49920.6).
+  * AWSIM with REAL GPU rendering: 99 % inliers at world yaw 123° = lane 34° +
+    89° → the raw cloud is expressed 90° off x-forward, exactly what
+    awsim_sensor_kit's velodyne_top_base_link yaw 1.575 compensates. Calibration
+    is RIGHT (r21's yaw=0.0 edit was wrong — reverted in the script). Ego yaw is
+    34° (0.59 rad), matching the config EulerAngles z=35°. Map is RIGHT.
+  * Sensing chain is RIGHT: self_cropped/pointcloud_ex == TF(base_link←velodyne_top)
+    · raw within 0.2 m for 97 % of points (row_step=0 is cosmetic).
+  * AWSIM with lavapipe (CPU Vulkan) or -nographics: the SAME test gives ≤ 29 %
+    inliers (best yaw ~0°, i.e. no real match; fewer structure points 4.9k vs 8k)
+    → the RGL lidar output is DEGRADED without a real GPU renderer (scene meshes
+    not fully resident/streamed). That is why NDT scores ~2.2 for any yaw and the
+    EKF yaw wanders. Not fixable from our side.
+  ⇒ On this laptop (RTX A1000, 4 GB): AWSIM needs real rendering (3.7 GB VRAM)
+    for a valid lidar, Autoware needs ≥ ~1 GB for CUDA contexts + OGM. They do
+    not fit together. Everything else (fresh containers, DDS, explicit init,
+    goal, engage, FISH capture) is scripted and worked (autonomous engaged in
+    r19/r21). Run the AWSIM scenario on a machine with ≥ 8 GB VRAM (or a second
+    GPU for AWSIM): scripts/autoware_runs/run_awsim_e2e.sh + a plain windowed
+    AWSIM (GNSS auto-init then works, r12) — expect it to drive.
