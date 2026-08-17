@@ -804,7 +804,7 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
     return fnodes, edges, out_wccs, len(wccs)
 
 
-def _namespace_views(fnodes, edges, min_f=2):
+def _namespace_views(fnodes, edges, min_f=2, neighbors='show'):
     """One pseudo-FT per TOP-LEVEL ROS namespace (/sensing, /perception, …):
     every F whose owning node lives under that namespace + the edges among
     them (data AND infra, the renderer fades infra). Unlike FTs these are
@@ -829,8 +829,12 @@ def _namespace_views(fnodes, edges, min_f=2):
         for e in edges:
             if e['edge_class'] == 'infra':
                 continue   # /tf, /clock, /diagnostics publishers would drag half the graph in
-            if e['src'] in fids and e['dst'] not in fids: touching.add(e['dst']); foreign.add(e['dst'])
-            if e['dst'] in fids and e['src'] not in fids: touching.add(e['src']); foreign.add(e['src'])
+            for a, b in ((e['src'], e['dst']), (e['dst'], e['src'])):
+                if a in fids and b not in fids:
+                    is_ext = fnodes[b].get('ptype') == 'ext'
+                    if neighbors == 'show' or is_ext:      # ext boundary nodes always stay
+                        touching.add(b)
+                        if not is_ext: foreign.add(b)
         if len(fids) < min_f:
             continue
         v_nodes = []
@@ -889,6 +893,9 @@ def _serve_wcc(handler, qs):
     ext_mode = (qs.get('ext', ['show'])[0] or 'show').lower()
     if ext_mode not in ('show', 'hide'):
         ext_mode = 'show'
+    neighbors = (qs.get('neighbors', ['show'])[0] or 'show').lower()
+    if neighbors not in ('show', 'hide'):
+        neighbors = 'show'
 
     try:
         fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(
@@ -898,7 +905,7 @@ def _serve_wcc(handler, qs):
         return
 
     n_infra = sum(1 for e in edges if e['edge_class'] == 'infra')
-    ns_views = _namespace_views(fnodes, edges)
+    ns_views = _namespace_views(fnodes, edges, neighbors=neighbors)
     body = json.dumps({
         'session_id': sid, 'scope': scope,
         'allowed_phases': sorted(allowed),
@@ -1082,6 +1089,9 @@ def _serve_wcc_svg(handler, qs):
     ext_mode = (qs.get('ext', ['show'])[0] or 'show').lower()
     if ext_mode not in ('show', 'hide'):
         ext_mode = 'show'
+    neighbors = (qs.get('neighbors', ['show'])[0] or 'show').lower()
+    if neighbors not in ('show', 'hide'):
+        neighbors = 'show'
 
     try:
         fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(
@@ -1092,7 +1102,7 @@ def _serve_wcc_svg(handler, qs):
 
     # Render SVG per WCC, then one per top-level namespace (appended).
     rendered = []
-    for w in out_wccs + _namespace_views(fnodes, edges):
+    for w in out_wccs + _namespace_views(fnodes, edges, neighbors=neighbors):
         try:
             dot_src = _wcc_to_dot(w)
             svg = _render_dot_to_svg(dot_src)

@@ -69,6 +69,9 @@ body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;ove
   <div style="margin-top:2px" title="Drop external boundary pseudo-nodes: source-ext = published by nothing we traced (bag, other hosts); sink-ext = no traced subscriber (rqt_graph: Dead sinks / Leaf topics).">
     <label><input type="checkbox" id="hideExt"> hide external boundary nodes (ext:)</label>
   </div>
+  <div style="margin-top:2px" title="Namespace views only: 1-hop callbacks from OTHER namespaces connected by data edges are drawn faded ('other namespace' clusters). Uncheck to see just the namespace's own callbacks (cross-namespace links then disappear).">
+    <label><input type="checkbox" id="showNeighbors" checked> NS views: show neighbours from other namespaces</label>
+  </div>
   <div style="margin-top:4px" title="rqt_graph-style globs, comma-separated, '-' prefix excludes. Node: owning ROS node name. Topic: edge topic.">
     <label>Node <input type="text" id="nodeFilter" size="18" placeholder="/sensing/*,-*rviz*"></label>
     <label>Topic <input type="text" id="topicFilter" size="18" placeholder="*/pointcloud*"></label>
@@ -257,11 +260,12 @@ async function loadSession(){
   const incUnk   = document.getElementById('includeUnknown').checked ? 1 : 0;
   const infra    = document.getElementById('includeInfra').checked ? 'include' : 'exclude';
   const ext      = document.getElementById('hideExt').checked ? 'hide' : 'show';
+  const nb       = document.getElementById('showNeighbors').checked ? 'show' : 'hide';
   const nodeF    = encodeURIComponent(document.getElementById('nodeFilter').value.trim());
   const topicF   = encodeURIComponent(document.getElementById('topicFilter').value.trim());
   document.getElementById('summary').textContent = 'loading…';
   try {
-    const r = await fetch(`/api/wcc-svg?session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}&infra=${infra}&ext=${ext}&node=${nodeF}&topic=${topicF}`);
+    const r = await fetch(`/api/wcc-svg?session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}&infra=${infra}&ext=${ext}&neighbors=${nb}&node=${nodeF}&topic=${topicF}`);
     if (!r.ok){ document.getElementById('summary').textContent = 'error: ' + r.status; return; }
     const prevSel = document.getElementById('wccSelect').value;   // keep selection across filter changes
     allData = await r.json();
@@ -288,7 +292,7 @@ document.getElementById('wccSelect').addEventListener('change', e => {
   const w = allData && allData.wccs.find(x => String(x.idx) === String(v));
   if (w) renderWCC(w);
 });
-['includeInit','includeZeroExec','includeUnknown','includeInfra','hideExt'].forEach(id =>
+['includeInit','includeZeroExec','includeUnknown','includeInfra','hideExt','showNeighbors'].forEach(id =>
   document.getElementById(id).addEventListener('change', loadSession));
 document.getElementById('fitBtn').addEventListener('click', fitToStage);
 document.getElementById('resetZoomBtn').addEventListener('click', () => {
