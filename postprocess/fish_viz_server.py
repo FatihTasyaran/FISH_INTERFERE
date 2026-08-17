@@ -794,6 +794,45 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
     return fnodes, edges, out_wccs, len(wccs)
 
 
+def _namespace_views(fnodes, edges, min_f=2):
+    """One pseudo-FT per TOP-LEVEL ROS namespace (/sensing, /perception, …):
+    every F whose owning node lives under that namespace + the edges among
+    them (data AND infra, the renderer fades infra). Unlike FTs these are
+    NOT connectivity classes — they are the "what does this subsystem look
+    like" view the user asked for (the FT list continues with them). ext
+    pseudo-nodes have no namespace and are attached to a namespace view only
+    if they connect to one of its F's (as boundary sources/sinks)."""
+    by_ns = {}
+    for fid, n in fnodes.items():
+        full = n.get('node_full') or ''
+        if n.get('ptype') == 'ext' or not full.startswith('/'):
+            continue
+        parts = full.strip('/').split('/')
+        ns = '/' + parts[0] if len(parts) > 1 else '/'   # top-level namespace ('/' for root nodes)
+        by_ns.setdefault(ns, set()).add(fid)
+    views = []
+    for ns, fids in sorted(by_ns.items()):
+        # pull in ext boundary nodes touching this namespace
+        touching = set(fids)
+        for e in edges:
+            if e['src'] in fids and fnodes[e['dst']].get('ptype') == 'ext': touching.add(e['dst'])
+            if e['dst'] in fids and fnodes[e['src']].get('ptype') == 'ext': touching.add(e['src'])
+        if len(fids) < min_f:
+            continue
+        v_nodes = [fnodes[f] for f in sorted(touching)]
+        v_edges = [e for e in edges if e['src'] in touching and e['dst'] in touching]
+        n_infra = sum(1 for e in v_edges if e['edge_class'] == 'infra')
+        views.append({
+            'idx': f'ns:{ns}', 'kind': 'namespace', 'namespace': ns,
+            'n_cbs': len(v_nodes), 'n_real_cbs': len(fids),
+            'n_edges': len(v_edges), 'n_data_edges': len(v_edges) - n_infra, 'n_infra_edges': n_infra,
+            'n_ext_sources': sum(1 for n in v_nodes if n['ptype'] == 'ext' and any(e['src'] == n['id'] for e in v_edges)),
+            'n_ext_sinks':   sum(1 for n in v_nodes if n['ptype'] == 'ext' and any(e['dst'] == n['id'] for e in v_edges)),
+            'nodes': v_nodes, 'edges': v_edges,
+        })
+    return views
+
+
 def _serve_wcc(handler, qs):
     """Phase-filtered F-subgraph WCCs with full per-node + per-edge metadata.
 
@@ -835,11 +874,13 @@ def _serve_wcc(handler, qs):
         return
 
     n_infra = sum(1 for e in edges if e['edge_class'] == 'infra')
+    ns_views = _namespace_views(fnodes, edges)
     body = json.dumps({
         'session_id': sid, 'scope': scope,
         'allowed_phases': sorted(allowed),
         'infra_mode': infra_mode,
         'infra_topic_globs': _INFRA_TOPIC_GLOBS,
+        'namespaces': [{k: v for k, v in nv.items() if k not in ('nodes', 'edges')} for nv in ns_views],
         'node_filter': node_filter, 'topic_filter': topic_filter, 'ext_mode': ext_mode,
         'n_f_nodes': len(fnodes),
         'n_edges': len(edges),
@@ -847,6 +888,7 @@ def _serve_wcc(handler, qs):
         'n_infra_edges': n_infra,
         'n_wccs': n_wccs,
         'wccs': out_wccs,
+        'namespace_views': ns_views,
     }).encode()
     handler.send_response(200)
     handler.send_header('Content-Type', 'application/json')
@@ -999,9 +1041,9 @@ def _serve_wcc_svg(handler, qs):
         handler.send_error(500, f'PG error: {e}')
         return
 
-    # Render SVG per WCC.
+    # Render SVG per WCC, then one per top-level namespace (appended).
     rendered = []
-    for w in out_wccs:
+    for w in out_wccs + _namespace_views(fnodes, edges):
         try:
             dot_src = _wcc_to_dot(w)
             svg = _render_dot_to_svg(dot_src)
@@ -1011,6 +1053,8 @@ def _serve_wcc_svg(handler, qs):
         meta = {str(n['id']): n for n in w['nodes']}
         rendered.append({
             'idx': w['idx'],
+            'kind': w.get('kind', 'ft'),
+            'namespace': w.get('namespace'),
             'n_cbs': w['n_cbs'],
             'n_edges': w['n_edges'],
             'n_data_edges': w.get('n_data_edges', w['n_edges']),

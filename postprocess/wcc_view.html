@@ -206,7 +206,7 @@ function renderWCC(wcc){
   attachHover();
   fitToStage();
   document.getElementById('summary').innerHTML =
-    `<b>FT#${wcc.idx}</b> · <b>${wcc.n_cbs}</b> F · <b>${wcc.n_data_edges ?? wcc.n_edges}</b> data edges` +
+    `<b>${wcc.kind === 'namespace' ? 'NS ' + wcc.namespace : 'FT#' + wcc.idx}</b> · <b>${wcc.n_real_cbs ?? wcc.n_cbs}</b> F · <b>${wcc.n_data_edges ?? wcc.n_edges}</b> data edges` +
     ((wcc.n_infra_edges) ? ` · <span style="color:#999">${wcc.n_infra_edges} infra (dashed)</span>` : '') +
     ((wcc.n_ext_sources || wcc.n_ext_sinks) ? ` · <span style="color:#999">ext in ${wcc.n_ext_sources||0} / out ${wcc.n_ext_sinks||0}</span>` : '') +
     (allData && allData.n_wccs !== undefined ? ` · ${allData.wccs.length} FTs (≥2 F) / ${allData.n_wccs} comps` : '');
@@ -220,10 +220,18 @@ function populateSelect(){
     opt.textContent = '(no FTs)'; sel.appendChild(opt);
     return;
   }
+  let lastKind = null;
   for (const w of allData.wccs){
+    if (w.kind === 'namespace' && lastKind !== 'namespace'){
+      const sep = document.createElement('option');
+      sep.disabled = true; sep.textContent = '── namespaces (all callbacks under /ns, not connectivity) ──';
+      sel.appendChild(sep);
+    }
+    lastKind = w.kind || 'ft';
     const opt = document.createElement('option');
     opt.value = w.idx;
-    opt.textContent = `FT#${w.idx} — ${w.n_cbs} F, ${w.n_data_edges ?? w.n_edges} edges` + (w.n_infra_edges ? ` (+${w.n_infra_edges} infra)` : '');
+    const head = (w.kind === 'namespace') ? `NS ${w.namespace}` : `FT#${w.idx}`;
+    opt.textContent = `${head} — ${w.n_real_cbs ?? w.n_cbs} F, ${w.n_data_edges ?? w.n_edges} edges` + (w.n_infra_edges ? ` (+${w.n_infra_edges} infra)` : '');
     sel.appendChild(opt);
   }
 }
@@ -258,8 +266,8 @@ document.getElementById('loadBtn').addEventListener('click', loadSession);
 ['sessionId','nodeFilter','topicFilter'].forEach(id =>
   document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') loadSession(); }));
 document.getElementById('wccSelect').addEventListener('change', e => {
-  const idx = parseInt(e.target.value, 10);
-  const w = allData && allData.wccs.find(x => x.idx === idx);
+  const v = e.target.value;
+  const w = allData && allData.wccs.find(x => String(x.idx) === String(v));
   if (w) renderWCC(w);
 });
 ['includeInit','includeZeroExec','includeUnknown','includeInfra','hideExt'].forEach(id =>
