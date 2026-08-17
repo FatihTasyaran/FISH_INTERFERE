@@ -102,7 +102,7 @@ c.read("/opt/ros/humble/fish/fish_settings.ini")
 sys.exit(0 if c.getboolean("trace", "per_instance", fallback=False) else 1)
 PYPI
         then
-            EXTRA_EVENTS="ros2:rcl_publish ros2:rcl_take"   # rclcpp_publish/rclcpp_take carry the same info one layer up (2x cost, no gain)
+            EXTRA_EVENTS="ros2:rcl_publish ros2:rmw_take"   # rmw_take = per-take with rmw_subscription_handle + DDS source_timestamp (message-flow pairing); rcl_take/rclcpp_* dropped as duplicates
             echo "[FISH] per_instance=true → adding \$EXTRA_EVENTS"
         fi
         echo "\$EXTRA_EVENTS" > "\$SESSION_DIR/fishlog/extra_events.txt"

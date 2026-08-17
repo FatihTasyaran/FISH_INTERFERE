@@ -713,12 +713,19 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
             if (topic_inc or topic_exc) and not _glob_match(topic, topic_inc, topic_exc):
                 n_edges_topic_filtered += 1
                 continue
+            nat = a.get('nature', '')
+            ecls = 'data' if nat == 'join' else ('state' if nat == 'state' else topic_class(topic))
             edges.append({
                 'src': s, 'dst': t,
                 'topic': topic,
-                'nature': a.get('nature', ''),
+                'nature': nat,
                 'intra_node': bool(a.get('intra_node')),
-                'edge_class': 'data' if a.get('nature') == 'join' else topic_class(topic),
+                'edge_class': ecls,
+                'inferred': bool(a.get('inferred')),
+                'flow_n': a.get('flow_n'),
+                'hop_ns_p50': a.get('hop_ns_p50'), 'hop_ns_p90': a.get('hop_ns_p90'), 'hop_ns_max': a.get('hop_ns_max'),
+                'age_ns_p50': a.get('age_ns_p50'), 'age_ns_p90': a.get('age_ns_p90'), 'age_ns_max': a.get('age_ns_max'),
+                'flow_method': a.get('flow_method'),
             })
 
     cur.execute("""
@@ -760,8 +767,8 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
         n['stats'] = cb_stats.get(n['cb_addr'])
 
     # FT grouping edges: data-only by default (see _INFRA_TOPIC_GLOBS).
-    group_edges = edges if infra_mode == 'include' \
-        else [e for e in edges if e['edge_class'] != 'infra']
+    group_edges = [e for e in edges if e['edge_class'] != 'state'
+                   and (infra_mode == 'include' or e['edge_class'] != 'infra')]
     und = {fid: set() for fid in fnodes}
     for e in group_edges:
         und[e['src']].add(e['dst'])
@@ -787,6 +794,7 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
         wcc_nodes = [fnodes[f_id] for f_id in sorted(comp)]
         wcc_edges = [e for e in edges if e['src'] in comp and e['dst'] in comp]
         n_infra = sum(1 for e in wcc_edges if e['edge_class'] == 'infra')
+        n_state = sum(1 for e in wcc_edges if e['edge_class'] == 'state')
         n_ext_src = sum(1 for n in wcc_nodes if n['ptype'] == 'ext' and any(e['src'] == n['id'] for e in wcc_edges))
         n_ext_snk = sum(1 for n in wcc_nodes if n['ptype'] == 'ext' and any(e['dst'] == n['id'] for e in wcc_edges))
         out_wccs.append({
@@ -794,8 +802,9 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
             'n_cbs': len(comp),
             'n_real_cbs': sum(1 for n in wcc_nodes if n['ptype'] != 'ext'),
             'n_edges': len(wcc_edges),
-            'n_data_edges': len(wcc_edges) - n_infra,
+            'n_data_edges': len(wcc_edges) - n_infra - n_state,
             'n_infra_edges': n_infra,
+            'n_state_edges': n_state,
             'n_ext_sources': n_ext_src,
             'n_ext_sinks': n_ext_snk,
             'nodes': wcc_nodes,
@@ -860,6 +869,167 @@ def _namespace_views(fnodes, edges, min_f=2, neighbors='show'):
             'nodes': v_nodes, 'edges': v_edges,
         })
     return views
+
+
+def _component_graph(fnodes, edges, depth=1):
+    """Layer B — the architecture view. Components = ROS namespaces (top-level,
+    or the first `depth` segments); each component aggregates its F's and the
+    FTs they belong to; component→component links aggregate every crossing L3
+    edge by kind: data (message hops, with hop latency), state (inferred
+    sample-and-hold reads, with data age), join (membership ties). Infra
+    edges are counted but not drawn. ext boundary nodes form pseudo-components
+    'ext:in' / 'ext:out'. See notes/design_task_model_from_ft.txt (Layer B)."""
+    VIEWERS = ('rviz', 'rqt', 'ros2cli', 'launch_ros', 'transform_listener_impl', 'managed_tf_listener_impl')
+    def comp_of(n):
+        if n.get('ptype') == 'ext':
+            return None
+        full = n.get('node_full') or ''
+        base = full.rsplit('/', 1)[-1]
+        if any(base.startswith(v) for v in VIEWERS):
+            return '/viz'          # viewers / tooling — rqt_graph "quiet" idea
+        parts = [p for p in full.strip('/').split('/') if p]
+        if len(parts) <= 1:
+            return '/'
+        return '/' + '/'.join(parts[:depth])
+    # F's that are deposit-only subs feeding a timer/completer inside their node
+    # (detect_state_links): a cross-component DATA edge landing on such an F is a
+    # SAMPLED (sample-and-hold) coupling — the receiving component works at
+    # its own rate on the latest value; otherwise it is a TRIGGER coupling.
+    state_age_of = {}   # dst F → median age of its internal state links
+    for e in edges:
+        if e.get('nature') == 'state' and e.get('age_ns_p50') is not None:
+            state_age_of.setdefault(e['src'], []).append(e['age_ns_p50'])
+    for f, v in state_age_of.items():
+        v.sort(); state_age_of[f] = v[len(v)//2]
+    sampled_dst = {e['src'] for e in edges if e.get('nature') == 'state'}
+    comps = {}
+    for fid, n in fnodes.items():
+        c = comp_of(n)
+        if c is None:
+            continue
+        d = comps.setdefault(c, {'name': c, 'n_f': 0, 'n_gpu': 0, 'nodes': set(), 'n_tmr': 0, 'n_sub': 0})
+        d['n_f'] += 1; d['nodes'].add(n.get('node_full') or n.get('node'))
+        if n.get('gpu_node'): d['n_gpu'] += 1
+        if n.get('etype') == 'tmr': d['n_tmr'] += 1
+        if n.get('etype') == 'sub': d['n_sub'] += 1
+    for d in comps.values():
+        d['n_nodes'] = len(d['nodes']); d['nodes'] = sorted(x for x in d['nodes'] if x)
+    links = {}
+    def _add(a, b, kind, e):
+        k = (a, b, kind)
+        L = links.setdefault(k, {'src': a, 'dst': b, 'kind': kind, 'n_edges': 0, 'topics': set(), 'flow_n': 0,
+                                 'lat_p50': [], 'lat_p90': [], 'age_p50': [], 'age_p90': []})
+        L['n_edges'] += 1
+        if e.get('topic'): L['topics'].add(e['topic'])
+        if e.get('flow_n'):
+            L['flow_n'] += e['flow_n']
+            if e.get('hop_ns_p50') is not None: L['lat_p50'].append(e['hop_ns_p50']); L['lat_p90'].append(e['hop_ns_p90'])
+            if e.get('age_ns_p50') is not None: L['age_p50'].append(e['age_ns_p50']); L['age_p90'].append(e['age_ns_p90'])
+    for e in edges:
+        ns_, nd_ = fnodes.get(e['src']), fnodes.get(e['dst'])
+        if not ns_ or not nd_: continue
+        a, b = comp_of(ns_), comp_of(nd_)
+        if a is None and b is None: continue
+        if a is None: a = 'ext:in'
+        if b is None: b = 'ext:out'
+        if a == b and e['edge_class'] != 'state':
+            # intra-component data edges are the component's own chains
+            comps.setdefault(a, {'name': a, 'n_f': 0, 'n_gpu': 0, 'nodes': [], 'n_nodes': 0, 'n_tmr': 0, 'n_sub': 0})
+            comps[a].setdefault('n_internal_edges', 0); comps[a]['n_internal_edges'] += 1
+            continue
+        kind = e['edge_class'] if e['edge_class'] in ('infra', 'state') else ('join' if e.get('nature') == 'join' else 'data')
+        if a == b and kind == 'state':
+            comps[a].setdefault('n_internal_state', 0); comps[a]['n_internal_state'] += 1
+            continue
+        if kind == 'data' and e['dst'] in sampled_dst:
+            kind = 'sampled'
+            e = dict(e); e['age_ns_p50'] = state_age_of.get(e['dst']); e['age_ns_p90'] = e['age_ns_p50']
+            if e.get('flow_n') is None: e['flow_n'] = 1
+        _add(a, b, kind, e)
+    def med(v): v = sorted(v); return v[len(v)//2] if v else None
+    out_links = []
+    for L in links.values():
+        out_links.append({
+            'src': L['src'], 'dst': L['dst'], 'kind': L['kind'], 'n_edges': L['n_edges'],
+            'n_topics': len(L['topics']), 'topics': sorted(L['topics'])[:12], 'flow_n': L['flow_n'],
+            'lat_ns_p50': med(L['lat_p50']), 'lat_ns_p90': med(L['lat_p90']),
+            'age_ns_p50': med(L['age_p50']), 'age_ns_p90': med(L['age_p90']),
+        })
+    return {'components': sorted(comps.values(), key=lambda d: d['name']), 'links': out_links, 'depth': depth}
+
+
+def _components_to_dot(cg, show_infra=False):
+    def esc(x): return _dot_escape(str(x))
+    out = ['digraph components {', '  rankdir=LR;', '  newrank=true;',
+           '  graph [fontname="Helvetica" fontsize=12 nodesep=0.5 ranksep=1.0 bgcolor="white" splines=spline];',
+           '  node  [shape=box style="filled,rounded" fontname="Helvetica" fontsize=11 fillcolor="#3aa6b0" color="#2a7f87" fontcolor="white" penwidth=1.5];',
+           '  edge  [fontname="Helvetica" fontsize=9];']
+    ids = {}
+    for i, c in enumerate(cg['components']):
+        ids[c['name']] = f'c{i}'
+        extra = []
+        if c.get('n_gpu'): extra.append(f"GPU {c['n_gpu']}")
+        if c.get('n_internal_edges'): extra.append(f"{c['n_internal_edges']} internal hops")
+        if c.get('n_internal_state'): extra.append(f"{c['n_internal_state']} state reads")
+        label = f"{c['name']}\\n{c['n_nodes']} nodes · {c['n_f']} F ({c['n_sub']} sub, {c['n_tmr']} tmr)"
+        if extra: label += "\\n" + " · ".join(extra)
+        out.append(f'  {ids[c["name"]]} [label="{label}"];')
+    for k in ('ext:in', 'ext:out'):
+        if any(l['src'] == k or l['dst'] == k for l in cg['links']):
+            ids[k] = k.replace(':', '_')
+            out.append(f'  {ids[k]} [label="{k}" fillcolor="#dddddd" color="#999" fontcolor="#333" shape=ellipse];')
+    for l in cg['links']:
+        if l['kind'] == 'infra' and not show_infra: continue
+        a, b = ids.get(l['src']), ids.get(l['dst'])
+        if not a or not b: continue
+        if l['kind'] == 'data':
+            lat = l.get('lat_ns_p50'); lab = f"trigger ×{l['n_topics']}" + (f"  ⌀{lat/1e6:.1f} ms" if lat else '')
+            style = 'color="#222" penwidth=1.6'
+        elif l['kind'] == 'sampled':
+            age = l.get('age_ns_p50'); lat = l.get('lat_ns_p50')
+            lab = f"sampled ×{l['n_topics']}" + (f"  age {age/1e6:.0f} ms" if age else '') + (f"  hop ⌀{lat/1e6:.1f} ms" if lat else '')
+            style = 'color="#e07b00" penwidth=1.6 style=dashed arrowhead=onormal'
+        elif l['kind'] == 'state':
+            age = l.get('age_ns_p50'); lab = f"state ×{l['n_topics']}" + (f"  age {age/1e6:.0f} ms" if age else '')
+            style = 'color="#e07b00" penwidth=1.4 style=dashed arrowhead=onormal'
+        elif l['kind'] == 'join':
+            lab = 'join'; style = 'color="#1f77b4" style=dotted dir=none'
+        else:
+            lab = f"infra ×{l['n_topics']}"; style = 'color="#bbb" style=dashed penwidth=0.8'
+        out.append(f'  {a} -> {b} [label="{esc(lab)}" {style}];')
+    out.append('}')
+    return '\n'.join(out)
+
+
+def _serve_components(handler, qs, svg=False):
+    """/api/components (JSON) and /api/components-svg (JSON with svg) — Layer B."""
+    sid = (qs.get('session_id') or qs.get('session') or [''])[0]
+    scope = (qs.get('scope') or ['__main__'])[0]
+    if not sid:
+        handler.send_error(400, 'session_id required'); return
+    depth = int((qs.get('depth') or ['1'])[0])
+    show_infra = (qs.get('infra', ['hide'])[0] == 'show')
+    allowed = {'data'}
+    if (qs.get('include_init', ['0'])[0] != '0'): allowed.add('init')
+    try:
+        fnodes, edges, _wccs, _n = _fetch_wcc_payload(sid, scope, allowed, 'exclude', '', '', 'show')
+        cg = _component_graph(fnodes, edges, depth=depth)
+        body = {'session_id': sid, 'scope': scope, **cg}
+        if svg:
+            try:
+                body['svg'] = _render_dot_to_svg(_components_to_dot(cg, show_infra))
+            except Exception as e:
+                body['svg'] = f'<!-- render failed: {e} -->'
+    except Exception as e:
+        handler.send_error(500, f'error: {e}'); return
+    data = json.dumps(body, default=str).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(data)))
+    handler.send_header('Access-Control-Allow-Origin', '*')
+    handler.send_header('Cache-Control', 'no-store')
+    handler.end_headers()
+    handler.wfile.write(data)
 
 
 def _serve_wcc(handler, qs):
@@ -1045,12 +1215,19 @@ def _wcc_to_dot(wcc: dict) -> str:
             # does not constrain the layout rank
             color = '#1f77b4'; pw = '1.5'; style = 'dotted'
             label = 'join'; extra = ' dir=none constraint=false'
+        elif e.get('nature') == 'state':
+            # inferred sample-and-hold read inside the node: NOT a trigger; label = data age
+            color = '#e07b00'; pw = '1.2'; style = 'dashed'
+            age = e.get('age_ns_p50')
+            label = 'state' + (f'  age p50 {age/1e6:.0f} ms' if age else '')
+            extra = ' constraint=false arrowhead=onormal'
         elif e.get('edge_class') == 'infra':
             color = '#bbbbbb'; pw = '0.8'; style = 'dashed'
             label = topic
         else:
             color = '#444'; pw = '1.2'
-            label = topic
+            hop = e.get('hop_ns_p50')
+            label = topic + (f'  ⌀{hop/1e3:.0f}µs' if hop and hop < 1e6 else (f'  ⌀{hop/1e6:.1f}ms' if hop else ''))
         out.append(
             f'  n{e["src"]} -> n{e["dst"]} '
             f'[label="{_dot_escape(label)}" color="{color}" fontcolor="{color}" '
@@ -1424,6 +1601,12 @@ class H(BaseHTTPRequestHandler):
             _serve_cb_stats(self, qs)
         elif path == '/api/task-graphs':
             _serve_task_graphs(self, qs)
+        elif path == '/api/components':
+            return _serve_components(self, qs)
+        elif path == '/api/components-svg':
+            return _serve_components(self, qs, svg=True)
+        elif path in ('/components', '/components.html', '/arch'):
+            return _serve_file(self, os.path.join(HERE, 'components_view.html'), 'text/html; charset=utf-8')
         elif path in ('/api/wcc', '/api/ft'):
             _serve_wcc(self, qs)
         elif path in ('/api/wcc-svg', '/api/ft-svg'):

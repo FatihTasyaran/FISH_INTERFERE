@@ -183,7 +183,9 @@ def main():
             # (take → dispatch), i.e. just outside the callback window on the same
             # thread. Attribute each take to the next callback_start on its vtid
             # (within 5 ms) — that callback consumed the taken message.
-            cur.execute("""SELECT vtid, ts_ns FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_take' AND vpid=%s ORDER BY ts_ns""", (S, vpid))
+            cur.execute("""SELECT vtid, ts_ns FROM ros2_trace WHERE session_id=%s AND event IN ('ros2:rmw_take','ros2:rcl_take') AND vpid=%s
+                           AND (event='ros2:rmw_take' OR NOT EXISTS (SELECT 1 FROM ros2_trace r2 WHERE r2.session_id=%s AND r2.event='ros2:rmw_take' LIMIT 1))
+                           ORDER BY ts_ns""", (S, vpid, S))
             takes = []
             input_set = set(inputs)
             for vtid, ts in cur.fetchall():

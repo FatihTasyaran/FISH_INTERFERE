@@ -97,6 +97,13 @@ def _serialize_edge(u, w, data):
     typed = {k: data.get(k) for k in EDGE_TYPED_KEYS}
     extras = {k: _sanitize(data.get(k)) for k in EDGE_EXTRA_KEYS
               if data.get(k) is not None}
+    # Like nodes: let unknown edge attributes through (join_group, inferred,
+    # flow_n / hop_ns_* / age_ns_* from measure_flows, ...). Whitelisting
+    # silently dropped them (2026-08-17).
+    for k, val in data.items():
+        if k in EDGE_TYPED_KEYS or k in EDGE_EXTRA_KEYS or val is None:
+            continue
+        extras[k] = _sanitize(val)
     return {"source": u, "target": w, **typed, "attrs": extras}
 
 
