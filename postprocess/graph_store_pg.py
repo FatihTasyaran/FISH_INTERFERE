@@ -234,6 +234,17 @@ def save_graph(G: nx.DiGraph, session_id: str, scope: str = STANDALONE_SCOPE, *,
         """, (session_id, scope, "save_graph", actor, note,
               json.dumps({"stats": stats, "replaced": exists}, default=str)))
         conn.commit()
+        # Refresh planner statistics: a bulk COPY of a new session leaves
+        # graph_nodes/graph_edges with stale stats and the viz server's
+        # entity→node join query then picks a catastrophic plan (r18:
+        # 21 min vs 7 s after ANALYZE, 2026-08-17).
+        try:
+            old_iso = conn.isolation_level
+            conn.set_isolation_level(0)          # ANALYZE outside a transaction
+            cur.execute("ANALYZE graph_nodes"); cur.execute("ANALYZE graph_edges")
+            conn.set_isolation_level(old_iso)
+        except Exception as e:                   # never fail a save on this
+            print(f"[graph_store_pg] ANALYZE skipped: {e}")
 
     return {"session_id": session_id, "scope": scope, "stats": stats}
 
