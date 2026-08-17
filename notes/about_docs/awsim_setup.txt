@@ -54,3 +54,41 @@ Goal injection (no rviz)
   4. /api/operation_mode/change_to_autonomous until success (needs planning trajectory).
   Scripts: scratchpad run_autoware_awsim_r12.sh / r13.sh (job tmp: goal_cands.json,
   goal_calls.txt).
+
+Follow-up r19–r21 (2026-08-17 night)
+-------------------------------------
+- Map: v2.0.0 release Shinjuku-Map.zip pcd is byte-identical (md5 8a1723af5122)
+  to the one we had; only map_projector_info.yaml (MGRS 54SUE) was missing →
+  copied. Map version is NOT the problem.
+- Full AWSIM-Demo (non-Lightweight, host ~/AWSIM-Demo) behaves the same
+  (nographics 478 MiB, NVTL ~2.2).
+- -nographics KILLS THE EGO: TrafficSimulator/TrafficLight NullReferenceException
+  every Update/FixedUpdate (44 830×) → gear stays PARK (22), commands ignored,
+  GNSS/camera dead. Vehicle never moves even when Autoware engages (r19).
+- WORKING RENDER PATH: Vulkan via Mesa lavapipe (CPU): mount host
+  libvulkan_lvp.so + libLLVM-15 + lvp ICD, VK_ICD_FILENAMES=lavapipe,
+  -batchmode -screen-width 320 -screen-height 240, NVIDIA_DRIVER_CAPABILITIES=all
+  (RGL/OptiX needs it). Result: 0 NRE, GPU used only by RGL (446 MiB), lidar 10 Hz,
+  IMU 30 Hz, /clock real-time (ratio 0.99), CPU ~300–400 %. GNSS/camera still
+  not published (frame-rate-bound sensors; llvmpipe fps very low) → keep the
+  explicit-pose init. Script: scripts/autoware_runs/start_awsim_lavapipe.sh
+  [Lightweight|Full].
+- Localization is the remaining blocker. Evidence:
+    * NDT NVTL 2.0–2.25 whatever the init yaw; EKF yaw lands anywhere
+      (0.32, 0.49, 1.29, 1.67, −1.39, −1.47, −2.75 across runs).
+    * offline yaw sweep of one AWSIM scan against the pcd (voxel hash):
+      max 19 % inliers @0.5 m, 45 % @1 m, flat over ±25° → weak match.
+    * awsim_sensor_kit sensor_kit_calibration.yaml has velodyne_top_base_link
+      yaw 1.575 (real-Velodyne convention). r21 set it to 0.0 (container-local):
+      EKF yaw 0.49 ≈ lane heading 0.61 (config EulerAngles z=35°) — plausible
+      fix for yaw — but NVTL dropped to ~2.0 and position drifted 2–3 m →
+      start_planner "Not found safe pull out path" → stop path, gear PARK.
+  Hypotheses left: (i) v2 lidar frame/extrinsics differ from awsim_sensor_kit
+  (compare with awsim_labs_sensor_kit), (ii) v2 scene geometry ≠ this pcd.
+  Next cheap test: e2e with sensor_model:=awsim_labs_sensor_kit +
+  vehicle_model:=awsim_labs_vehicle; or record one AWSIM scan and align it
+  properly (ICP/NDT offline) to settle (i) vs (ii).
+- Autoware side reached in r19/r21: init OK, route OK, autonomous engaged
+  (mode 2, is_autonomous_mode_available true) — the whole API path works;
+  the car does not move because planning outputs stop (traffic-signal
+  unknown in r19 with empty TL publish; off-lane in r21).
