@@ -958,47 +958,105 @@ def _component_graph(fnodes, edges, depth=1):
     return {'components': sorted(comps.values(), key=lambda d: d['name']), 'links': out_links, 'depth': depth}
 
 
-def _components_to_dot(cg, show_infra=False):
+# Architecture order for the component graph (left→right); components not
+# listed are placed after /control. Cross-cutting components are hidden by
+# default (?crosscut=show): they touch everything and turn the picture into
+# a hairball without saying anything about the data flow.
+_ARCH_ORDER = ['ext:in', '/map', '/sensing', '/localization', '/perception', '/planning', '/control', 'ext:out']
+_CROSSCUT = {'/system', '/adapi', '/default_adapi', '/viz', '/', '/pointcloud_container'}
+
+
+def _components_to_dot(cg, show_infra=False, show_crosscut=False, compact=True, rankdir='TB', splines='spline', ext_split=True):
     def esc(x): return _dot_escape(str(x))
-    out = ['digraph components {', '  rankdir=LR;', '  newrank=true;',
-           '  graph [fontname="Helvetica" fontsize=12 nodesep=0.5 ranksep=1.0 bgcolor="white" splines=spline];',
-           '  node  [shape=box style="filled,rounded" fontname="Helvetica" fontsize=11 fillcolor="#3aa6b0" color="#2a7f87" fontcolor="white" penwidth=1.5];',
-           '  edge  [fontname="Helvetica" fontsize=9];']
+    comps = [c for c in cg['components'] if show_crosscut or c['name'] not in _CROSSCUT]
+    names = {c['name'] for c in comps}
+    links = [l for l in cg['links'] if (show_infra or l['kind'] != 'infra')]
+    if not show_crosscut:
+        links = [l for l in links if l['src'] not in _CROSSCUT and l['dst'] not in _CROSSCUT]
+    for k in ('ext:in', 'ext:out'):
+        if any(l['src'] == k or l['dst'] == k for l in links):
+            names.add(k)
+    out = ['digraph components {', f'  rankdir={rankdir};', '  newrank=true;', '  concentrate=false;',
+           f'  graph [fontname="Helvetica" fontsize=12 nodesep=0.6 ranksep=0.9 bgcolor="white" splines={splines}];',
+           '  node  [shape=box style="filled,rounded" fontname="Helvetica" fontsize=12 fillcolor="#3aa6b0" color="#2a7f87" fontcolor="white" penwidth=1.5 margin="0.25,0.12"];',
+           '  edge  [fontname="Helvetica" fontsize=9 labeldistance=1.5];']
     ids = {}
-    for i, c in enumerate(cg['components']):
-        ids[c['name']] = f'c{i}'
+    def node_label(c):
         extra = []
         if c.get('n_gpu'): extra.append(f"GPU {c['n_gpu']}")
-        if c.get('n_internal_edges'): extra.append(f"{c['n_internal_edges']} internal hops")
+        if c.get('n_internal_edges'): extra.append(f"{c['n_internal_edges']} hops")
         if c.get('n_internal_state'): extra.append(f"{c['n_internal_state']} state reads")
-        label = f"{c['name']}\\n{c['n_nodes']} nodes · {c['n_f']} F ({c['n_sub']} sub, {c['n_tmr']} tmr)"
-        if extra: label += "\\n" + " · ".join(extra)
-        out.append(f'  {ids[c["name"]]} [label="{label}"];')
-    for k in ('ext:in', 'ext:out'):
-        if any(l['src'] == k or l['dst'] == k for l in cg['links']):
-            ids[k] = k.replace(':', '_')
-            out.append(f'  {ids[k]} [label="{k}" fillcolor="#dddddd" color="#999" fontcolor="#333" shape=ellipse];')
-    for l in cg['links']:
-        if l['kind'] == 'infra' and not show_infra: continue
+        lines = [esc(c['name']), esc(f"{c['n_nodes']} nodes · {c['n_f']} F")]
+        if extra: lines.append(esc(" · ".join(extra)))
+        return "\\n".join(lines)          # escape parts first, then DOT newlines
+    for i, c in enumerate(comps):
+        ids[c['name']] = f'c{i}'
+        out.append(f'  {ids[c["name"]]} [label="{node_label(c)}"];')
+    ext_style = 'fillcolor="#e6e6e6" color="#999999" fontcolor="#333333" shape=ellipse fontsize=10'
+    ext_ids = {}                          # (kind, component) -> dot id when ext_split
+    if ext_split:
+        # one small source/sink per component, placed on the component's own
+        # rank: keeps the long "everything → ext:out" fan-in off the picture
+        for l in links:
+            if l['src'] == 'ext:in' and l['dst'] in ids and ('in', l['dst']) not in ext_ids:
+                ext_ids[('in', l['dst'])] = f"ext_in_{ids[l['dst']]}"
+                out.append(f'  {ext_ids[("in", l["dst"])]} [label="ext:in" {ext_style}];')
+            if l['dst'] == 'ext:out' and l['src'] in ids and ('out', l['src']) not in ext_ids:
+                ext_ids[('out', l['src'])] = f"ext_out_{ids[l['src']]}"
+                out.append(f'  {ext_ids[("out", l["src"])]} [label="ext:out" {ext_style}];')
+        for (kind, comp), eid in ext_ids.items():
+            out.append(f'  {{rank=same; {ids[comp]}; {eid};}}')
+    else:
+        for k in ('ext:in', 'ext:out'):
+            if k in names:
+                ids[k] = k.replace(':', '_')
+                out.append(f'  {ids[k]} [label="{k}" {ext_style}];')
+    # pin the architecture order as a chain of ranks (invisible edges keep the
+    # left→right story even when a real edge points backwards)
+    order = [n for n in _ARCH_ORDER if n in ids] + [c['name'] for c in comps if c['name'] not in _ARCH_ORDER and c['name'] in ids]
+    # architecture rows (top→bottom): sources · sensing+map · localization ·
+    # perception · planning · control · sinks
+    rows = [['ext:in'], ['/sensing'], ['/localization', '/map'], ['/perception'], ['/planning'], ['/control'], ['ext:out']]
+    placed = set()
+    for row in rows:
+        members = [ids[n] for n in row if n in ids]
+        if members:
+            out.append('  {rank=same; ' + '; '.join(members) + ';}')
+            placed.update(n for n in row if n in ids)
+    for c in comps:                       # unknown components: their own row after control
+        if c['name'] not in placed and c['name'] in ids:
+            out.append(f'  {{rank=same; {ids[c["name"]]};}}')
+    chain = [r for r in rows if any(n in ids for n in r)]
+    for r1, r2 in zip(chain, chain[1:]):
+        a = next(ids[n] for n in r1 if n in ids); b = next(ids[n] for n in r2 if n in ids)
+        out.append(f'  {a} -> {b} [style=invis weight=100];')
+    for l in links:
         a, b = ids.get(l['src']), ids.get(l['dst'])
+        if ext_split:
+            if l['src'] == 'ext:in': a = ext_ids.get(('in', l['dst']))
+            if l['dst'] == 'ext:out': b = ext_ids.get(('out', l['src']))
         if not a or not b: continue
-        nt = f"{l['n_topics']} topic{'s' if l['n_topics'] != 1 else ''}"
-        ni = f"n={l['flow_n']}" if l.get('flow_n') else ''
+        nt = f"{l['n_topics']}"
         if l['kind'] == 'data':
-            lat = l.get('lat_ns_p50'); lab = f"trigger · {nt} · {ni}" + (f" · hop ⌀{lat/1e6:.1f} ms" if lat else '')
-            style = 'color="#222" penwidth=1.6'
+            lat = l.get('lat_ns_p50')
+            lab = f"trigger ×{nt}" + (f" ⌀{lat/1e6:.1f}ms" if lat else '') if compact else f"trigger · {nt} topics · n={l['flow_n']}" + (f" · hop ⌀{lat/1e6:.1f} ms" if lat else '')
+            style = 'color="#222222" penwidth=1.6'
         elif l['kind'] == 'sampled':
-            age = l.get('age_ns_p50'); lat = l.get('lat_ns_p50')
-            lab = f"sampled · {nt} · {ni}" + (f" · age {age/1e6:.0f} ms" if age else '') + (f" · hop ⌀{lat/1e6:.1f} ms" if lat else '')
+            age = l.get('age_ns_p50')
+            lab = f"sampled ×{nt}" + (f" age {age/1e6:.0f}ms" if age else '') if compact else f"sampled · {nt} topics · n={l['flow_n']}" + (f" · age {age/1e6:.0f} ms" if age else '')
             style = 'color="#e07b00" penwidth=1.6 style=dashed arrowhead=onormal'
         elif l['kind'] == 'state':
-            age = l.get('age_ns_p50'); lab = f"state · {nt} · {ni}" + (f" · age {age/1e6:.0f} ms" if age else '')
+            age = l.get('age_ns_p50'); lab = f"state ×{nt}" + (f" age {age/1e6:.0f}ms" if age else '')
             style = 'color="#e07b00" penwidth=1.4 style=dashed arrowhead=onormal'
         elif l['kind'] == 'join':
             lab = 'join'; style = 'color="#1f77b4" style=dotted dir=none'
         else:
-            lab = f"infra · {nt}"; style = 'color="#bbb" style=dashed penwidth=0.8'
-        out.append(f'  {a} -> {b} [label="{esc(lab)}" {style}];')
+            lab = f"infra ×{nt}"; style = 'color="#bbb" style=dashed penwidth=0.8'
+        # backward edges (feedback) get constraint=false so they do not fight the rank order
+        back = order.index(l['src']) > order.index(l['dst']) if (l['src'] in order and l['dst'] in order) else False
+        is_ext = ext_split and (l['src'] == 'ext:in' or l['dst'] == 'ext:out')
+        extra = ' constraint=false' if (back or is_ext) else ''
+        out.append(f'  {a} -> {b} [label="{esc(lab)}" {style}{extra}];')
     out.append('}')
     return '\n'.join(out)
 
@@ -1011,6 +1069,8 @@ def _serve_components(handler, qs, svg=False):
         handler.send_error(400, 'session_id required'); return
     depth = int((qs.get('depth') or ['1'])[0])
     show_infra = (qs.get('infra', ['hide'])[0] == 'show')
+    show_crosscut = (qs.get('crosscut', ['hide'])[0] == 'show')
+    ext_split = (qs.get('ext', ['split'])[0] != 'merge')
     allowed = {'data'}
     if (qs.get('include_init', ['0'])[0] != '0'): allowed.add('init')
     try:
@@ -1019,7 +1079,7 @@ def _serve_components(handler, qs, svg=False):
         body = {'session_id': sid, 'scope': scope, **cg}
         if svg:
             try:
-                body['svg'] = _render_dot_to_svg(_components_to_dot(cg, show_infra))
+                body['svg'] = _render_dot_to_svg(_components_to_dot(cg, show_infra, show_crosscut, ext_split=ext_split))
             except Exception as e:
                 body['svg'] = f'<!-- render failed: {e} -->'
     except Exception as e:
