@@ -281,7 +281,7 @@ def _serve_cb_stats(handler, qs):
                 if (H_tmr and anchor_ex) else None
             sess_stats = _window_stats(fires, anchor_session, H_session, session_end_ns) \
                 if (H_session and anchor_session) else None
-            ipw = t.get('intra_proc_waitable')
+            ipw = t.get('ipc_waitable')
             rows.append({
                 'cb_addr': cb,
                 'symbol': t.get('symbol', '') or '',
@@ -295,8 +295,11 @@ def _serve_cb_stats(handler, qs):
                 # intra-process sub: outer branch-5 Waitable dispatch count
                 # (should equal n_total; a gap = dispatches whose inner cb
                 # did not run, e.g. empty intra-proc buffer take).
-                'intra_proc': bool(t.get('intra_proc')),
-                'n_dispatch_waitable': len(fires_by_cb.get(ipw, [])) if ipw else None,
+                'ipc_capable': bool(t.get('ipc_capable')),
+                'delivery': t.get('delivery'),
+                'n_dispatch_ipc': len(fires_by_cb.get(ipw, [])) if ipw else None,
+                'join_group': t.get('join_group'),
+                'join_role': t.get('join_role'),
                 'h_tmr_ns': H_tmr,
                 'ex_stats': ex_stats,
                 'sess_stats': sess_stats,
@@ -705,7 +708,7 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
                 'topic': topic,
                 'nature': a.get('nature', ''),
                 'intra_node': bool(a.get('intra_node')),
-                'edge_class': topic_class(topic),
+                'edge_class': 'data' if a.get('nature') == 'join' else topic_class(topic),
             })
 
     cur.execute("""
@@ -928,6 +931,10 @@ def _wcc_to_dot(wcc: dict) -> str:
         if e.get('nature') == 'gxf_internal':
             color = '#2ca02c'; pw = '2'
             label = 'GXF'
+        elif e.get('nature') == 'join':
+            # join membership tie (detect_joins): not a message hop
+            color = '#1f77b4'; pw = '1.5'; style = 'dotted'
+            label = 'join'
         elif e.get('edge_class') == 'infra':
             color = '#bbbbbb'; pw = '0.8'; style = 'dashed'
             label = topic

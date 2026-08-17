@@ -52,7 +52,7 @@ def load_node_fs(cur, sid, scope, node_label):
         attrs = attrs or {}
         entry = {"cb": cb, "etype": etype, "entity": elabel, "node": nfull or nlabel,
                  "aliases": set([cb])}
-        ipw = attrs.get("intra_proc_waitable")
+        ipw = attrs.get("ipc_waitable")
         if ipw:
             entry["aliases"].add(ipw)
         for a in attrs.get("alt_cb_addrs") or []:
@@ -194,6 +194,49 @@ def main():
                     takes.append((ts, ws[i][2]))
             rec["n_input_takes"] = len(takes)
             rec["takes_per_input"] = dict(collections.Counter(label(o) for _, o in takes))
+            # AND-join test: for each output completed by an INPUT callback,
+            # did every join member deliver within one member period before
+            # the publish? Timer completions are expected to be incomplete
+            # (timeout path). This is evidence, not proof: without a frame /
+            # collector id (stamps are not traced) a jittered arrival slightly
+            # older than one period can still belong to the frame — exact
+            # per-instance proof needs collector identity (uprobe on the app's
+            # collector methods, see notes).
+            members = [cb for cb in inputs if fs[cb]["entity"] in
+                       {fs[c]["entity"] for c in inputs}]  # all data inputs (caller may narrow via --topic later)
+            arr = collections.defaultdict(list)
+            for ts_, o in takes: arr[o].append(ts_)
+            for o in arr: arr[o].sort()
+            # member period ≈ median inter-arrival of the least frequent input
+            per = None
+            for o, aa in arr.items():
+                if len(aa) > 5:
+                    d = sorted(aa[i+1]-aa[i] for i in range(len(aa)-1)); m = d[len(d)//2]
+                    per = m if per is None else max(per, m)
+            win = (per or 200e6) * 1.0
+            # only inputs that are actual join members: those with the same msg
+            # type as completers is model-side; here use inputs that ever
+            # completed + inputs whose take rate is within 2x of them
+            comp_inputs = {alias2cb.get(cb, cb) for cb in completers.get(topic, {})} & set(inputs)
+            rates = {o: len(aa) for o, aa in arr.items()}
+            ref = min((rates[o] for o in comp_inputs if o in rates), default=None)
+            join_members = [o for o in arr if ref and rates[o] <= 2 * ref] if ref else list(arr)
+            andres = collections.Counter(); missing = collections.Counter()
+            for vt, ts in pubs_i:
+                o = owner(vt, ts); kind = ('timeout' if (o and fs.get(o, {}).get('etype') == 'tmr') else 'input')
+                got = set()
+                for m in join_members:
+                    aa = arr[m]; i = bisect.bisect_left(aa, ts)
+                    if i > 0 and ts - aa[i-1] <= win: got.add(m)
+                ok = set(join_members) <= got
+                andres[(kind, 'complete' if ok else 'incomplete')] += 1
+                if not ok: missing[(kind, tuple(sorted(label(m) for m in set(join_members) - got)))] += 1
+            rec["and_join_test"] = {
+                "members": [label(m) for m in join_members], "window_ms": round(win / 1e6, 1),
+                "counts": {f"{k[0]}|{k[1]}": v for k, v in andres.items()},
+                "missing": {f"{k[0]}|{','.join(k[1])}": v for k, v in missing.items()},
+                "note": "evidence, not proof: no frame/collector id in the trace; timeout completions are expected incomplete",
+            }
             pub_ts = [ts for _, ts in pubs_i]
             buckets = collections.defaultdict(collections.Counter)  # publish idx → input counts since previous publish
             for ts, o in takes:
@@ -227,6 +270,10 @@ def main():
             print("    execution time by role (ms) — completer = an output publish happened inside the window:")
             for k, v in rec["exec_ms_by_role"].items():
                 print(f"       {k:<75} n={v['n']:>4}  p50={v['p50']:>8.3f}  p90={v['p90']:>8.3f}  max={v['max']:>8.3f}")
+            aj = rec["and_join_test"]
+            print(f"    AND-join test (members={aj['members']}, window={aj['window_ms']} ms):")
+            for k, v in sorted(aj["counts"].items()): print(f"       {v:>4}  {k}")
+            if aj["missing"]: print(f"       missing: {aj['missing']}")
             print("    contribution sets per output (approx., takes bucketed between consecutive publishes):")
             for c in rec["contribution_sets_per_output"]:
                 print(f"       {c['n_outputs']:>4}×  {c['inputs']}")

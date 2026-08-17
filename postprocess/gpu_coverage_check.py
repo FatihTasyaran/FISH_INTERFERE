@@ -55,7 +55,7 @@ for tid, ts, api in rows:
     else: gap[api] += 1
 print(f"  cuda_runtime calls total={tot}: inside-callback={ins} ({ins/max(1,tot)*100:.1f}%)  ctor/init={before}  teardown={after}  oort-threads={nocb}  UNKNOWN-gap={sum(gap.values())} {gap.most_common(4)}")
 # (3) owners
-cur.execute("""SELECT f.cb_addr, f.attrs->>'intra_proc_waitable', n.label, e.label FROM graph_nodes f
+cur.execute("""SELECT f.cb_addr, f.attrs->>'ipc_waitable', n.label, e.label FROM graph_nodes f
  JOIN graph_edges g1 ON g1.session_id=f.session_id AND g1.scope=f.scope AND g1.target=f.node_id AND g1.rel='contains'
  JOIN graph_nodes e ON e.session_id=g1.session_id AND e.scope=g1.scope AND e.node_id=g1.source AND e.type='E'
  LEFT JOIN graph_edges g2 ON g2.session_id=e.session_id AND g2.scope=e.scope AND g2.target=e.node_id AND g2.rel='contains'

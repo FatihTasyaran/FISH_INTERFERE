@@ -285,8 +285,11 @@ def main():
             # via a SubscriptionIntraProcess Waitable (model_improved_pg binds
             # the Waitable ptr to this F). Consumers can show the outer
             # dispatch span / count under the same task instead of "unknown".
-            "intra_proc": bool((cb.get("f_attrs") or {}).get("intra_proc")),
-            "intra_proc_waitable": (cb.get("f_attrs") or {}).get("intra_proc_waitable"),
+            "ipc_capable": bool((cb.get("f_attrs") or {}).get("ipc_capable")),
+            "delivery": (cb.get("f_attrs") or {}).get("delivery"),
+            "ipc_waitable": (cb.get("f_attrs") or {}).get("ipc_waitable"),
+            "join_group": (cb.get("f_attrs") or {}).get("join_group"),
+            "join_role": (cb.get("f_attrs") or {}).get("join_role"),
         })
 
     # Hyperperiod = LCM of tmr-nominal periods only. Subs no longer claim a

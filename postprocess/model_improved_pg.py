@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import time
+import collections
 from dataclasses import dataclass, field
 from itertools import count
 
@@ -721,17 +722,20 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                 if is_gpu:
                     f_A["gpu_node"] = True
                 ip = cb_info.get("intra_proc_waitable")
-                if ip:
-                    # Intra-process-enabled sub. If the primary cb is the
-                    # intra-proc copy, this F is reached via executor branch 5:
-                    # the outer callback_start carries the SubscriptionIntraProcess
-                    # Waitable's `this`, the inner one carries cb_addr. Keep
-                    # both so gantt/cb-stats/attribution can resolve either.
-                    entity.A_v["intra_proc_waitable"] = ip
-                    f_A["intra_proc"] = bool(cb_info.get("intra_proc_primary"))
-                    f_A["intra_proc_capable"] = True
-                    f_A["intra_proc_waitable"] = ip
                 alts = cb_info.get("alt_cb_addrs")
+                if ip:
+                    # Intra-process-CAPABLE sub: it has a SubscriptionIntraProcess
+                    # Waitable (ipc_waitable) and therefore TWO live delivery
+                    # paths — executor branch 5 (same-process publisher → the
+                    # Waitable's callback copy; outer callback_start carries the
+                    # Waitable `this`, inner one the cb) and DDS (other-process
+                    # publisher → plain Subscription callback). `delivery` says
+                    # which path(s) fired in this session for the primary/alt cbs.
+                    ipc_primary = bool(cb_info.get("intra_proc_primary"))
+                    entity.A_v["ipc_waitable"] = ip
+                    f_A["ipc_capable"] = True
+                    f_A["ipc_waitable"] = ip
+                    f_A["delivery"] = ("both" if alts else ("ipc" if ipc_primary else "dds"))
                 if alts:
                     # Other FIRING callbacks of the same sub (e.g. the DDS copy
                     # when the intra-proc copy is primary, or vice versa).
@@ -741,18 +745,16 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                 entity.Z_v.append(f.id_v)
                 functions[f.id_v] = f
 
-    n_cap = sum(1 for f in functions.values() if f.A_v.get("intra_proc_capable"))
-    n_ip = sum(1 for f in functions.values() if f.A_v.get("intra_proc"))
-    n_alt = sum(len(f.A_v.get("alt_cb_addrs") or []) for f in functions.values())
+    n_cap = sum(1 for f in functions.values() if f.A_v.get("ipc_capable"))
+    dl = collections.Counter(f.A_v.get("delivery") for f in functions.values() if f.A_v.get("ipc_capable"))
     if n_cap:
-        log(f"  Intra-proc: {n_cap} sub F node(s) have a SubscriptionIntraProcess Waitable; "
-            f"{n_ip} fire via branch-5 (intra-proc delivery), "
-            f"{n_cap - n_ip} via DDS callback; {n_alt} alternate firing cb(s) attached")
+        log(f"  Delivery: {n_cap} ipc-capable sub F node(s) — "
+            f"{dl.get('ipc',0)} ipc / {dl.get('dds',0)} dds / {dl.get('both',0)} both")
 
     # Sanity check: any cb_addr that fired but didn't produce an F is a
     # silent attribution miss — warn at the end so it's visible.
     bound_cb_addrs = {f.A_v.get("cb_addr") for f in functions.values()}
-    bound_cb_addrs |= {f.A_v.get("intra_proc_waitable") for f in functions.values()}
+    bound_cb_addrs |= {f.A_v.get("ipc_waitable") for f in functions.values()}
     for f in functions.values():
         bound_cb_addrs |= set(f.A_v.get("alt_cb_addrs") or [])
     missed = _firing_cbs - bound_cb_addrs - {None}
@@ -819,7 +821,7 @@ def attribute_aspects(session_id, executors, nodes, entities):
         # same entity so links emitted between the outer and inner
         # callback_start (e.g. from Waitable::execute bookkeeping) attribute
         # to the right place instead of being dropped as "unknown cb".
-        ip = e.A_v.get("intra_proc_waitable")
+        ip = e.A_v.get("ipc_waitable")
         if ip:
             cb_to_entity.setdefault(ip, (e_id, e))
         for alt in (e.A_v.get("alt_cb_addrs") or []):
@@ -1259,6 +1261,106 @@ def detect_oort_threads(session_id, executors, nodes, entities, functions):
 # Action detection + split callbacks (mirror of model_improved)
 # ----------------------------------------------------------------------------
 
+def detect_joins(nodes, entities, functions):
+    """Multi-input "join" nodes, measured from publish attribution.
+
+    A ROS node that combines several inputs inside its own memory (Autoware
+    concatenate_data collectors, message_filters sync policies, sensor
+    fusion buffers) publishes the merged result from WHICHEVER input
+    callback completes the set — or from a timeout timer. The in-memory
+    hand-off is invisible to ROS-level tracing, but its *signature* is not:
+    the SAME output topic carries a pub aspect on ≥2 different subscription
+    callbacks of the SAME node (they were each, at some point, the last one
+    in). That is the detection rule — no heuristic about the app internals.
+
+    Members of the join = the completing sub F's + the node's other sub F's
+    whose entity carries the same message type as a completing input (the
+    only structural assumption; e.g. Autoware's right lidar never completed
+    a set in the traced session but subscribes the same PointCloud2 stream)
+    + the node's timers that also published the topic (timeout path).
+
+    Annotation only — NO data edge is invented for members that did not
+    publish. F attrs: join_group=<output topic>, join_role=
+    completer|member|timeout. Node attrs: joins={topic: [f_ids]}.
+    add_horizontal_edges then ties members with nature="join" L3 edges so
+    the FT (task) grouping keeps a join's inputs together; those edges are
+    membership, not message hops (chain-latency tools must not count them).
+    """
+    n_joins = 0
+    for n_id, node in nodes.items():
+        # entity → (etype, topics it publishes, sub topic, msg_type, f_ids)
+        ents = []
+        for e_id in node.Z_v:
+            e = entities.get(e_id)
+            if e is None or e.t_v != "E":
+                continue
+            etype = e.A_v.get("etype")
+            pubs = {a.get("topic") for a in e.A_v.get("aspects", []) if a.get("aspect") == "pub" and a.get("topic")}
+            sub_topic = None; msg_type = None
+            for a in e.A_v.get("aspects", []):
+                if a.get("aspect") == "sub" and a.get("topic"):
+                    sub_topic = a["topic"]; msg_type = a.get("msg_type"); break
+            f_ids = [f for f in e.Z_v if f in functions]
+            ents.append((e_id, etype, pubs, sub_topic, msg_type, f_ids))
+        # candidate join outputs: topics published by ≥2 distinct SUB entities
+        topic_pub_subs = {}
+        for e_id, etype, pubs, sub_topic, msg_type, f_ids in ents:
+            if etype == "sub":
+                for t in pubs:
+                    topic_pub_subs.setdefault(t, []).append((e_id, msg_type))
+        for topic, subs in topic_pub_subs.items():
+            if len(subs) < 2:
+                continue
+            # only DATA outputs qualify: /diagnostics, */debug/*, processing_time
+            # etc. are published from many callbacks without any join semantics
+            if topic_class_for_join(topic) != "data":
+                continue
+            completer_types = {mt for _, mt in subs if mt}
+            completer_e = {e_id for e_id, _ in subs}
+            members = {}
+            for e_id, etype, pubs, sub_topic, msg_type, f_ids in ents:
+                if etype == "sub":
+                    if e_id in completer_e:
+                        members[e_id] = "completer"
+                    elif msg_type and msg_type in completer_types and sub_topic and topic_class_for_join(sub_topic) == "data":
+                        members[e_id] = "member"
+                elif etype == "tmr" and topic in pubs:
+                    members[e_id] = "timeout"
+            f_list = []
+            for e_id, role in members.items():
+                for f_id in entities[e_id].Z_v:
+                    f = functions.get(f_id)
+                    if f is None:
+                        continue
+                    # an F can take part in several joins (concat completes
+                    # the merged cloud AND the per-lidar synced clouds):
+                    # joins = {output_topic: role}; join_group = first one
+                    # (display / grouping key), join_role = its role there.
+                    f.A_v.setdefault("joins", {})[topic] = role
+                    f.A_v.setdefault("join_group", topic)
+                    f.A_v.setdefault("join_role", role)
+                    f_list.append(f_id)
+                entities[e_id].A_v.setdefault("joins", {})[topic] = role
+                entities[e_id].A_v.setdefault("join_group", topic)
+                entities[e_id].A_v.setdefault("join_role", role)
+            node.A_v.setdefault("joins", {})[topic] = f_list
+            n_joins += 1
+            log(f"  join: {node.A_v.get('full_name')} → {topic}: "
+                f"{sum(1 for r in members.values() if r=='completer')} completer(s), "
+                f"{sum(1 for r in members.values() if r=='member')} member(s), "
+                f"{sum(1 for r in members.values() if r=='timeout')} timeout timer(s)")
+    log(f"detect_joins: {n_joins} join output(s) found")
+
+
+def topic_class_for_join(topic: str) -> str:
+    """Infra topics never count as join members (mirrors fish_viz_server)."""
+    try:
+        from postprocess.fish_viz_server import topic_class
+        return topic_class(topic)
+    except Exception:
+        return "infra" if topic in ("/clock", "/parameter_events", "/tf", "/tf_static", "/rosout") else "data"
+
+
 def detect_actions(entities):
     ACTION_SRV_ROLES = {
         "send_goal": "goal", "cancel_goal": "cancel", "get_result": "result",
@@ -1682,6 +1784,26 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
                 l3_count += 1
     log(f"  L3 propagated: {l3_count}")
 
+    # Join membership ties (see detect_joins): undirected in meaning, stored
+    # as one L3 edge per member pair (member → completer/first f), nature=
+    # "join", NOT a message hop. Keeps a join's inputs in one FT.
+    join_count = 0
+    for n_id, node in nodes.items():
+        for topic, f_list in (node.A_v.get("joins") or {}).items():
+            fl = [f for f in f_list if f in functions]
+            if len(fl) < 2:
+                continue
+            # tie every member to the first completer (or first member)
+            anchor_f = next((f for f in fl if functions[f].A_v.get("join_role") == "completer"), fl[0])
+            for f in fl:
+                if f == anchor_f:
+                    continue
+                G.add_edge(f, anchor_f, rel="comm", level="L3", nature="join",
+                           topic=topic, join_group=topic, intra_node=True)
+                join_count += 1
+    if join_count:
+        log(f"  Join ties: {join_count} L3 edges (nature=join)")
+
     # ──────────────────────────────────────────────────────────────────
     # NITROS GXF intra-node edges (Option 1: static topology)
     #
@@ -1849,6 +1971,7 @@ def extract(session_id: str, *, scope: str = graph_store_pg.STANDALONE_SCOPE,
     entities = identify_entities(session_id, nodes)
     functions = identify_callbacks(session_id, nodes, entities, executors)
     attribute_aspects(session_id, executors, nodes, entities)
+    detect_joins(nodes, entities, functions)
     attach_callback_groups(session_id, executors, nodes, entities, functions)
     mark_phases(session_id, executors, entities, functions)
     detect_oort_threads(session_id, executors, nodes, entities, functions)
