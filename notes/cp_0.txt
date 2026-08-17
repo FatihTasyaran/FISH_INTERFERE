@@ -99,3 +99,21 @@ Files
   notes/join_semantics_from_traces.txt        1a / 1b / 2 signatures
   view: http://localhost:8783/components?session_id=fish_20260817_134427
         http://localhost:8783/ft?session_id=fish_20260817_134427&scope=__main__
+
+CORRECTION (2026-08-17 night, after the polled-subscription model — see cp_1)
+------------------------------------------------------------------------------
+r11 re-modelled with detect_polled_subs: 66 polled sub F's, 71 polled links
+(19 011 polled takes). The Layer B table above changes as follows:
+  /perception → /planning   sampled ×3  n=1227  age p50 121.5 ms
+        (objects, obstacle_segmentation/pointcloud, occupancy_grid_map/map)
+        → the "NOT ACTIVE (zero_exec subs)" verdict was WRONG in kind: the
+          subscription callbacks never fire because planning polls them
+          from its timers; the DATA DID FLOW, planning produced no
+          trajectory only because there was no route.
+  /perception → /control    sampled ×2  n=736   125.7 ms  (AEB reads objects + pointcloud)
+  /sensing    → /control    sampled ×1  n=245   35.7 ms   (imu_data)
+  /planning   → /control    sampled ×1  n=237   182.2 ms  (hazard_lights_cmd only — no trajectory, no route)
+  /localization → /control  sampled ×2  n=7161 (was 4372) 37.4 ms
+All other rows unchanged (the rule adds links, it does not alter measured ones).
+Verdict line "present but silent: Perception→Planning" → "present, sampled,
+measured (121 ms); Planning→Control still silent (no route)".
