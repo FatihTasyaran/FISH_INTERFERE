@@ -85,11 +85,21 @@ Consequences
 - This maps directly onto a Nasri-style job set + precedence DAG (SAG
   input): job = (F instance, release from trace, BCET/WCET by ROLE, executor),
   precedence = data edge or AND-join.
-- Answer to the handoff's open question: the FISH graph (PG graph_nodes /
-  graph_edges + measured attributes) IS the intermediate representation;
-  Nasri JSON is DERIVED from it. Keep both — the IR is what the viz, the
-  probe-effect harness and the paper figures read; the JSON is what the
-  analyzer reads.
+- Answer to the handoff's open question ("emit SAG-compatible Nasri JSON
+  directly, or build an intermediate representation first?"):
+  IR = Intermediate Representation — the compiler-world term for a model
+  that sits between the source (here: raw traces) and the target output
+  (here: the analyzer's job-set JSON) and depends on neither. The FISH graph
+  (PG graph_nodes / graph_edges + measured attributes: layers, data edges,
+  join membership, delivery path, per-role timing, phase, GPU ownership,
+  executor mapping, ext boundaries) IS that IR. It already exists. Nasri
+  JSON is DERIVED from it by an emitter (extract_taskset.py is the seed;
+  add join split + release patterns). Keep both: the IR is what the viz,
+  the probe-effect harness and the paper figures read; the JSON is what
+  SAG reads; a new analyzer format = a new emitter, not a new parser. The
+  IR must carry what the trace could NOT supply as explicit unknown/approx
+  (data-without-trigger dependencies, exact merge start) — the emitter
+  closes those with an assumption or a user input, never silently.
 - Case 1a/1b nodes (see join_semantics_from_traces.txt) need no split:
   ordinary message-hop precedence (1a) or a timer job with buffered inputs
   (1b).
