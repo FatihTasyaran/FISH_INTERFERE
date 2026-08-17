@@ -252,9 +252,30 @@ function populateSelect(){
   }
 }
 
+let _inflight = null;      // AbortController of the running fetch
+let _lastQuery = '';       // query string of the current dataset (for lazy svg fetches)
+const _svgCache = new Map();  // idx → svg (per _lastQuery)
+
+async function fetchSvgFor(w){
+  // lazy: fetch this entry's svg if the list came without it
+  if (w.svg) return w;
+  const key = _lastQuery + '#' + w.idx;
+  if (_svgCache.has(key)){ w.svg = _svgCache.get(key); return w; }
+  document.getElementById('summary').textContent = `rendering ${w.kind === 'namespace' ? 'NS ' + w.namespace : 'FT#' + w.idx}…`;
+  const r = await fetch(`/api/wcc-svg?${_lastQuery}&only=${encodeURIComponent(w.idx)}`);
+  if (!r.ok) throw new Error('svg fetch ' + r.status);
+  const d = await r.json();
+  const got = d.wccs.find(x => String(x.idx) === String(w.idx));
+  if (got && got.svg){ w.svg = got.svg; w.nodes_meta = got.nodes_meta; _svgCache.set(key, got.svg); }
+  return w;
+}
+
 async function loadSession(){
   const sid = document.getElementById('sessionId').value.trim();
   if (!sid){ document.getElementById('summary').textContent = 'enter a session_id'; return; }
+  if (_inflight) _inflight.abort();          // a newer request supersedes the running one
+  _inflight = new AbortController();
+  const signal = _inflight.signal;
   const incInit  = document.getElementById('includeInit').checked  ? 1 : 0;
   const incZero  = document.getElementById('includeZeroExec').checked ? 1 : 0;
   const incUnk   = document.getElementById('includeUnknown').checked ? 1 : 0;
@@ -265,21 +286,26 @@ async function loadSession(){
   const topicF   = encodeURIComponent(document.getElementById('topicFilter').value.trim());
   document.getElementById('summary').textContent = 'loading…';
   try {
-    const r = await fetch(`/api/wcc-svg?session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}&infra=${infra}&ext=${ext}&neighbors=${nb}&node=${nodeF}&topic=${topicF}`);
-    if (!r.ok){ document.getElementById('summary').textContent = 'error: ' + r.status; return; }
     const prevSel = document.getElementById('wccSelect').value;   // keep selection across filter changes
+    _lastQuery = `session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}&infra=${infra}&ext=${ext}&neighbors=${nb}&node=${nodeF}&topic=${topicF}`;
+    _svgCache.clear();
+    const firstOnly = prevSel ? `&only=${encodeURIComponent(prevSel)}` : '';
+    const r = await fetch(`/api/wcc-svg?${_lastQuery}${firstOnly}`, {signal});
+    if (!r.ok){ document.getElementById('summary').textContent = 'error: ' + r.status; return; }
     allData = await r.json();
     populateSelect();
     if (allData.wccs.length){
       const keep = allData.wccs.find(x => String(x.idx) === String(prevSel));
       const w = keep || allData.wccs[0];
       document.getElementById('wccSelect').value = String(w.idx);
+      await fetchSvgFor(w);
       renderWCC(w);
     } else {
       document.getElementById('stage-inner').innerHTML = '';
       document.getElementById('summary').textContent = 'no FTs found';
     }
   } catch (e){
+    if (e.name === 'AbortError') return;     // superseded by a newer request
     document.getElementById('summary').textContent = 'fetch error: ' + e.message;
   }
 }
@@ -287,10 +313,12 @@ async function loadSession(){
 document.getElementById('loadBtn').addEventListener('click', loadSession);
 ['sessionId','nodeFilter','topicFilter'].forEach(id =>
   document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') loadSession(); }));
-document.getElementById('wccSelect').addEventListener('change', e => {
+document.getElementById('wccSelect').addEventListener('change', async e => {
   const v = e.target.value;
   const w = allData && allData.wccs.find(x => String(x.idx) === String(v));
-  if (w) renderWCC(w);
+  if (!w) return;
+  try { await fetchSvgFor(w); renderWCC(w); }
+  catch (err){ document.getElementById('summary').textContent = 'svg error: ' + err.message; }
 });
 ['includeInit','includeZeroExec','includeUnknown','includeInfra','hideExt','showNeighbors'].forEach(id =>
   document.getElementById(id).addEventListener('change', loadSession));

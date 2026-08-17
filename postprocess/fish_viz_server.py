@@ -1102,13 +1102,23 @@ def _serve_wcc_svg(handler, qs):
         return
 
     # Render SVG per WCC, then one per top-level namespace (appended).
+    # Lazy: ?only=<idx> renders just that entry (others get svg=None and the
+    # client fetches on demand). Without ?only, only the FIRST entry is
+    # rendered — rendering all ~60 graphs took ~40 s per filter change.
+    only = qs.get('only', [None])[0]
+    render_all = (qs.get('render_all', ['0'])[0] == '1')
     rendered = []
-    for w in out_wccs + _namespace_views(fnodes, edges, neighbors=neighbors):
-        try:
-            dot_src = _wcc_to_dot(w)
-            svg = _render_dot_to_svg(dot_src)
-        except Exception as e:
-            svg = f"<!-- render failed: {e} -->"
+    all_entries = out_wccs + _namespace_views(fnodes, edges, neighbors=neighbors)
+    for pos, w in enumerate(all_entries):
+        want = render_all or (only is not None and str(w['idx']) == str(only)) or (only is None and pos == 0)
+        if not want:
+            svg = None
+        else:
+            try:
+                dot_src = _wcc_to_dot(w)
+                svg = _render_dot_to_svg(dot_src)
+            except Exception as e:
+                svg = f"<!-- render failed: {e} -->"
         # nodes_meta: id → full metadata so client can hover/lookup
         meta = {str(n['id']): n for n in w['nodes']}
         rendered.append({
