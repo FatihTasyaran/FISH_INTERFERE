@@ -91,16 +91,66 @@ start_session() {
         echo "[FISH] Output: \$SESSION_DIR/"
         lttng-sessiond --daemonize 2>/dev/null
 
-        # Spawn the (echo; sleep) | ros2 trace pipeline in its OWN process
-        # group via setsid, so stop_session can kill the whole group with a
-        # single negative-PID signal. Without this, killing the ros2 trace
-        # PID leaves the sibling 'sleep infinity' orphan and the launching
-        # container never exits cleanly.
-        setsid bash -c "(echo ''; sleep infinity) | \$REAL_ROS2 trace \\
-            --session-name \"\$SESSION\" \\
-            --path \"\$SESSION_DIR/ros2\" \\
-            -u $EVENTS" 2>&1 &
-        echo \$! > /tmp/fish_trace_pid
+        # Optional per-instance publish/take events ([trace] per_instance in
+        # fish_settings.ini) — appended to the baked whitelist at session
+        # start so a measurement run needs no rebuild.
+        EXTRA_EVENTS=""
+        if python3 - <<'PYPI' 2>/dev/null
+import configparser, sys
+c = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+c.read("/opt/ros/humble/fish/fish_settings.ini")
+sys.exit(0 if c.getboolean("trace", "per_instance", fallback=False) else 1)
+PYPI
+        then
+            EXTRA_EVENTS="ros2:rcl_publish ros2:rclcpp_publish ros2:rcl_take ros2:rclcpp_take"
+            echo "[FISH] per_instance=true → adding \$EXTRA_EVENTS"
+        fi
+        echo "\$EXTRA_EVENTS" > "\$SESSION_DIR/fishlog/extra_events.txt"
+
+        if [[ -n "\$EXTRA_EVENTS" ]]; then
+            # per_instance mode ≈ 2x event rate; the boot storm (node init,
+            # 300k+ events/s) overflows LTTng-UST's default per-CPU ring
+            # buffers (fish_20260817_101732: 11 626 events discarded in 8 s).
+            # 'ros2 trace' cannot size channels, so drive lttng directly with
+            # the same events/contexts and 4 x 2 MB sub-buffers per CPU
+            # (~256 MB on 32 CPUs; memory only — per-event cost is unchanged).
+            FISH_SUBBUF_SIZE=\${FISH_SUBBUF_SIZE:-2M}
+            FISH_NUM_SUBBUF=\${FISH_NUM_SUBBUF:-4}
+            # LTTng-UST ring buffers live in /dev/shm. Docker's default shm is
+            # 64 MB; 4 x 2M x 32 CPUs = 256 MB does NOT fit and UST apps then
+            # silently fail to register → an EMPTY trace (fish_20260817_105011).
+            # Check and degrade instead of failing silently. Run containers
+            # with --shm-size=2g for per_instance runs.
+            _shm_kb=\$(df -k /dev/shm 2>/dev/null | awk 'NR==2{print \$2}')
+            _sub_kb=\$(numfmt --from=iec "\$FISH_SUBBUF_SIZE" 2>/dev/null | awk '{print int(\$1/1024)}')
+            _need_kb=\$(( \${_sub_kb:-2048} * FISH_NUM_SUBBUF * \$(nproc) ))
+            if [[ -n "\$_shm_kb" && \$_need_kb -gt \$(( _shm_kb / 2 )) ]]; then
+                echo "[FISH] WARNING: LTTng buffers need ~\$((_need_kb/1024)) MB shm but /dev/shm is \$((_shm_kb/1024)) MB"
+                echo "[FISH]          → falling back to 512K x 4 per CPU. Start the container with --shm-size=2g for larger buffers."
+                FISH_SUBBUF_SIZE=512K; FISH_NUM_SUBBUF=4
+            fi
+            lttng create "\$SESSION" --output="\$SESSION_DIR/ros2/\$SESSION" >/dev/null
+            lttng enable-channel -u -s "\$SESSION" fish_ch \\
+                --subbuf-size "\$FISH_SUBBUF_SIZE" --num-subbuf "\$FISH_NUM_SUBBUF" >/dev/null
+            for ev in $EVENTS \$EXTRA_EVENTS; do
+                lttng enable-event -u -s "\$SESSION" -c fish_ch "\$ev" >/dev/null 2>&1
+            done
+            lttng add-context -u -s "\$SESSION" -c fish_ch -t vpid -t vtid -t procname >/dev/null
+            lttng start "\$SESSION" >/dev/null
+            echo "[FISH] LTTng session started via lttng CLI (channel fish_ch \$FISH_NUM_SUBBUF x \$FISH_SUBBUF_SIZE / CPU)"
+            echo "" > /tmp/fish_trace_pid
+        else
+            # Spawn the (echo; sleep) | ros2 trace pipeline in its OWN process
+            # group via setsid, so stop_session can kill the whole group with a
+            # single negative-PID signal. Without this, killing the ros2 trace
+            # PID leaves the sibling 'sleep infinity' orphan and the launching
+            # container never exits cleanly.
+            setsid bash -c "(echo ''; sleep infinity) | \$REAL_ROS2 trace \\
+                --session-name \"\$SESSION\" \\
+                --path \"\$SESSION_DIR/ros2\" \\
+                -u $EVENTS" 2>&1 &
+            echo \$! > /tmp/fish_trace_pid
+        fi
         sleep 2
         echo "[FISH] Trace session started"
 
@@ -227,8 +277,27 @@ stop_session() {
         lttng stop "\$SESSION" 2>/dev/null
         lttng destroy "\$SESSION" 2>/dev/null
     fi
+    # Discard report: LTTng ring-buffer overflows silently drop events; make
+    # every session declare its own loss (probe-effect / completeness line).
+    if [[ -n "\$SESSION_DIR" ]] && command -v babeltrace2 >/dev/null 2>&1; then
+        TRACE_ROOT=\$(find "\$SESSION_DIR/ros2" -name metadata -printf '%h\\n' 2>/dev/null | head -1)
+        if [[ -n "\$TRACE_ROOT" ]]; then
+            babeltrace2 "\$TRACE_ROOT" 2>&1 >/dev/null | grep -i "discarded" \\
+                > "\$SESSION_DIR/fishlog/discards.txt" || true
+            NDISC=\$(grep -oE 'discarded [0-9]+' "\$SESSION_DIR/fishlog/discards.txt" | awk '{s+=\$2} END{print s+0}')
+            NEV=\$(babeltrace2 "\$TRACE_ROOT" 2>/dev/null | wc -l)
+            echo "total_discarded_events=\$NDISC" >> "\$SESSION_DIR/fishlog/discards.txt"
+            echo "total_events=\$NEV" >> "\$SESSION_DIR/fishlog/discards.txt"
+            echo "[FISH] LTTng events: \$NEV, discarded: \$NDISC (fishlog/discards.txt)"
+            if [[ "\$NEV" -eq 0 ]]; then
+                echo "[FISH] ERROR: EMPTY TRACE — no UST events recorded. Check /dev/shm size vs LTTng buffers (--shm-size) and that apps sourced the overlay."
+            fi
+        else
+            echo "total_discarded_events=0  # no UST streams found (no traced app registered)" > "\$SESSION_DIR/fishlog/discards.txt"
+        fi
+    fi
     TPID=\$(cat /tmp/fish_trace_pid 2>/dev/null)
-    if [[ -n "\$TPID" ]]; then
+    if [[ -n "\$TPID" && "\$TPID" =~ ^[0-9]+$ ]]; then
         # The pipeline runs in its own process group (setsid in start_session).
         # Kill the whole group so the inner 'sleep infinity' subshell and
         # the ros2 trace process die together. Without this the container

@@ -253,3 +253,28 @@ uncertainty "async"? Two different things:
     returning would put kernels after callback_end — time-window on kernels
     would misattribute, correlation_id would not. gpu_attribution.py already
     carries correlationId for runtime/kernel/memcpy/memset/sync.
+
+
+ISSUE-005: LTTng-UST buffers exceed /dev/shm → apps silently do not register → EMPTY trace
+------------------------------------------------------------------------------------------
+Date discovered: 2026-08-17 (r10, fish_20260817_105011 — archived as *_EMPTY_shm64M)
+Written by: Claude Fable 5 (Anthropic)
+
+Observation:
+  A per_instance run with the new lttng-CLI channel (4 x 2 MB sub-buffers per
+  CPU) produced a trace directory with metadata + index and NO stream files:
+  0 events, "0 discarded" (vacuously). Reproduced in a scratch container:
+      subbuf 128K x4  → events        subbuf 2M x4 → 0 events   (shm 64 MB)
+      subbuf 2M x4 with --shm-size=1g → events
+Root cause:
+  LTTng-UST ring buffers are allocated in /dev/shm. Docker's default shm is
+  64 MB. 4 x 2 MB x 32 CPUs = 256 MB cannot be allocated → UST apps fail to
+  register (no error surfaces to the user) → empty trace. `ros2 trace`'s
+  default channel is small enough to fit, which is why it never bit before.
+Fix:
+  - trace_session.sh (per_instance path): computes subbuf x num x nproc,
+    compares with /dev/shm; if it does not fit, warns and degrades to 512K x 4.
+  - stop_session writes fishlog/discards.txt with total_events and
+    total_discarded_events, and prints ERROR on an empty trace.
+  - Run containers with `--shm-size=2g` (all Autoware run scripts updated).
+Rule: never trust "0 discarded" without "total_events > 0".

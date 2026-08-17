@@ -186,3 +186,42 @@ Modelled after rqt_graph/dotcode.py (see /home/tue037807/rqt_graph):
 Not adopted: Group tf/actions/images (topic-node grouping; FT nodes are
 callbacks, grouping happens per ROS node cluster already), Unreachable (ROS 1).
 On fish_20260816_165836: default 65 FTs; ext=hide 23; topic=*pointcloud* 8.
+
+JOIN nodes (multi-input → one output) — measured, 2026-08-17
+------------------------------------------------------------
+Pattern (Autoware concatenate_data; same shape as message_filters syncs and
+fusion nodes): N input callbacks deposit a message pointer into shared
+node-internal state (here: a pool of 3 CloudCollector objects, one per
+frame in flight, each with its own 200 ms timeout timer), and WHICHEVER
+callback completes the set — or the collector's timer — runs the merge
+(CombineCloudHandler, a plain function inside that callback, NOT a Waitable)
+and publishes. ROS-level tracing sees every input callback run and sees the
+publish come out of one callback; the in-memory hand-off is invisible.
+
+What FISH measures (postprocess/join_analysis.py <session> <node> --topic T):
+  structure (always)      input F's / timeout F's / completer set from publish_link
+                          (deduped per handle,cb → WHO, not how often)
+  per-instance (needs     completer distribution from ros2:rcl_publish inside
+  [trace] per_instance)   callback windows (exact); execution time by ROLE;
+                          contribution sets from ros2:rcl_take → next
+                          callback_start on the same thread, bucketed between
+                          consecutive publishes (approximate: no collector id).
+Results, two independent runs (r9 fish_20260817_101732, r10b fish_20260817_112346):
+  completer: top 92.6% / 88.9%, left 3.7 / 5.5, timer 3.7 / 5.5, right 0 / 0
+  exec time by role: deposit-only ~30-60 µs (all three lidars);
+                     completer ~25 ms (merge+publish) — 700x, on whichever
+                     callback happens to be last; timer completer ~2.5 ms
+  modal contribution set {right:1,left:1,top:1} (+2-5 twist) ≈ 58% of outputs
+Interpretation for the task model: an input callback's WCET is bimodal by
+ROLE, not by input; the merge cost belongs to the join, and is paid by the
+completing input. Right never completes here (bag timing) → its chain ends at
+its concat F in the graph; that is the trace truth, but the join membership
+must be annotated (join_group) so chain analyses do not read it as a dead end.
+Naive arrival-order heuristics are WRONG (left arrives last most often but
+top completes: matching is by stamp, not wall-clock) — measure, don't infer.
+
+per_instance mode + LTTng buffers (ISSUE-005): default UST channel overflowed
+in the boot storm (r9: 11 626 discarded events, all before replay; init
+events unaffected). per_instance now drives lttng CLI with 4x2 MB/CPU; needs
+docker --shm-size≥1g (64 MB default → EMPTY trace, r10 archived). Every
+session now writes fishlog/discards.txt (total_events, total_discarded).
