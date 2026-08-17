@@ -1420,32 +1420,20 @@ def detect_state_links(session_id, nodes, entities, functions):
     log(f"detect_state_links: {n_links} inferred state link(s) in {n_nodes} node(s)")
 
 
-def measure_flows(G, session_id, functions):
-    """Per-instance flow measurement on the finished graph (needs a session
-    traced with [trace] per_instance = true: ros2:rcl_publish + ros2:rmw_take;
-    degrades to intra-process pairing + state ages when rmw_take is absent).
-
-    For every L3 comm edge:
-      nature=msg   pub_F → sub_F   hop latency = take (or ipc dispatch) − publish,
-                                    per instance, paired by DDS source_timestamp
-                                    (inter-process) or by time (intra-process)
-      nature=state s → p           data age = start(p instance) − last start(s)
-    Writes n / p50 / p90 / max (ns) into the edge attrs:
-      flow_n, hop_ns_p50, hop_ns_p90, hop_ns_max          (msg edges)
-      flow_n, age_ns_p50, age_ns_p90, age_ns_max          (state edges)
-      flow_method: 'rmw_take' | 'ipc_time' | 'state'
-    """
+def _callback_windows(session_id, functions):
+    """Nesting-aware callback windows per (vpid, vtid) from callback_start/end.
+    Returns (wins, wstarts, owner, starts_by_f):
+      wins[(vpid,vtid)] = sorted [(t0, t1, f_id)]
+      owner(key, ts)   → f_id of the innermost recent window containing ts (or None)
+      starts_by_f[f]   = sorted start times of F's instances
+    A callback address maps to an F through cb_addr / alt_cb_addrs / ipc_waitable."""
     import bisect
     from collections import defaultdict
-    def q(a, p): a = sorted(a); return a[int(p * (len(a) - 1))]
-
-    # cb → F, F → cbs
     cb2f = {}
     for f_id, f in functions.items():
         for c in [f.A_v.get("cb_addr")] + list(f.A_v.get("alt_cb_addrs") or []) + [f.A_v.get("ipc_waitable")]:
             if c and c != "NA":
                 cb2f.setdefault(c, f_id)
-    # callback windows per (vpid,vtid): [(t0,t1,f_id)] nesting-aware
     wins = defaultdict(list); stack = defaultdict(list)
     for r in pg_store.fetch_all(
         "SELECT vpid, vtid, ts_ns, event, payload->>'callback' AS cb FROM ros2_trace "
@@ -1469,11 +1457,130 @@ def measure_flows(G, session_id, functions):
             t0, t1, f = ws[j]
             if t0 <= ts <= t1: return f
         return None
-    # per-F start times (for state ages and ipc dispatch pairing)
     starts_by_f = defaultdict(list)
     for key, ws in wins.items():
         for t0, t1, f in ws: starts_by_f[f].append(t0)
     for f in starts_by_f: starts_by_f[f].sort()
+    return wins, wstarts, owner, starts_by_f
+
+
+def _sub_f_by_node_topic(nodes, entities, functions):
+    """(node_handle, topic) → [sub F ids]. rcl_subscription_init carries
+    node_handle + topic + rmw_subscription_handle, so an rmw_take can be
+    attributed to the subscription's F even when that F's callback never
+    fires (polled subscriptions)."""
+    m = {}
+    for n_id, node in nodes.items():
+        nh = node.A_v.get("node_handle")
+        for e_id in node.Z_v:
+            e = entities.get(e_id)
+            if e is None or e.t_v != "E" or e.A_v.get("etype") != "sub":
+                continue
+            fs = [f for f in e.Z_v if f in functions]
+            if fs:
+                m.setdefault((nh, e.A_v.get("label")), []).extend(fs)
+    return m
+
+
+def detect_polled_subs(session_id, nodes, entities, functions):
+    """Polled subscriptions (Autoware InterProcessPollingSubscriber & co.).
+
+    The subscription exists (rcl_subscription_init, a registered callback
+    that NEVER fires) and the message is pulled with take() from INSIDE
+    another callback — typically the node's timer. The ROS layer emits
+    ros2:rmw_take for that pull, and the pull lies inside the reader's
+    callback_start/end window. That is direct evidence (not an inference)
+    of a sample-and-hold read: reader = enclosing callback, data age =
+    take_ts − DDS source_timestamp (measure_flows, flow_method='polled_take').
+
+    Marks: sub F.polled=True, F.poll_readers={reader_f: n}, E.polled=True;
+    node.state_links gets [sub_f, reader_f, topic] plus node.polled_links
+    [sub_f, reader_f, topic, n] so the L3 state edge is tagged
+    polled=True / inferred=False. mark_phases keeps polled sub F's in the
+    data phase (their own callback never fires by design).
+    Only taken=1 counts; a take inside the sub's OWN callback (normal
+    dispatch after wait) is not polling."""
+    from collections import Counter
+    wins, wstarts, owner, _ = _callback_windows(session_id, functions)
+    if not wins:
+        return
+    subf = _sub_f_by_node_topic(nodes, entities, functions)
+    rh2 = {}
+    for r in pg_store.fetch_all(
+        "SELECT vpid, payload->>'rmw_subscription_handle' AS rh, payload->>'topic_name' AS t, "
+        "payload->>'node_handle' AS nh FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_subscription_init'",
+        (session_id,)):
+        rh2[(r["vpid"], r["rh"])] = (r["nh"], r["t"])
+    polls = Counter()            # (sub_f, reader_f, topic) → n
+    n_take_in = 0
+    for r in pg_store.fetch_all(
+        "SELECT vpid, vtid, ts_ns, payload->>'rmw_subscription_handle' AS rh FROM ros2_trace "
+        "WHERE session_id=%s AND event='ros2:rmw_take' AND payload->>'taken' IN ('1','true')", (session_id,)):
+        nt = rh2.get((r["vpid"], r["rh"]))
+        if not nt: continue
+        fs = subf.get(nt)
+        if not fs: continue
+        rd = owner((r["vpid"], r["vtid"]), int(r["ts_ns"]))
+        if rd is None or rd in fs: continue
+        n_take_in += 1
+        for f in fs:
+            polls[(f, rd, nt[1])] += 1
+    if not polls:
+        log("detect_polled_subs: no polled subscriptions (no rmw_take inside foreign callback windows)")
+        return
+    f2node = {}
+    for n_id, node in nodes.items():
+        for e_id in node.Z_v:
+            e = entities.get(e_id)
+            if e is None: continue
+            for f in e.Z_v: f2node[f] = n_id
+    n_sub = set(); n_links = 0
+    for (f_s, f_p, topic), n in polls.items():
+        if topic_class_for_join(topic) != "data":
+            continue
+        fa = functions[f_s].A_v
+        fa["polled"] = True
+        fa.setdefault("poll_readers", {})[f_p] = n
+        n_sub.add(f_s)
+        node = nodes.get(f2node.get(f_s))
+        if node is None: continue
+        existing = {(a, b) for a, b, _t in (node.A_v.get("state_links") or [])}
+        if (f_s, f_p) not in existing:
+            node.A_v.setdefault("state_links", []).append([f_s, f_p, topic])
+        node.A_v.setdefault("polled_links", []).append([f_s, f_p, topic, n])
+        functions[f_p].A_v.setdefault("state_inputs", []).append(topic)
+        functions[f_s].A_v.setdefault("state_consumers", []).append(f_p)
+        n_links += 1
+    for n_id, node in nodes.items():
+        for e_id in node.Z_v:
+            e = entities.get(e_id)
+            if e is not None and e.t_v == "E" and any(f in n_sub for f in e.Z_v):
+                e.A_v["polled"] = True
+    log(f"detect_polled_subs: {len(n_sub)} polled sub F(s), {n_links} polled state link(s) "
+        f"({n_take_in} rmw_take inside foreign callback windows)")
+
+
+def measure_flows(G, session_id, functions, nodes=None, entities=None):
+    """Per-instance flow measurement on the finished graph (needs a session
+    traced with [trace] per_instance = true: ros2:rcl_publish + ros2:rmw_take;
+    degrades to intra-process pairing + state ages when rmw_take is absent).
+
+    For every L3 comm edge:
+      nature=msg   pub_F → sub_F   hop latency = take (or ipc dispatch) − publish,
+                                    per instance, paired by DDS source_timestamp
+                                    (inter-process) or by time (intra-process)
+      nature=state s → p           data age = start(p instance) − last start(s)
+    Writes n / p50 / p90 / max (ns) into the edge attrs:
+      flow_n, hop_ns_p50, hop_ns_p90, hop_ns_max          (msg edges)
+      flow_n, age_ns_p50, age_ns_p90, age_ns_max          (state edges)
+      flow_method: 'rmw_take' | 'ipc_time' | 'state'
+    """
+    import bisect
+    from collections import defaultdict
+    def q(a, p): a = sorted(a); return a[int(p * (len(a) - 1))]
+
+    wins, wstarts, owner, starts_by_f = _callback_windows(session_id, functions)
+    subf = _sub_f_by_node_topic(nodes, entities, functions) if nodes is not None else {}
 
     # publishes: rcl_publish → (topic, pub_F, ts)
     pub_topic = {}
@@ -1496,13 +1603,15 @@ def measure_flows(G, session_id, functions):
         log("measure_flows: no ros2:rcl_publish events (per_instance off) — hop latencies skipped; state ages only")
 
     # takes: rmw_take → (topic, sub_F, take_ts, source_ts)
-    rmw2topic = {}
+    rmw2topic = {}; rmw2nt = {}
     for r in pg_store.fetch_all(
-        "SELECT vpid, payload->>'rmw_subscription_handle' AS rh, payload->>'topic_name' AS t FROM ros2_trace "
+        "SELECT vpid, payload->>'rmw_subscription_handle' AS rh, payload->>'topic_name' AS t, "
+        "payload->>'node_handle' AS nh FROM ros2_trace "
         "WHERE session_id=%s AND event='ros2:rcl_subscription_init'", (session_id,)):
-        rmw2topic[(r["vpid"], r["rh"])] = r["t"]
-    takes = defaultdict(list)  # (topic, sub_F) → [(take_ts, src_ts)]
-    n_take = 0
+        rmw2topic[(r["vpid"], r["rh"])] = r["t"]; rmw2nt[(r["vpid"], r["rh"])] = (r["nh"], r["t"])
+    takes = defaultdict(list)  # (topic, sub_F) → [(take_ts, src_ts)]   dispatched takes (hop latency)
+    polled = defaultdict(list) # (topic, sub_F, reader_F) → [(take_ts, src_ts)]   polled reads (data age)
+    n_take = n_poll = 0
     for r in pg_store.fetch_all(
         "SELECT vpid, vtid, ts_ns, payload->>'rmw_subscription_handle' AS rh, "
         "(payload->>'source_timestamp')::bigint AS st FROM ros2_trace "
@@ -1510,13 +1619,25 @@ def measure_flows(G, session_id, functions):
         t = rmw2topic.get((r["vpid"], r["rh"]))
         if not t: continue
         key = (r["vpid"], r["vtid"]); ts = int(r["ts_ns"])
-        # the taken message is consumed by the NEXT callback on this thread
+        st = int(r["st"]) if r["st"] is not None else None
         ws = wins.get(key)
         if not ws: continue
+        # (a) take INSIDE a callback window that is not the sub's own callback →
+        #     polled read: consumer = enclosing callback (see detect_polled_subs)
+        rd = owner(key, ts)
+        sfs = subf.get(rmw2nt.get((r["vpid"], r["rh"]))) or []
+        if rd is not None and sfs and rd not in sfs:
+            for sf in sfs:
+                polled[(t, sf, rd)].append((ts, st))
+                takes[(t, sf)].append((ts, st))    # hop latency pub → sub F stays measurable
+            n_poll += 1
+            continue
+        # (b) dispatched take: the message is consumed by the NEXT callback on this thread
         i = bisect.bisect_left(wstarts[key], ts)
         if i < len(ws) and ws[i][0] - ts <= 5_000_000:
-            takes[(t, ws[i][2])].append((ts, int(r["st"]) if r["st"] is not None else None)); n_take += 1
+            takes[(t, ws[i][2])].append((ts, st)); n_take += 1
     for k in takes: takes[k].sort()
+    for k in polled: polled[k].sort()
 
     n_msg = n_state = 0; n_pairs = 0
     for u, v, d in G.edges(data=True):
@@ -1524,6 +1645,14 @@ def measure_flows(G, session_id, functions):
             continue
         nat = d.get("nature")
         if nat == "state":
+            if d.get("polled"):
+                # measured read: age = take − DDS source_timestamp (publish time)
+                pr = polled.get((d.get("topic"), u, v), [])
+                ages = [ts - st for ts, st in pr if st is not None and ts >= st]
+                if ages:
+                    d.update(flow_n=len(ages), age_ns_p50=q(ages, .5), age_ns_p90=q(ages, .9), age_ns_max=max(ages), flow_method="polled_take")
+                    n_state += 1
+                continue
             s_starts = starts_by_f.get(u, []); p_starts = starts_by_f.get(v, [])
             ages = []
             for tp in p_starts:
@@ -1564,7 +1693,7 @@ def measure_flows(G, session_id, functions):
         if lat:
             d.update(flow_n=len(lat), hop_ns_p50=q(lat, .5), hop_ns_p90=q(lat, .9), hop_ns_max=max(lat), flow_method=method)
             n_msg += 1; n_pairs += len(lat)
-    log(f"measure_flows: {n_msg} msg edge(s) with hop latency ({n_pairs} pairs; publishes {n_pub}, takes {n_take}), "
+    log(f"measure_flows: {n_msg} msg edge(s) with hop latency ({n_pairs} pairs; publishes {n_pub}, takes {n_take}, polled takes {n_poll}), "
         f"{n_state} state edge(s) with data age")
 
 
@@ -1725,6 +1854,12 @@ def mark_phases(session_id, executors, entities, functions):
             n_data += 1
             continue
         cb = f.A_v.get("cb_addr")
+        if f.A_v.get("polled") and (not cb or cb == "NA" or cb not in cb_last_start):
+            # polled subscription: its callback never fires by design, the data
+            # is pulled by another callback (detect_polled_subs) → live.
+            f.A_v["phase"] = "data"
+            n_data += 1
+            continue
         if not cb or cb == "NA" or cb not in cb_last_start:
             # cb registered but never fired.
             f.A_v["phase"] = "zero_exec"
@@ -2020,17 +2155,25 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
     if join_count:
         log(f"  Join ties: {join_count} L3 edges (nature=join)")
 
-    # State links (detect_state_links): inferred sample-and-hold reads inside
-    # a node — NOT precedence; FT grouping ignores nature='state'.
-    state_count = 0
+    # State links (detect_state_links / detect_polled_subs): sample-and-hold reads
+    # inside a node — NOT precedence; FT grouping ignores nature='state'.
+    state_count = 0; polled_count = 0
     for n_id, node in nodes.items():
+        polled_set = {(a, b, t): n for a, b, t, n in (node.A_v.get("polled_links") or [])}
         for f_s, f_p, topic in (node.A_v.get("state_links") or []):
             if f_s in functions and f_p in functions:
-                G.add_edge(f_s, f_p, rel="comm", level="L3", nature="state",
-                           topic=topic, inferred=True, intra_node=True)
+                n_poll = polled_set.get((f_s, f_p, topic))
+                if n_poll:
+                    # observed: rmw_take inside the reader's callback window
+                    G.add_edge(f_s, f_p, rel="comm", level="L3", nature="state",
+                               topic=topic, inferred=False, polled=True, n_polls=n_poll, intra_node=True)
+                    polled_count += 1
+                else:
+                    G.add_edge(f_s, f_p, rel="comm", level="L3", nature="state",
+                               topic=topic, inferred=True, intra_node=True)
                 state_count += 1
     if state_count:
-        log(f"  State links: {state_count} L3 edges (nature=state, inferred)")
+        log(f"  State links: {state_count} L3 edges (nature=state; {polled_count} polled/observed, rest inferred)")
 
     # ──────────────────────────────────────────────────────────────────
     # NITROS GXF intra-node edges (Option 1: static topology)
@@ -2201,6 +2344,7 @@ def extract(session_id: str, *, scope: str = graph_store_pg.STANDALONE_SCOPE,
     attribute_aspects(session_id, executors, nodes, entities)
     detect_joins(nodes, entities, functions)
     detect_state_links(session_id, nodes, entities, functions)
+    detect_polled_subs(session_id, nodes, entities, functions)
     attach_callback_groups(session_id, executors, nodes, entities, functions)
     mark_phases(session_id, executors, entities, functions)
     detect_oort_threads(session_id, executors, nodes, entities, functions)
@@ -2211,7 +2355,7 @@ def extract(session_id: str, *, scope: str = graph_store_pg.STANDALONE_SCOPE,
     cn_label = session_name or session_id
     G = create_graph(executors, nodes, entities, functions, session_name=cn_label)
     G = add_horizontal_edges(G, session_id, executors, nodes, entities, functions)
-    measure_flows(G, session_id, functions)
+    measure_flows(G, session_id, functions, nodes, entities)
 
     if save:
         meta = graph_store_pg.save_graph(

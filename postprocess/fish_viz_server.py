@@ -693,6 +693,10 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
             'ipc_capable': bool(attrs.get('ipc_capable')),
             'ipc_waitable': attrs.get('ipc_waitable'),
             'alt_cb_addrs': attrs.get('alt_cb_addrs') or [],
+            # polled subscription (detect_polled_subs): its callback never
+            # fires, another callback take()s the message; readers = {F: n}
+            'polled': bool(attrs.get('polled')),
+            'poll_readers': attrs.get('poll_readers') or {},
             # join membership (detect_joins): output topic + role
             'join_group': attrs.get('join_group'),
             'join_role': attrs.get('join_role'),
@@ -722,6 +726,7 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
                 'intra_node': bool(a.get('intra_node')),
                 'edge_class': ecls,
                 'inferred': bool(a.get('inferred')),
+                'polled': bool(a.get('polled')), 'n_polls': a.get('n_polls'),
                 'flow_n': a.get('flow_n'),
                 'hop_ns_p50': a.get('hop_ns_p50'), 'hop_ns_p90': a.get('hop_ns_p90'), 'hop_ns_max': a.get('hop_ns_max'),
                 'age_ns_p50': a.get('age_ns_p50'), 'age_ns_p90': a.get('age_ns_p90'), 'age_ns_max': a.get('age_ns_max'),
@@ -1236,7 +1241,8 @@ def _wcc_to_dot(wcc: dict) -> str:
             tag = etype
             if etype == 'sub':
                 d = n.get('delivery')
-                if d == 'ipc':    tag = 'waitable:sub·ipc'
+                if n.get('polled'): tag = 'sub·polled'   # take() inside another callback (no own dispatch)
+                elif d == 'ipc':    tag = 'waitable:sub·ipc'
                 elif d == 'both': tag = 'waitable:sub·ipc+dds'
                 else:             tag = 'sub·dds'   # measured dds, or not ipc-capable (DDS is the only path)
             jr = n.get('join_role')
@@ -1279,9 +1285,14 @@ def _wcc_to_dot(wcc: dict) -> str:
             label = 'join'; extra = ' dir=none constraint=false'
         elif e.get('nature') == 'state':
             # inferred sample-and-hold read inside the node: NOT a trigger; label = data age
-            color = '#e07b00'; pw = '1.2'; style = 'dashed'
             age = e.get('age_ns_p50')
-            label = 'state' + (f'  age p50 {age/1e6:.0f} ms' if age else '')
+            if e.get('polled'):
+                # OBSERVED read: rmw_take inside the reader's callback (solid orange)
+                color = '#e07b00'; pw = '1.4'; style = 'solid'
+                label = 'polled' + (f'  age p50 {age/1e6:.0f} ms' if age else '')
+            else:
+                color = '#e07b00'; pw = '1.2'; style = 'dashed'
+                label = 'state' + (f'  age p50 {age/1e6:.0f} ms' if age else '')
             extra = ' constraint=false arrowhead=onormal'
         elif e.get('edge_class') == 'infra':
             color = '#bbbbbb'; pw = '0.8'; style = 'dashed'

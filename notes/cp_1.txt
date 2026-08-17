@@ -64,9 +64,33 @@ Verdict vs the architecture picture (compare cp_0)
       and it is directly measurable: data age = take_ts − source_timestamp,
       consumer = the enclosing callback (timer). ⇒ MODEL TODO (below).
 
+UPDATE (same evening) — polled subscriptions implemented (detect_polled_subs)
+----------------------------------------------------------------------------
+  Rule: an rmw_take (taken=1) that lies INSIDE a callback window other than
+  the subscription's own callback = a polled read; consumer = enclosing
+  callback; data age = take_ts − DDS source_timestamp (flow_method
+  polled_take). Sub F gets polled=True / poll_readers, phase data; the L3
+  state edge sub→reader is polled=True, inferred=False (OBSERVED, not
+  inferred); FT badge [sub·polled]; solid orange edge in the FT view.
+  r18 re-modelled: 151 polled sub F, 153 polled links, 767 786 polled takes;
+  zero_exec 997 → 848; state edges with age 106 → 257.
+  Planning→Control now MEASURED:
+    /planning/trajectory: planning_validator → InterProcessPollingSubscriber
+    (msg hop 16.2 ms) ⇢ controller timer: age p50 16.2 ms, p90 27.0 ms,
+    n=5487 (10 Hz trajectory read by a 33 Hz timer: 20 912 takes, 5487 fresh)
+    Layer B: /planning→/control sampled ×14 topics n=93 660 age 5.9 ms;
+             /perception→/planning sampled 49.9 ms; /occupancy_grid_map→
+             /planning 27.7 ms; /perception→/control (AEB) 53.6 ms;
+             /simulation→/control sampled ×8 n=261 343 11.7 ms.
+  Design consequence: the "sample-and-hold read" the design predicted has
+  TWO evidence levels now — inferred (deposit callback + publisher in the
+  same node) and observed (polled take inside the reader). Only the first
+  still needs uprobes.
+
 Model TODO from cp_1
 --------------------
-  [ ] polled subscriptions: sub with rmw_take but no own callback_start →
+  [x] polled subscriptions (above)
+  [ ] (was) polled subscriptions: sub with rmw_take but no own callback_start →
       mark F/E as `polled`; in measure_flows attribute a take that lies inside
       an active callback window to that callback (owner()) as a SAMPLED read
       (age = take − source_ts); add the state/sampled edge sub-topic → owner F.
