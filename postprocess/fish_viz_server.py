@@ -827,12 +827,12 @@ def _namespace_views(fnodes, edges, min_f=2, neighbors='show'):
         # foreign F's are flagged and drawn faded by _wcc_to_dot.
         touching = set(fids); foreign = set()
         for e in edges:
-            if e['edge_class'] == 'infra':
-                continue   # /tf, /clock, /diagnostics publishers would drag half the graph in
             for a, b in ((e['src'], e['dst']), (e['dst'], e['src'])):
                 if a in fids and b not in fids:
                     is_ext = fnodes[b].get('ptype') == 'ext'
-                    if neighbors == 'show' or is_ext:      # ext boundary nodes always stay
+                    if e['edge_class'] == 'infra' and not is_ext:
+                        continue   # infra edges to foreign F's (/tf, /diagnostics publishers) would drag half the graph in
+                    if neighbors == 'show' or is_ext:      # ext boundary nodes always stay (e.g. ext:/clock ← bag)
                         touching.add(b)
                         if not is_ext: foreign.add(b)
         if len(fids) < min_f:
@@ -845,10 +845,11 @@ def _namespace_views(fnodes, edges, min_f=2, neighbors='show'):
             v_nodes.append(n)
         # edges: within the namespace + the boundary edges to neighbours (not
         # neighbour↔neighbour, which would drag in other subsystems' internals)
+        def _is_ext(f): return fnodes[f].get('ptype') == 'ext'
         v_edges = [e for e in edges
                    if (e['src'] in fids and e['dst'] in fids)                                   # inside: data + infra (dashed)
-                   or (e['edge_class'] != 'infra' and ((e['src'] in fids and e['dst'] in touching)
-                                                       or (e['dst'] in fids and e['src'] in touching)))]  # boundary: data only
+                   or ((e['src'] in fids and e['dst'] in touching) or (e['dst'] in fids and e['src'] in touching))
+                      and (e['edge_class'] != 'infra' or _is_ext(e['src']) or _is_ext(e['dst']))]  # boundary: data, or infra to an ext node
         n_infra = sum(1 for e in v_edges if e['edge_class'] == 'infra')
         views.append({
             'idx': f'ns:{ns}', 'kind': 'namespace', 'namespace': ns,
