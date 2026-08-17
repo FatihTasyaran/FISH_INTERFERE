@@ -237,3 +237,19 @@ Action required:
   counts / per-kernel durations do NOT change; only absolute placement.
   Checker: scratchpad gpu_owner_check.py (offset scan + classification) —
   worth promoting into postprocess/ as a post-ingest sanity check.
+
+Follow-up check (2026-08-17, same session): is the residual placement
+uncertainty "async"? Two different things:
+  - cuda_runtime rows are HOST-side API timestamps (cudaLaunchKernel on the
+    calling thread) — synchronous, so they must sit inside the callback that
+    made the call. Their being outside was the clock bug, not asynchrony.
+  - gpu_kernels rows are DEVICE-side execution — asynchronous by nature.
+    Measured launch→kernel-start latency: p10 16 µs, p50 8.4 ms, p90 14.5 ms,
+    p99 15.0 ms, max 28 ms (TensorRT enqueue depth). Attribution therefore
+    goes kernel → launch via CUPTI correlation_id → owning callback (window
+    on the LAUNCH). On r7: 14 461/14 461 kernels matched a launch, 100 % of
+    launches inside a callback; 0 kernels started after their callback ended
+    (centerpoint syncs before returning). A node that does NOT sync before
+    returning would put kernels after callback_end — time-window on kernels
+    would misattribute, correlation_id would not. gpu_attribution.py already
+    carries correlationId for runtime/kernel/memcpy/memset/sync.
