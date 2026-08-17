@@ -121,3 +121,23 @@ Open for the next brainstorm
 - Timeout timer as an alternative releaser: OR of (AND-join, timer) — check
   that SAG's precedence model can express it, or pre-expand into two job
   variants.
+
+Addendum 2026-08-17 (evening) — two evidence levels for sample-and-hold reads
+----------------------------------------------------------------------------
+The "data-without-trigger" dependency listed above as "what the trace cannot
+supply" splits into two cases once we look at HOW nodes read latest values:
+  (a) deposit callback + read from another callback (Case 1b): the read is a
+      plain memory access → invisible at the ROS layer → INFERRED state link
+      (detect_state_links), verification = uprobes (Yol B).
+  (b) polled subscription (Autoware autoware_utils::InterProcessPollingSubscriber,
+      any `sub->take()` inside a timer): the read IS a ROS-layer call →
+      ros2:rmw_take inside the reader's callback window → OBSERVED state link
+      (detect_polled_subs), data age = take_ts − DDS source_timestamp, per
+      instance, no uprobe needed. Autoware's controller, planning modules and
+      the AEB read most of their inputs this way (r18: 151 polled sub F's,
+      767 786 polled takes; Planning→Control trajectory age p50 16 ms).
+Consequence for the IR: a state edge carries `inferred` (a) or `polled` (b);
+the emitter treats both as sample-and-hold (no precedence), but only (a)
+is an assumption. For the DAG-task model a polled sub is NOT a job at all —
+its F never executes; the reader job's release is its own timer, and the
+input's age is a property of the read.
