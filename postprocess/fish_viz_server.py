@@ -1022,14 +1022,25 @@ def _wcc_to_dot(wcc: dict) -> str:
             )
         out.append('  }')
 
+    # Join members on the same rank (timeout timers next to the input subs
+    # they belong to) so the dotted membership ties stay short instead of
+    # arcing over the whole cluster. newrank=true lets rank=same cross clusters.
+    jg = defaultdict(list)
+    for n in nodes:
+        if n.get('join_group'):
+            jg[n['join_group']].append(n['id'])
+    for _t, ids in jg.items():
+        if len(ids) >= 2:
+            out.append('  {rank=same; ' + '; '.join(f'n{i}' for i in ids) + ';}')
+
     for e in edges:
         topic = e.get('topic') or ''
         style = 'solid'
+        extra = ''
         if e.get('nature') == 'gxf_internal':
             color = '#2ca02c'; pw = '2'
             label = 'GXF'
-        extra = ''
-        if e.get('nature') == 'join':
+        elif e.get('nature') == 'join':
             # join membership tie (detect_joins): not a message hop → no arrowhead,
             # does not constrain the layout rank
             color = '#1f77b4'; pw = '1.5'; style = 'dotted'
