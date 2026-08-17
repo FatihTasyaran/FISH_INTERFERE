@@ -532,7 +532,45 @@ def _serve_task_graphs(handler, qs):
     handler.wfile.write(body)
 
 
-def _fetch_wcc_payload(sid, scope, allowed):
+# ---------------------------------------------------------------------------
+# Topic classes for FT (Fish Task) grouping
+# ---------------------------------------------------------------------------
+# An FT is a weakly-connected component of the F-graph over *data-carrying*
+# comm edges. ROS 2 infrastructure topics (/diagnostics, /tf, /tf_static,
+# /parameter_events, /clock, /rosout, ...) are published/consumed by almost
+# every node and would glue unrelated pipelines into one giant FT — measured
+# on Autoware fish_20260816_165836: FT#0 = 299 F / 491 edges of which 160
+# /diagnostics + 96 /tf + 17 /tf_static; without those three the same set
+# splits into 112 components (localization 46, lidar perception 37, control
+# 27, IMU odometry 15, ...). Infra edges are still returned (edge_class=
+# 'infra') and drawn faded; ?infra=include restores the old grouping.
+# Override/extend the list via FISH_INFRA_TOPICS (comma-separated globs).
+import fnmatch as _fnmatch
+_INFRA_TOPIC_GLOBS = [
+    '/diagnostics', '/diagnostics_agg', '/diagnostics_toplevel_state',
+    '/tf', '/tf_static',
+    '/parameter_events', '/clock', '/rosout', '/service_log',
+    '*/debug/*', '*/processing_time_ms', '*/processing_time_detail_ms',
+    '*/cyclic_time_ms', '*/pipeline_latency_ms',
+    '/*/describe_parameters', '/*/get_parameters', '/*/get_parameter_types',
+    '/*/list_parameters', '/*/set_parameters', '/*/set_parameters_atomically',
+]
+_env_globs = os.environ.get('FISH_INFRA_TOPICS')
+if _env_globs:
+    _INFRA_TOPIC_GLOBS = [g.strip() for g in _env_globs.split(',') if g.strip()]
+
+
+def topic_class(topic: str) -> str:
+    """'infra' for ROS 2 plumbing / diagnostics topics, else 'data'."""
+    if not topic:
+        return 'data'
+    for g in _INFRA_TOPIC_GLOBS:
+        if _fnmatch.fnmatchcase(topic, g):
+            return 'infra'
+    return 'data'
+
+
+def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude'):
     """Shared backbone for /api/wcc and /api/wcc-svg.
 
     Returns: (fnodes, edges, out_wccs, n_wccs) on success, raises on PG error.
@@ -594,11 +632,13 @@ def _fetch_wcc_payload(sid, scope, allowed):
     for s, t, a in cur.fetchall():
         if s in fnodes and t in fnodes:
             a = a or {}
+            topic = a.get('topic') or a.get('service', '')
             edges.append({
                 'src': s, 'dst': t,
-                'topic': a.get('topic') or a.get('service', ''),
+                'topic': topic,
                 'nature': a.get('nature', ''),
                 'intra_node': bool(a.get('intra_node')),
+                'edge_class': topic_class(topic),
             })
 
     cur.execute("""
@@ -639,8 +679,11 @@ def _fetch_wcc_payload(sid, scope, allowed):
     for n in fnodes.values():
         n['stats'] = cb_stats.get(n['cb_addr'])
 
+    # FT grouping edges: data-only by default (see _INFRA_TOPIC_GLOBS).
+    group_edges = edges if infra_mode == 'include' \
+        else [e for e in edges if e['edge_class'] != 'infra']
     und = {fid: set() for fid in fnodes}
-    for e in edges:
+    for e in group_edges:
         und[e['src']].add(e['dst'])
         und[e['dst']].add(e['src'])
     visited, wccs = set(), []
@@ -663,10 +706,13 @@ def _fetch_wcc_payload(sid, scope, allowed):
             continue
         wcc_nodes = [fnodes[f_id] for f_id in sorted(comp)]
         wcc_edges = [e for e in edges if e['src'] in comp and e['dst'] in comp]
+        n_infra = sum(1 for e in wcc_edges if e['edge_class'] == 'infra')
         out_wccs.append({
             'idx': i,
             'n_cbs': len(comp),
             'n_edges': len(wcc_edges),
+            'n_data_edges': len(wcc_edges) - n_infra,
+            'n_infra_edges': n_infra,
             'nodes': wcc_nodes,
             'edges': wcc_edges,
         })
@@ -697,18 +743,26 @@ def _serve_wcc(handler, qs):
     if include_init:      allowed.add('init')
     if include_zero_exec: allowed.add('zero_exec')
     if include_unknown:   allowed.add('unknown')
+    infra_mode = (qs.get('infra', ['exclude'])[0] or 'exclude').lower()
+    if infra_mode not in ('exclude', 'include'):
+        infra_mode = 'exclude'
 
     try:
-        fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(sid, scope, allowed)
+        fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(sid, scope, allowed, infra_mode)
     except Exception as e:
         handler.send_error(500, f'PG error: {e}')
         return
 
+    n_infra = sum(1 for e in edges if e['edge_class'] == 'infra')
     body = json.dumps({
         'session_id': sid, 'scope': scope,
         'allowed_phases': sorted(allowed),
+        'infra_mode': infra_mode,
+        'infra_topic_globs': _INFRA_TOPIC_GLOBS,
         'n_f_nodes': len(fnodes),
         'n_edges': len(edges),
+        'n_data_edges': len(edges) - n_infra,
+        'n_infra_edges': n_infra,
         'n_wccs': n_wccs,
         'wccs': out_wccs,
     }).encode()
@@ -791,15 +845,20 @@ def _wcc_to_dot(wcc: dict) -> str:
 
     for e in edges:
         topic = e.get('topic') or ''
+        style = 'solid'
         if e.get('nature') == 'gxf_internal':
             color = '#2ca02c'; pw = '2'
             label = 'GXF'
+        elif e.get('edge_class') == 'infra':
+            color = '#bbbbbb'; pw = '0.8'; style = 'dashed'
+            label = topic
         else:
             color = '#444'; pw = '1.2'
             label = topic
         out.append(
             f'  n{e["src"]} -> n{e["dst"]} '
-            f'[label="{_dot_escape(label)}" color="{color}" penwidth={pw}];'
+            f'[label="{_dot_escape(label)}" color="{color}" fontcolor="{color}" '
+            f'penwidth={pw} style={style}];'
         )
     out.append('}')
     return '\n'.join(out)
@@ -838,9 +897,12 @@ def _serve_wcc_svg(handler, qs):
     if include_init:      allowed.add('init')
     if include_zero_exec: allowed.add('zero_exec')
     if include_unknown:   allowed.add('unknown')
+    infra_mode = (qs.get('infra', ['exclude'])[0] or 'exclude').lower()
+    if infra_mode not in ('exclude', 'include'):
+        infra_mode = 'exclude'
 
     try:
-        fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(sid, scope, allowed)
+        fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(sid, scope, allowed, infra_mode)
     except Exception as e:
         handler.send_error(500, f'PG error: {e}')
         return
@@ -859,15 +921,21 @@ def _serve_wcc_svg(handler, qs):
             'idx': w['idx'],
             'n_cbs': w['n_cbs'],
             'n_edges': w['n_edges'],
+            'n_data_edges': w.get('n_data_edges', w['n_edges']),
+            'n_infra_edges': w.get('n_infra_edges', 0),
             'svg': svg,
             'nodes_meta': meta,
         })
 
+    n_infra = sum(1 for e in edges if e.get('edge_class') == 'infra')
     body = json.dumps({
         'session_id': sid, 'scope': scope,
         'allowed_phases': sorted(allowed),
+        'infra_mode': infra_mode,
         'n_f_nodes': len(fnodes),
         'n_edges': len(edges),
+        'n_data_edges': len(edges) - n_infra,
+        'n_infra_edges': n_infra,
         'n_wccs': n_wccs,
         'wccs': rendered,
     }).encode()

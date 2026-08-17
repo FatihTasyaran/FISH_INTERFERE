@@ -1986,6 +1986,88 @@ PATCH_IPM
     log "  rclcpp built with executor attribution hooks (receive_link + waitable as first-class entity + intra-proc Waitable init)"
 }
 
+patch_rclcpp_publisher_base_intra() {
+    # 2026-08-17: ABI-safe intra-process publish attribution.
+    #
+    # patch_rclcpp_publisher_intra() below patches Publisher<T>::do_intra_
+    # process_publish in publisher.hpp — a class TEMPLATE. Every downstream
+    # package (Autoware, Isaac ROS, ...) was compiled against the STOCK
+    # header, so their binaries carry their own un-patched instantiation and
+    # the tracepoint never fires for them. Measured on Autoware
+    # fish_20260816_165836: 15 same-process topics (per-lidar
+    # pointcloud_raw_ex → self_cropped → mirror_cropped → rectified chains,
+    # obstacle_segmentation/single_frame/pointcloud) had 299 sub fires each
+    # and 0 fish_rclcpp_publish_link → the model saw them as external
+    # sources and the preprocessing chains fell apart into separate FTs.
+    #
+    # Fix: every intra-process-capable Publisher<T>::publish() variant calls
+    # PublisherBase::get_intra_process_subscription_count() exactly once
+    # (publisher.hpp: `get_subscription_count() > get_intra_process_
+    # subscription_count()`); that getter is NON-template, lives in
+    # publisher_base.cpp, i.e. in librclcpp.so — which downstream binaries
+    # call dynamically → our overlay build is what runs. Emit the same
+    # fish_rclcpp_publish_link there. tracetools' TRACEPOINT wrapper already
+    # (a) skips callback==NULL (publish outside a callback stays external,
+    # e.g. rosbag2 player thread) and (b) dedupes per (handle, callback)
+    # pair, so publishers with both intra and inter subscribers do NOT
+    # double-count against the rcl_publish hook.
+    step "Patching rclcpp publisher_base.cpp (ABI-safe intra-process publish_link) ..."
+    python3 <<'PATCH_PUBBASE'
+import sys
+path = "/root/trace_overlay_ws/src/rclcpp/src/rclcpp/publisher_base.cpp"
+with open(path) as f:
+    content = f.read()
+
+if "tracetools/tracetools.h" not in content:
+    inc_anchor = '#include "rclcpp/publisher_base.hpp"'
+    if inc_anchor in content:
+        content = content.replace(inc_anchor,
+            inc_anchor + '\n#include "tracetools/tracetools.h"   // FISH', 1)
+    else:
+        print("    WARN: publisher_base.cpp include anchor not found")
+
+if "FISH __fish_active_callback extern publisher_base.cpp" not in content:
+    anchor = "using rclcpp::PublisherBase;"
+    if anchor in content:
+        content = content.replace(anchor,
+            'extern "C" __thread const void * __fish_active_callback;'
+            '  // FISH __fish_active_callback extern publisher_base.cpp\n\n' + anchor, 1)
+    else:
+        print("    WARN: publisher_base.cpp using-anchor not found")
+
+old_block = (
+    "PublisherBase::get_intra_process_subscription_count() const\n"
+    "{\n"
+    "  auto ipm = weak_ipm_.lock();\n"
+    "  if (!intra_process_is_enabled_) {\n"
+    "    return 0;\n"
+    "  }\n"
+)
+new_block = old_block + (
+    "  // FISH: intra-process publish attribution (ABI-safe). Every\n"
+    "  // intra-process-capable Publisher<T>::publish() calls this getter once\n"
+    "  // (publisher.hpp: get_subscription_count() > get_intra_process_\n"
+    "  // subscription_count()). Publishes that go intra-process only never\n"
+    "  // reach rcl_publish, so the publisher.c hook cannot see them; the\n"
+    "  // publisher.hpp template hook is invisible to downstream binaries\n"
+    "  // compiled against stock headers. tracetools dedupes (handle, cb).\n"
+    "  TRACEPOINT(\n"
+    "    fish_rclcpp_publish_link,\n"
+    "    static_cast<const void *>(publisher_handle_.get()),\n"
+    "    __fish_active_callback);\n"
+)
+if "FISH: intra-process publish attribution (ABI-safe)" in content:
+    print("    publisher_base.cpp already patched")
+elif old_block in content:
+    content = content.replace(old_block, new_block, 1)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    publisher_base.cpp patched — fish_rclcpp_publish_link in get_intra_process_subscription_count")
+else:
+    print("    WARN: publisher_base.cpp get_intra_process_subscription_count anchor not found")
+PATCH_PUBBASE
+}
+
 patch_rclcpp_publisher_intra() {
     step "Patching rclcpp publisher.hpp (intra-process tracepoints) ..."
     python3 <<'PATCH_INTRA'
@@ -3928,6 +4010,7 @@ main() {
     # rclcpp intra-process publisher patch — same fish_rclcpp_publish_link
     # tracepoint, fires for same-process pub→sub that bypasses rcl entirely.
     $DO_LINK      && patch_rclcpp_publisher_intra
+    $DO_LINK      && patch_rclcpp_publisher_base_intra
     $DO_LINK      && patch_rclcpp_executor_attribution
     # NITROS patch: only relevant when --link is on (fires fish_rclcpp_publish_link).
     # Always runs but skips gracefully if isaac_ros_nitros source isn't present.
