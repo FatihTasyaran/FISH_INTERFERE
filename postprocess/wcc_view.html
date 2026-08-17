@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>FISH — WCC View (DOT)</title>
+<title>FISH — FT View (DOT)</title>
 <style>
 body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;overflow:hidden;height:100vh}
 
@@ -46,13 +46,13 @@ body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;ove
 <body>
 
 <div id="controls">
-  <b>FISH — WCC View (DOT)</b>
+  <b>FISH — FT View (DOT)</b>
   <div style="margin-top:4px">
     <label>Session: <input type="text" id="sessionId" placeholder="fish_..."></label>
     <button class="small-btn" id="loadBtn">Load</button>
   </div>
   <div style="margin-top:4px">
-    <label>WCC:
+    <label>FT:
       <select id="wccSelect"></select>
     </label>
   </div>
@@ -196,7 +196,7 @@ function renderWCC(wcc){
   attachHover();
   fitToStage();
   document.getElementById('summary').innerHTML =
-    `<b>WCC#${wcc.idx}</b> · <b>${wcc.n_cbs}</b> F · <b>${wcc.n_edges}</b> edges`;
+    `<b>FT#${wcc.idx}</b> · <b>${wcc.n_cbs}</b> F · <b>${wcc.n_edges}</b> edges`;
 }
 
 function populateSelect(){
@@ -204,13 +204,13 @@ function populateSelect(){
   sel.innerHTML = '';
   if (!allData || !allData.wccs.length){
     const opt = document.createElement('option');
-    opt.textContent = '(no WCCs)'; sel.appendChild(opt);
+    opt.textContent = '(no FTs)'; sel.appendChild(opt);
     return;
   }
   for (const w of allData.wccs){
     const opt = document.createElement('option');
     opt.value = w.idx;
-    opt.textContent = `WCC#${w.idx} — ${w.n_cbs} F, ${w.n_edges} edges`;
+    opt.textContent = `FT#${w.idx} — ${w.n_cbs} F, ${w.n_edges} edges`;
     sel.appendChild(opt);
   }
 }
@@ -230,7 +230,7 @@ async function loadSession(){
     if (allData.wccs.length) renderWCC(allData.wccs[0]);
     else {
       document.getElementById('stage-inner').innerHTML = '';
-      document.getElementById('summary').textContent = 'no WCCs found';
+      document.getElementById('summary').textContent = 'no FTs found';
     }
   } catch (e){
     document.getElementById('summary').textContent = 'fetch error: ' + e.message;
@@ -281,10 +281,12 @@ window.addEventListener('mousemove', e => {
 });
 window.addEventListener('mouseup', () => { dragging = false; });
 
-// ?session=… autoload
+// ?session=… or ?session_id=… autoload (matches gantt-tid / gantt-cb / cb-stats
+// param convention so the dashboard's ft link prefills the input).
 const params = new URLSearchParams(location.search);
-if (params.has('session')){
-  document.getElementById('sessionId').value = params.get('session');
+const _sidFromQs = params.get('session_id') || params.get('session');
+if (_sidFromQs){
+  document.getElementById('sessionId').value = _sidFromQs;
   loadSession();
 }
 </script>

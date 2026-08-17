@@ -1906,7 +1906,74 @@ else:
     print("    WARN: add_waitable anchor not found")
 PATCH_NODEWAIT
 
-    # Build rclcpp once (covers both executor.cpp + node_waitables.cpp changes)
+    python3 <<'PATCH_IPM'
+import sys
+# Intra-process Waitables (SubscriptionIntraProcessBase) do NOT register via
+# NodeWaitables::add_waitable — Subscription's ctor registers them directly
+# with IntraProcessManager. So node_waitables.cpp's patch misses them, and
+# the Waitable's `this` pointer shows up in callback_start events with no
+# matching entity. Mirror the patch here so intra-proc Waitables get a
+# fish_rclcpp_waitable_init too. In rclcpp 16.0.19 (our pinned overlay tag)
+# add_subscription is a NON-TEMPLATE function with its body in the .cpp,
+# so patch goes in the .cpp (newer rclcpp upstream made it a template
+# defined inline in the header; if we ever bump the pin, revisit).
+path = "/root/trace_overlay_ws/src/rclcpp/src/rclcpp/intra_process_manager.cpp"
+with open(path) as f:
+    content = f.read()
+
+# Include tracetools — same convention as the node_waitables.cpp patch.
+if "tracetools/tracetools.h" not in content:
+    inc_anchor = '#include "rclcpp/experimental/intra_process_manager.hpp"'
+    if inc_anchor in content:
+        content = content.replace(inc_anchor,
+            inc_anchor + '\n#include "tracetools/tracetools.h"   // FISH', 1)
+
+# Anchor: body of add_subscription, right after the existing setup
+# statements (lock + unique_id + subscriptions_ insertion). 2-space indent
+# matches the source (NOT 4-space like a header-template inline).
+old_block = (
+    "  std::unique_lock<std::shared_timed_mutex> lock(mutex_);\n"
+    "\n"
+    "  uint64_t sub_id = IntraProcessManager::get_next_unique_id();\n"
+    "\n"
+    "  subscriptions_[sub_id] = subscription;\n"
+)
+new_block = (
+    "  std::unique_lock<std::shared_timed_mutex> lock(mutex_);\n"
+    "\n"
+    "  uint64_t sub_id = IntraProcessManager::get_next_unique_id();\n"
+    "\n"
+    "  subscriptions_[sub_id] = subscription;\n"
+    "\n"
+    "  // FISH: intra-process Waitable registration. Mirrors the\n"
+    "  // NodeWaitables::add_waitable() tracepoint emit so the executor's\n"
+    "  // branch-5 callback_start on this Waitable's `this` has a matching\n"
+    "  // init event. node_handle is not directly available here (intra-proc\n"
+    "  // Waitables register independently of NodeWaitables); emit nullptr\n"
+    "  // — the model_improved postprocessor recognises that and skips\n"
+    "  // creating a standalone Waitable entity (parent sub entity already\n"
+    "  // covers it).\n"
+    "  TRACEPOINT(\n"
+    "    fish_rclcpp_waitable_init,\n"
+    "    static_cast<const void *>(subscription.get()),\n"
+    "    nullptr,\n"
+    "    nullptr);\n"
+)
+
+if "FISH: intra-process Waitable registration" in content:
+    print("    intra_process_manager.cpp already patched")
+elif old_block in content:
+    content = content.replace(old_block, new_block, 1)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    intra_process_manager.cpp patched — fish_rclcpp_waitable_init at add_subscription")
+else:
+    print("    WARN: intra_process_manager.cpp add_subscription anchor not found")
+PATCH_IPM
+
+    # Build rclcpp once (covers executor.cpp + node_waitables.cpp +
+    # intra_process_manager.hpp changes; the last is header-only but
+    # rebuilding rclcpp recompiles every TU that includes it).
     set +u && source "$OVERLAY_WS/install/setup.bash" && set -u
     cd "$OVERLAY_WS"
     colcon build \
@@ -1916,7 +1983,7 @@ PATCH_NODEWAIT
             "-Dtracetools_DIR=$OVERLAY_WS/install/tracetools/share/tracetools/cmake" \
         2>&1 | tail -5
 
-    log "  rclcpp built with executor attribution hooks (receive_link + waitable as first-class entity)"
+    log "  rclcpp built with executor attribution hooks (receive_link + waitable as first-class entity + intra-proc Waitable init)"
 }
 
 patch_rclcpp_publisher_intra() {

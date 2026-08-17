@@ -25,14 +25,17 @@ Emits instances for: Host, Session, Executor, Node, Entity, Callback (from
 fish_graph.json) + GPU_Kernel, CUDA_Stream (from shared `fish` InfluxDB).
 """
 import argparse
+import glob
 import json
 import os
+import platform
 import re
 import socket
 import sys
 
 INFLUX_HOST = 'http://localhost:8181'
 INFLUX_TOKEN_FILE = os.path.expanduser('~/inf.tok')
+MONGO_URI = 'mongodb://localhost:27017'
 
 
 def load_influx_token():
@@ -77,8 +80,33 @@ def load_graph(path):
     return g, by_id
 
 
+def _read_first_line_after_colon(path, key_prefix):
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith(key_prefix):
+                    return line.split(':', 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
 def emit_host(session_id):
     hostname = socket.gethostname()
+    arch = platform.machine()
+    kernel = platform.release()
+    ros_distro = os.environ.get('ROS_DISTRO') or 'unknown'
+    cpu_cores = os.cpu_count() or 0
+    cpu_model = _read_first_line_after_colon('/proc/cpuinfo', 'model name')
+    total_ram_kb = None
+    try:
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemTotal:'):
+                    total_ram_kb = int(line.split()[1])
+                    break
+    except OSError:
+        pass
     return {
         '@context': ['dtmi:dtdl:context;3', 'dtmi:fish:context;1'],
         '@id': f'dtmi:fish:host:{slugify(hostname)};1',
@@ -87,6 +115,12 @@ def emit_host(session_id):
         'displayName': f'Host {hostname}',
         'properties': {
             'hostname': hostname,
+            'arch': arch,
+            'kernel_version': kernel,
+            'ros_distro': ros_distro,
+            'cpu_model': cpu_model,
+            'cpu_cores': cpu_cores,
+            'total_ram_kb': total_ram_kb,
         },
         'relationships': {
             'has_session': [f'dtmi:fish:session:{session_id};1'],
@@ -94,17 +128,93 @@ def emit_host(session_id):
     }
 
 
+def _collect_session_metadata(session_id, session_dir):
+    """Pull rich metadata from MongoDB collections (gpu_info, cuda_session,
+    cuda_device, fish_events, system_env) + on-disk fishlog + launch_components.
+
+    Returns a dict of properties to merge into the Session instance.
+    """
+    props = {'session_dir': session_dir}
+    # On-disk artifacts
+    lc_path = os.path.join(session_dir, 'launch_components.json')
+    if os.path.isfile(lc_path):
+        try:
+            with open(lc_path) as f:
+                props['components_loaded'] = json.dumps(json.load(f), separators=(',', ':'))
+        except (OSError, json.JSONDecodeError):
+            pass
+    fishlog_dir = os.path.join(session_dir, 'fishlog')
+    if os.path.isdir(fishlog_dir):
+        files = sorted(glob.glob(os.path.join(fishlog_dir, '*')))
+        if files:
+            props['fishlog_files'] = json.dumps([os.path.basename(p) for p in files])
+    # tracepoint count from config snapshot in fishlog (if present)
+    tp_count = None
+    try:
+        events_txt = os.path.join('/home/tue037807/fish_interfere/config/fish_events.txt')
+        if os.path.isfile(events_txt):
+            with open(events_txt) as f:
+                tp_count = sum(1 for ln in f if ln.strip() and not ln.startswith('#'))
+        if tp_count:
+            props['tracepoint_count'] = tp_count
+            props['tracepoint_set'] = events_txt
+    except OSError:
+        pass
+
+    # MongoDB-side metadata
+    try:
+        import pymongo
+        cli = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
+        db = cli[session_id]
+        # cuda_session for start time
+        cuda_sess = db['cuda_session'].find_one({}) or {}
+        if cuda_sess.get('utcTime'):
+            props['start_utc'] = cuda_sess['utcTime']
+        if cuda_sess.get('systemClockNs') is not None:
+            props['start_ts_ns'] = int(cuda_sess['systemClockNs'])
+        # gpu_info
+        gpu = db['gpu_info'].find_one({}) or {}
+        if gpu.get('name'):
+            props['gpu_model_name'] = gpu['name']
+        if gpu.get('totalMemory') is not None:
+            props['gpu_total_memory_bytes'] = int(gpu['totalMemory'])
+        if gpu.get('smCount') is not None:
+            props['gpu_sm_count'] = int(gpu['smCount'])
+        if gpu.get('uuid'):
+            props['gpu_uuid'] = gpu['uuid']
+        if gpu.get('computeMajor') is not None and gpu.get('computeMinor') is not None:
+            props['gpu_compute_capability'] = f"{gpu['computeMajor']}.{gpu['computeMinor']}"
+        # start_ts / end_ts from first/last ros2_trace event
+        first = db['ros2_trace'].find_one({}, sort=[('ts', 1)])
+        last = db['ros2_trace'].find_one({}, sort=[('ts', -1)])
+        if first and last:
+            import datetime
+            def _to_ns(d):
+                ts = d.get('ts'); ns = int(d.get('ts_nanos') or 0)
+                if isinstance(ts, datetime.datetime):
+                    sec = int(ts.replace(tzinfo=datetime.timezone.utc).timestamp() if ts.tzinfo is None else ts.timestamp())
+                    return sec * 1_000_000_000 + ns
+                return None
+            s_ns = _to_ns(first); e_ns = _to_ns(last)
+            if s_ns and e_ns:
+                props['start_ts_ns'] = s_ns
+                props['end_ts_ns'] = e_ns
+                props['duration_ns'] = e_ns - s_ns
+    except Exception as e:
+        sys.stderr.write(f"  warn: mongo session metadata read failed: {e}\n")
+    return props
+
+
 def emit_session(session_id, session_dir):
+    props = {'session_id': session_id}
+    props.update(_collect_session_metadata(session_id, session_dir))
     sess = {
         '@context': ['dtmi:dtdl:context;3', 'dtmi:fish:context;1'],
         '@id': f'dtmi:fish:session:{session_id};1',
         '@type': 'Interface',
         'extends': 'dtmi:fish:session;1',
         'displayName': f'Session {session_id}',
-        'properties': {
-            'session_id': session_id,
-            'session_dir': session_dir,
-        },
+        'properties': props,
         'relationships': {
             'has_executor': [],
             'runs_container': [],
@@ -353,6 +463,11 @@ def collect_gpu_instances(token, influx_session, session_id):
 
 def build_instance_doc(graph, by_id, session_id, session_dir,
                        influx_session=None, fetch_gpu=True):
+    # If --influx-session is provided, use IT as the canonical session_id
+    # baked into every instance's properties — so DTDL tagSelectors resolving
+    # {session_id} produce the correct InfluxDB tag value.
+    canonical_session = influx_session or session_id
+    session_id = canonical_session
     instances = []
     host = emit_host(session_id)
     instances.append(host)

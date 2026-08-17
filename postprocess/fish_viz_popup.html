@@ -72,8 +72,11 @@ svg{width:100vw;height:100vh}
   </div>
 
   <div id="panel-expand" class="panel">
-    <button class="small-btn" id="collapseAll">Reset</button>
-    <span style="color:#888;font-size:11px;margin-left:6px">Click to expand/collapse</span>
+    <button class="small-btn" id="collapseAll">Reset (S<sub>0</sub> = L<sub>EX</sub>)</button>
+    <label style="margin-left:8px;font-size:11px;color:#444">
+      <input type="checkbox" id="operatorMode" checked style="vertical-align:middle">
+      operator <i>𝒢<sub>v</sub></i> (replace v by Z<sub>v</sub>)
+    </label>
   </div>
 
   <div id="panel-layer" class="panel" style="display:none">
@@ -107,6 +110,7 @@ svg{width:100vw;height:100vh}
     <label><input type="checkbox" id="showExternal"> External</label>
     <label><input type="checkbox" id="showLabels" checked> Labels</label>
     <label><input type="checkbox" id="showContain" checked> Hierarchy</label>
+    <label title="Show callbacks/entities that have no comm edges (parameter services, control-plane timers, etc.)"><input type="checkbox" id="showIsolated"> Isolated</label>
   </div>
 </div>
 
@@ -141,12 +145,14 @@ const NODE_SPACING = 90;
 const W = window.innerWidth, H = window.innerHeight;
 
 let mode = 'expand';
+let operatorMode = true;   // 𝒢_v expansion operator semantics
 let curLayout = 'stair';
 let layerDepth = 0;
 let stairMode = '3';
 let showExt = false;
 let showLbl = true;
 let showContain = true;
+let showIsolated = false;  // 339/430 F's are parameter-service / ros2cli timers — hide by default
 let simulation = null;
 const exp = new Set();
 
@@ -170,13 +176,39 @@ fetch('fish_graph.json' + window.location.search).then(r => r.json()).then(raw =
   /* ── Comm edges at ALL levels (for proper augmentation) ── */
   const commEdges = raw.edges
     .filter(e => e.rel === "comm")
-    .map(e => ({
-      s: e.source, d: e.target,
-      topic: e.topic || e.service || "",
-      nature: e.nature || "msg",
-      ext: !!e.external,
-      level: e.level || ""
-    }));
+    .map(e => {
+      const topics = [];
+      if (e.topic) topics.push(e.topic);
+      if (e.service) topics.push(e.service);
+      if (Array.isArray(e.topics)) e.topics.forEach(t => topics.push(t));
+      return {
+        s: e.source, d: e.target,
+        topics,                      // always an array (may be empty)
+        tau: e.tau || "",            // InterP / IntraP (used as fallback label)
+        nature: e.nature || "msg",
+        ext: !!e.external,
+        level: e.level || ""
+      };
+    });
+
+  /* ── "Connected" set ──
+   * A node participates in some comm edge (directly OR via a descendant).
+   * Nodes outside this set are typically parameter-service / ros2cli timer
+   * control-plane callbacks — useful to hide by default to declutter.
+   */
+  const _directlyConnected = new Set();
+  commEdges.forEach(e => { _directlyConnected.add(e.s); _directlyConnected.add(e.d); });
+  const connected = new Set(_directlyConnected);
+  // propagate up to ancestors
+  raw.nodes.forEach(n => {
+    if (!_directlyConnected.has(n.id)) return;
+    let cur = parentOf[n.id];
+    while (cur !== undefined) {
+      if (connected.has(cur)) break;
+      connected.add(cur);
+      cur = parentOf[cur];
+    }
+  });
 
   /* ── Visibility ──
    *  Expand mode: parent stays visible when expanded, children appear
@@ -185,14 +217,23 @@ fetch('fish_graph.json' + window.location.search).then(r => r.json()).then(raw =
   function isVis(id) {
     const n = byId[id]; if (!n) return false;
     if (n.external) return showExt;
+    // Isolated-node filter: nodes with no comm-edge participation (directly
+    // or transitively through descendants) are hidden unless the user opts in.
+    if (!showIsolated && !connected.has(id)) return false;
 
     if (mode === 'layer') {
       const eff = layerDepth >= 99 ? Infinity : layerDepth;
       return n.level <= eff;
     }
 
-    // Expand mode: visible if top-level OR parent is expanded
+    // Expand mode.
+    //   operator OFF : parent stays visible alongside its expanded children
+    //                  (original behavior — additive expansion).
+    //   operator ON  : formal expansion operator 𝒢_v — clicked v VANISHES,
+    //                  its membership-set Z_v takes its place, and edges are
+    //                  recomputed via visAnc() (handled in getVisCommEdges).
     const p = parentOf[id];
+    if (operatorMode && exp.has(id)) return false;   // v removed
     return p === undefined || exp.has(p);
   }
 
@@ -211,13 +252,17 @@ fetch('fish_graph.json' + window.location.search).then(r => r.json()).then(raw =
       if (e.ext && !showExt) return;
       const s = visAnc(e.s), d = visAnc(e.d);
       if (!s || !d || s === d) return;
-      const k = s < d ? s + "-" + d : d + "-" + s;
       const dk = s + "->" + d;  // directed key
-      if (!m[dk]) m[dk] = {source: s, target: d, topics: new Set(), cnt: 0, nature: e.nature, ext: e.ext};
+      if (!m[dk]) m[dk] = {source: s, target: d, topics: new Set(), taus: new Set(), cnt: 0, nature: e.nature, ext: e.ext};
       m[dk].cnt++;
-      if (e.topic) m[dk].topics.add(e.topic);
+      (e.topics || []).forEach(t => m[dk].topics.add(t));
+      if (e.tau) m[dk].taus.add(e.tau);
     });
-    return Object.values(m).map(e => ({...e, topics: [...e.topics]}));
+    return Object.values(m).map(e => ({
+      ...e,
+      topics: [...e.topics],
+      tau: [...e.taus].join("/")   // e.g. "InterP" or "InterP/IntraP" if mixed
+    }));
   }
 
   /* ── Containment edges between visible parent-child pairs ── */
@@ -386,8 +431,164 @@ fetch('fish_graph.json' + window.location.search).then(r => r.json()).then(raw =
       Object.entries(tc).map(([k, v]) => k + ":" + v).join(" ");
   }
 
+  /* ── Operator clusters: outline around descendants of expanded nodes ──
+   *  When operatorMode is ON, an expanded vertex v vanishes — but its
+   *  membership-set Z_v should still be visually grouped so the audience
+   *  sees WHERE the now-visible children came from. We draw a dashed
+   *  rounded-rect with v's label as a header behind each surviving cluster.
+   *  Nested expansions produce nested rects (outer = ancestor, inner = child).
+   */
+  function visibleDescendantsOf(id) {
+    const out = [];
+    const stack = [...(childrenOf[id] || [])];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (isVis(cur)) out.push(cur);
+      else if (exp.has(cur)) stack.push(...(childrenOf[cur] || []));
+    }
+    return out;
+  }
+
+  function drawClusters(vnMap) {
+    if (!operatorMode || mode !== 'expand') return null;
+    const expandedSorted = [...exp].sort((a, b) =>
+        (byId[a].level || 0) - (byId[b].level || 0));
+    const typeColor = {
+      CN: {fill:"#E8DAEF", stroke:"#8E44AD"},
+      EX: {fill:"#5DADE2", stroke:"#2980B9"},
+      N:  {fill:"#58D68D", stroke:"#27AE60"},
+      E:  {fill:"#F4D03F", stroke:"#D4AC0D"},
+      F:  {fill:"#BBB",    stroke:"#666"}
+    };
+    const data = expandedSorted.map(id => {
+      const anc = byId[id];
+      if (!anc) return null;
+      const descs = visibleDescendantsOf(id).map(d => vnMap[d]).filter(Boolean);
+      return descs.length ? {
+        id, anc, descs,
+        color: typeColor[anc.type] || {fill:"#999", stroke:"#444"}
+      } : null;
+    }).filter(Boolean);
+    if (!data.length) return null;
+
+    const clusterG = g.append("g").attr("class", "clusters").attr("pointer-events", "none");
+    const rects = clusterG.selectAll("rect.cluster").data(data).enter()
+      .append("rect").attr("class", "cluster")
+        .attr("rx", 12).attr("ry", 12)
+        .attr("fill", d => d.color.fill).attr("fill-opacity", 0.07)
+        .attr("stroke", d => d.color.stroke).attr("stroke-opacity", 0.55)
+        .attr("stroke-width", 1.4).attr("stroke-dasharray", "5,3");
+    const labels = clusterG.selectAll("text.clabel").data(data).enter()
+      .append("text").attr("class", "clabel")
+        .attr("fill", d => d.color.stroke).attr("fill-opacity", 0.9)
+        .attr("font-size", 11).attr("font-weight", 600)
+        .text(d => {
+          const lbl = (d.anc.label || String(d.anc.id))
+              .replace(/^ext:/, "").replace(/\s*\(PID:\d+\)$/, "");
+          return `${d.anc.type} : ${lbl}`;
+        });
+
+    const innerPad = 24, headerH = 16, levelPad = 18;
+    // outer-first ordering: data[0] is the outermost, data[N-1] the innermost.
+    // Outer rects get progressively MORE padding so nested rects (and their
+    // labels) sit visibly separated instead of stacking on the same edge.
+    data.forEach((c, i) => {
+      c.pad = innerPad + (data.length - 1 - i) * levelPad;
+    });
+    function update() {
+      data.forEach(c => {
+        const xs = c.descs.map(p => p.x), ys = c.descs.map(p => p.y);
+        c.minX = Math.min(...xs) - c.pad;
+        c.maxX = Math.max(...xs) + c.pad;
+        c.minY = Math.min(...ys) - c.pad - headerH;
+        c.maxY = Math.max(...ys) + c.pad;
+      });
+      rects
+        .attr("x", c => c.minX).attr("y", c => c.minY)
+        .attr("width", c => c.maxX - c.minX)
+        .attr("height", c => c.maxY - c.minY);
+      labels
+        .attr("x", c => c.minX + 10)
+        .attr("y", c => c.minY + headerH - 2);
+    }
+    update();
+    return update;
+  }
+
+  /* ── Force-mode cluster bubbles: transparent circles tracking descendants ──
+   *  In force layout the children move continuously, so we cannot draw a
+   *  static box. Instead, each frame we recompute centroid + bounding radius
+   *  of the descendants of each expanded vertex, and render a translucent
+   *  circle with v's label at the top edge.
+   */
+  function drawClustersForce(vnMap) {
+    if (!operatorMode || mode !== 'expand') return null;
+    const expandedSorted = [...exp].sort((a, b) =>
+        (byId[a].level || 0) - (byId[b].level || 0));
+    const typeColor = {
+      CN: {fill:"#E8DAEF", stroke:"#8E44AD"},
+      EX: {fill:"#5DADE2", stroke:"#2980B9"},
+      N:  {fill:"#58D68D", stroke:"#27AE60"},
+      E:  {fill:"#F4D03F", stroke:"#D4AC0D"},
+      F:  {fill:"#BBB",    stroke:"#666"}
+    };
+    const data = expandedSorted.map(id => {
+      const anc = byId[id];
+      if (!anc) return null;
+      const descs = visibleDescendantsOf(id).map(d => vnMap[d]).filter(Boolean);
+      return descs.length ? {
+        id, anc, descs,
+        color: typeColor[anc.type] || {fill:"#999", stroke:"#444"},
+        cx: 0, cy: 0, r: 0
+      } : null;
+    }).filter(Boolean);
+    if (!data.length) return null;
+
+    const clusterG = g.append("g").attr("class", "clusters force")
+        .attr("pointer-events", "none");
+    const circles = clusterG.selectAll("circle.cluster").data(data).enter()
+      .append("circle").attr("class", "cluster")
+        .attr("fill", d => d.color.fill).attr("fill-opacity", 0.08)
+        .attr("stroke", d => d.color.stroke).attr("stroke-opacity", 0.55)
+        .attr("stroke-width", 1.4).attr("stroke-dasharray", "5,3");
+    const labels = clusterG.selectAll("text.clabel").data(data).enter()
+      .append("text").attr("class", "clabel")
+        .attr("fill", d => d.color.stroke).attr("fill-opacity", 0.9)
+        .attr("font-size", 11).attr("font-weight", 600)
+        .attr("text-anchor", "middle")
+        .text(d => {
+          const lbl = (d.anc.label || String(d.anc.id))
+              .replace(/^ext:/, "").replace(/\s*\(PID:\d+\)$/, "");
+          return `${d.anc.type} : ${lbl}`;
+        });
+
+    return function update() {
+      data.forEach(c => {
+        let cx = 0, cy = 0;
+        c.descs.forEach(p => { cx += p.x; cy += p.y; });
+        cx /= c.descs.length; cy /= c.descs.length;
+        let r = 0;
+        c.descs.forEach(p => {
+          const dx = p.x - cx, dy = p.y - cy;
+          const dd = Math.sqrt(dx * dx + dy * dy);
+          if (dd > r) r = dd;
+        });
+        // outer clusters need extra room so the EX/N/E labels don't sit on
+        // top of each other. Use cluster index in outer→inner order as a
+        // stacking offset: outermost gets the biggest radius padding.
+        const depthFromInner = data.length - 1 - data.indexOf(c);
+        r += (R[c.anc.type] || 8) + 28 + depthFromInner * 20;
+        c.cx = cx; c.cy = cy; c.r = r;
+      });
+      circles.attr("cx", c => c.cx).attr("cy", c => c.cy).attr("r", c => c.r);
+      labels.attr("x", c => c.cx).attr("y", c => c.cy - c.r - 6);
+    };
+  }
+
   /* ── Render: Tree / Stair ── */
   function renderTree(vn, commE, containE, vnMap) {
+    // Operator clusters at the very back (returns updater for drag)
+    const updateClusters = drawClusters(vnMap);
     // Containment edges first (behind)
     const cLink = g.append("g").selectAll("path").data(containE).enter().append("path")
       .attr("class", "link contains")
@@ -414,9 +615,9 @@ fetch('fish_graph.json' + window.location.search).then(r => r.json()).then(raw =
     const node = g.append("g").selectAll("g").data(vn, d => d.id).enter().append("g")
       .attr("class", nodeClass)
       .attr("transform", d => `translate(${d.x},${d.y})`)
-      .call(d3.drag().on("drag", (e, d) => {
+      .call(d3.drag().on("drag", function (e, d) {
         d.x = e.x; d.y = e.y;
-        d3.select(e.sourceEvent.target.parentNode).attr("transform", `translate(${d.x},${d.y})`);
+        d3.select(this).attr("transform", `translate(${d.x},${d.y})`);
         cLink.attr("d", ed => {
           const sn = vnMap[ed.source], dn = vnMap[ed.target];
           return sn && dn ? straightPath(sn.x, sn.y, dn.x, dn.y) : "";
@@ -425,6 +626,7 @@ fetch('fish_graph.json' + window.location.search).then(r => r.json()).then(raw =
           const sn = vnMap[ed.source], dn = vnMap[ed.target];
           return sn && dn ? orthoPath(sn.x, sn.y, dn.x, dn.y) : "";
         });
+        if (updateClusters) updateClusters();
       }));
 
     node.append("circle").attr("r", d => R[d.type] || 8);
@@ -446,6 +648,9 @@ fetch('fish_graph.json' + window.location.search).then(r => r.json()).then(raw =
     const commData = commE.map(e => ({...e, linkType: 'comm'}));
     const containData = containE.map(e => ({...e, linkType: 'contain'}));
     const allLinkData = [...commData, ...containData];
+
+    // Operator clusters (very back) — dynamic circles that follow descendants.
+    const updateClusters = drawClustersForce(vnMap);
 
     // Containment edges
     const cLink = g.append("g").selectAll("path").data(containData).enter().append("path")
@@ -471,14 +676,15 @@ fetch('fish_graph.json' + window.location.search).then(r => r.json()).then(raw =
       .force("link", d3.forceLink(allLinkData).id(d => d.id)
         .distance(d => d.linkType === 'contain' ? 80 : 140)
         .strength(d => d.linkType === 'contain' ? 1.0 : 0.4))
-      .force("charge", d3.forceManyBody().strength(-350))
+      .force("charge", d3.forceManyBody().strength(-500))
       .force("center", d3.forceCenter(W / 2, H / 2))
-      .force("collide", d3.forceCollide().radius(d => (R[d.type] || 8) + 18))
+      .force("collide", d3.forceCollide().radius(d => (R[d.type] || 8) + 28))
       .force("y", d3.forceY().y(d => levelY[d.type] || H / 2).strength(0.06))
       .on("tick", () => {
         node.attr("transform", d => `translate(${d.x},${d.y})`);
         hLink.attr("d", forceLinkPath);
         cLink.attr("d", forceLinkPath);
+        if (updateClusters) updateClusters();
       });
 
     node.call(d3.drag()
@@ -556,7 +762,9 @@ fetch('fish_graph.json' + window.location.search).then(r => r.json()).then(raw =
       } else {
         const topics = d.topics || [];
         const t = topics.length <= 3 ? topics.join(", ") : topics.slice(0, 3).join(", ") + ` +${topics.length - 3}`;
-        tt.textContent = `${d.nature} (${d.cnt} edges): ${t || "?"}`;
+        const tauTag = d.tau ? ` [${d.tau}]` : "";
+        const payload = t || (d.tau ? `(no topic — ${d.tau} aggregate)` : "(no topic)");
+        tt.textContent = `${d.nature} (${d.cnt} edges)${tauTag}: ${payload}`;
       }
       tt.style.display = "block";
       tt.style.left = (ev.pageX + 12) + "px"; tt.style.top = (ev.pageY - 10) + "px";
@@ -668,9 +876,11 @@ fetch('fish_graph.json' + window.location.search).then(r => r.json()).then(raw =
 
   document.getElementById('stairMode').onchange = function () { stairMode = this.value; rebuild(); };
   document.getElementById('collapseAll').onclick = () => { exp.clear(); rebuild(); };
+  document.getElementById('operatorMode').onchange = function () { operatorMode = this.checked; rebuild(); };
   document.getElementById('showExternal').onchange = function () { showExt = this.checked; rebuild(); };
   document.getElementById('showLabels').onchange = function () { showLbl = this.checked; rebuild(); };
   document.getElementById('showContain').onchange = function () { showContain = this.checked; rebuild(); };
+  document.getElementById('showIsolated').onchange = function () { showIsolated = this.checked; rebuild(); };
 
   rebuild();
 });

@@ -387,9 +387,14 @@ function render(raw, causal) {
     });
     // Distinct pids in lane order — used for color coding + the legend tooltip.
     const distinctPids = [...new Set(curVtids.map(v => vtidToPid.get(v)))];
-    const pidColor = d3.scaleOrdinal()
-      .domain(distinctPids)
-      .range(d3.schemeTableau10.concat(d3.schemePaired));
+    // Red/pink reserved for GPU-submitter bar stroke (#c0392b) and the "⚡ submits
+    // GPU work" badge — so the pid palette must not contain any reddish base.
+    // Tableau10 + Paired with the four red/pink entries removed (18 colors).
+    const PID_PALETTE = [
+      '#4e79a7','#f28e2c','#76b7b2','#59a14f','#edc949','#af7aa1','#9c755f','#bab0ab',
+      '#a6cee3','#1f78b4','#b2df8a','#33a02c','#fdbf6f','#ff7f00','#cab2d6','#6a3d9a','#ffff99','#b15928'
+    ];
+    const pidColor = d3.scaleOrdinal().domain(distinctPids).range(PID_PALETTE);
 
     // Layout: try to fit all lanes within viewport. If the per-lane height would
     // drop below MIN_LANE, use MIN_LANE instead and let the wrapper scroll.

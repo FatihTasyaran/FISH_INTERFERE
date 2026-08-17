@@ -309,9 +309,14 @@ function render(raw, causal) {
   pidSel.value = '';
   pidSel.onchange = () => { traceState = null; draw(); };
 
-  // Color: ROS node
+  // Color: ROS node. Red/pink reserved for GPU-submitter mark — keep this
+  // palette red-free (Tableau10 + Set3 + Paired minus reds = 28 colors).
   const nodes = [...new Set(spans.map(s => s.node))].sort();
-  const palette = d3.schemeTableau10.concat(d3.schemeSet3, d3.schemePaired);
+  const palette = [
+    '#4e79a7','#f28e2c','#76b7b2','#59a14f','#edc949','#af7aa1','#9c755f','#bab0ab',
+    '#a6cee3','#1f78b4','#b2df8a','#33a02c','#fdbf6f','#ff7f00','#cab2d6','#6a3d9a','#ffff99','#b15928',
+    '#8dd3c7','#ffffb3','#bebada','#80b1d3','#fdb462','#b3de69','#d9d9d9','#bc80bd','#ccebc5','#ffed6f'
+  ];
   const colorFor = new Map(nodes.map((n,i) => [n, palette[i % palette.length]]));
   const muted = new Set();
 
@@ -450,9 +455,15 @@ function render(raw, causal) {
     // Executor gets a categorical palette color; each node within that executor
     // gets an HSL-equal-step shade of its executor's color.
     const distinctPids = [...new Set(curCbs.map(c => cbInfo.get(c).pid))];
-    pidColor = d3.scaleOrdinal()
-      .domain(distinctPids)
-      .range(d3.schemeTableau10.concat(d3.schemePaired));
+    // Red/pink reserved for GPU-submitter bar stroke (#c0392b) and the "⚡ submits
+    // GPU work" badge — so the pid palette must not contain any reddish base.
+    // Otherwise pids (and their HSL-shade descendants) collide with the GPU mark.
+    // Tableau10 + Paired with the four red/pink entries removed (18 colors).
+    const PID_PALETTE = [
+      '#4e79a7','#f28e2c','#76b7b2','#59a14f','#edc949','#af7aa1','#9c755f','#bab0ab',
+      '#a6cee3','#1f78b4','#b2df8a','#33a02c','#fdbf6f','#ff7f00','#cab2d6','#6a3d9a','#ffff99','#b15928'
+    ];
+    pidColor = d3.scaleOrdinal().domain(distinctPids).range(PID_PALETTE);
     // Group nodes per pid → assign shades
     const nodesByPid = {};
     for (const c of curCbs) {
