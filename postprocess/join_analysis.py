@@ -231,6 +231,28 @@ def main():
                 ok = set(join_members) <= got
                 andres[(kind, 'complete' if ok else 'incomplete')] += 1
                 if not ok: missing[(kind, tuple(sorted(label(m) for m in set(join_members) - got)))] += 1
+            # --- automatic classification (see notes/join_semantics_from_traces.txt) ---
+            n_out = len(pubs_i)
+            comp_inputs_lbl = {label(alias2cb.get(cb, cb)) for cb in completers.get(topic, {}) if alias2cb.get(cb, cb) in inputs}
+            comp_timers = {label(alias2cb.get(cb, cb)) for cb in completers.get(topic, {}) if fs.get(alias2cb.get(cb, cb), {}).get('etype') == 'tmr'}
+            n_timer_out = sum(v for (k, kind), v in andres.items() if k == 'timeout') if False else sum(v for k, v in andres.items() if k[0] == 'timeout')
+            n_input_out = n_out - n_timer_out
+            sum_inputs = sum(len(arr[m]) for m in join_members) or 1
+            min_inputs = min((len(arr[m]) for m in join_members), default=0)
+            # bimodality: an input callback with both cheap and heavy executions
+            bimodal = [k for k, v in rec["exec_ms_by_role"].items() if k.endswith('| completer') and v['p50'] > 5 * max(0.001, rec["exec_ms_by_role"].get(k.replace('| completer', '| deposit_only'), {'p50': 0.001})['p50'])]
+            deposit_only_present = any(k.endswith('| deposit_only') and v['n'] > 0 for k, v in rec["exec_ms_by_role"].items())
+            timer_all_incomplete = (n_timer_out > 0 and andres.get(('timeout', 'complete'), 0) == 0)
+            if n_input_out == 0 and n_timer_out > 0:
+                cls = "1b timer-driven"; why = "all outputs come from a timer callback; inputs only deposit"
+            elif len(comp_inputs_lbl) >= 2 and deposit_only_present and n_out <= 1.5 * min_inputs and (n_timer_out == 0 or timer_all_incomplete):
+                cls = "2 AND-join" + (" with timeout" if n_timer_out else ""); why = (f"{len(comp_inputs_lbl)} inputs complete outputs, deposit-only executions exist (bimodal), "
+                       f"outputs {n_out} ≈ min input {min_inputs}" + (", every timer output incomplete" if n_timer_out else ""))
+            elif n_out >= 0.8 * sum_inputs and not deposit_only_present:
+                cls = "1a runs-on-every-message (any/OR)"; why = f"outputs {n_out} ≈ Σ inputs {sum_inputs}, no deposit-only executions"
+            else:
+                cls = "undetermined"; why = f"outputs {n_out}, Σ inputs {sum_inputs}, min {min_inputs}, completers {sorted(comp_inputs_lbl)}, timers {sorted(comp_timers)}"
+            rec["classification"] = {"case": cls, "why": why}
             rec["and_join_test"] = {
                 "members": [label(m) for m in join_members], "window_ms": round(win / 1e6, 1),
                 "counts": {f"{k[0]}|{k[1]}": v for k, v in andres.items()},
@@ -270,6 +292,7 @@ def main():
             print("    execution time by role (ms) — completer = an output publish happened inside the window:")
             for k, v in rec["exec_ms_by_role"].items():
                 print(f"       {k:<75} n={v['n']:>4}  p50={v['p50']:>8.3f}  p90={v['p90']:>8.3f}  max={v['max']:>8.3f}")
+            print(f"    ==> classification: {rec['classification']['case']}  ({rec['classification']['why']})")
             aj = rec["and_join_test"]
             print(f"    AND-join test (members={aj['members']}, window={aj['window_ms']} ms):")
             for k, v in sorted(aj["counts"].items()): print(f"       {v:>4}  {k}")
