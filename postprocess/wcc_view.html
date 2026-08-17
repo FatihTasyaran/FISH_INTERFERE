@@ -126,11 +126,12 @@ function tooltipHTML(d){
   const lines = [`<div class="tt-title">${truncate(nodeLine1(d), 80)}</div>`];
   lines.push(`<div class="tt-row"><span class="tt-key">node</span><span class="tt-val">${d.node || 'external'}</span></div>`);
   lines.push(`<div class="tt-row"><span class="tt-key">etype</span><span class="tt-val">${d.etype}</span></div>`);
-  if (d.delivery){
+  if (d.etype === 'sub'){
     const how = d.delivery === 'ipc' ? 'intra-process (SubscriptionIntraProcess Waitable, executor branch 5)'
-              : d.delivery === 'dds' ? 'DDS (plain Subscription callback)'
-              : 'both paths fired (ipc Waitable + DDS)';
-    lines.push(`<div class="tt-row"><span class="tt-key">delivery</span><span class="tt-val">${d.delivery} — ${how}</span></div>`);
+              : d.delivery === 'dds' ? 'DDS (plain Subscription callback; node is ipc-capable but the publisher lives elsewhere)'
+              : d.delivery === 'both' ? 'both paths fired (ipc Waitable + DDS)'
+              : 'DDS only — intra-process comms not enabled on this node (no SubscriptionIntraProcess Waitable)';
+    lines.push(`<div class="tt-row"><span class="tt-key">delivery</span><span class="tt-val">${d.delivery || 'dds'} — ${how}</span></div>`);
     if (d.ipc_waitable) lines.push(`<div class="tt-row"><span class="tt-key">ipc waitable</span><span class="tt-val">${d.ipc_waitable}</span></div>`);
     if (d.alt_cb_addrs && d.alt_cb_addrs.length) lines.push(`<div class="tt-row"><span class="tt-key">alt cbs</span><span class="tt-val">${d.alt_cb_addrs.join(', ')}</span></div>`);
   }

@@ -998,7 +998,7 @@ def _wcc_to_dot(wcc: dict) -> str:
                 d = n.get('delivery')
                 if d == 'ipc':    tag = 'waitable:sub·ipc'
                 elif d == 'both': tag = 'waitable:sub·ipc+dds'
-                elif d == 'dds':  tag = 'sub·dds'
+                else:             tag = 'sub·dds'   # measured dds, or not ipc-capable (DDS is the only path)
             jr = n.get('join_role')
             jtag = f"  ⋈{jr}" if jr else ''
             # Two-line label via DOT escape "\n"
