@@ -982,20 +982,22 @@ def _components_to_dot(cg, show_infra=False):
         if l['kind'] == 'infra' and not show_infra: continue
         a, b = ids.get(l['src']), ids.get(l['dst'])
         if not a or not b: continue
+        nt = f"{l['n_topics']} topic{'s' if l['n_topics'] != 1 else ''}"
+        ni = f"n={l['flow_n']}" if l.get('flow_n') else ''
         if l['kind'] == 'data':
-            lat = l.get('lat_ns_p50'); lab = f"trigger ×{l['n_topics']}" + (f"  ⌀{lat/1e6:.1f} ms" if lat else '')
+            lat = l.get('lat_ns_p50'); lab = f"trigger · {nt} · {ni}" + (f" · hop ⌀{lat/1e6:.1f} ms" if lat else '')
             style = 'color="#222" penwidth=1.6'
         elif l['kind'] == 'sampled':
             age = l.get('age_ns_p50'); lat = l.get('lat_ns_p50')
-            lab = f"sampled ×{l['n_topics']}" + (f"  age {age/1e6:.0f} ms" if age else '') + (f"  hop ⌀{lat/1e6:.1f} ms" if lat else '')
+            lab = f"sampled · {nt} · {ni}" + (f" · age {age/1e6:.0f} ms" if age else '') + (f" · hop ⌀{lat/1e6:.1f} ms" if lat else '')
             style = 'color="#e07b00" penwidth=1.6 style=dashed arrowhead=onormal'
         elif l['kind'] == 'state':
-            age = l.get('age_ns_p50'); lab = f"state ×{l['n_topics']}" + (f"  age {age/1e6:.0f} ms" if age else '')
+            age = l.get('age_ns_p50'); lab = f"state · {nt} · {ni}" + (f" · age {age/1e6:.0f} ms" if age else '')
             style = 'color="#e07b00" penwidth=1.4 style=dashed arrowhead=onormal'
         elif l['kind'] == 'join':
             lab = 'join'; style = 'color="#1f77b4" style=dotted dir=none'
         else:
-            lab = f"infra ×{l['n_topics']}"; style = 'color="#bbb" style=dashed penwidth=0.8'
+            lab = f"infra · {nt}"; style = 'color="#bbb" style=dashed penwidth=0.8'
         out.append(f'  {a} -> {b} [label="{esc(lab)}" {style}];')
     out.append('}')
     return '\n'.join(out)
