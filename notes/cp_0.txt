@@ -37,28 +37,31 @@ Layer A (taskset) numbers
 
 Layer B (component graph) — core links, r11
 -------------------------------------------
-  from           to             kind     #topics  p50        note
-  /sensing       /perception    trigger  2        40.7 ms    concatenated/pointcloud, pointcloud_raw_ex
-  /sensing       /localization  trigger  3        466 µs     imu_data, concatenated pointcloud, twist
-  /sensing       /localization  sampled  1        689 ms     gnss pose_with_covariance (1 Hz)
-  /localization  /perception    sampled  1        19.5 ms    kinematic_state
-  /localization  /planning      sampled  1        40.9 ms    kinematic_state
-  /localization  /planning      trigger  1        1.6 ms     kinematic_state
-  /localization  /control       sampled  2        37.6 ms    kinematic_state, acceleration
-  /localization  /sensing       trigger  1        704 µs     pose_with_covariance (feedback)
-  /localization  /sensing       sampled  1        22.4 ms    kinematic_state (feedback)
-  /localization  /map           data     2        –          get_partial/differential_pointcloud_map (services)
-  /map           /localization  data     2        –          (service responses)
-  /map           /perception    data     2        71.1 ms    differential map service, vector_map
-  /map           /perception    sampled  1        68.1 s     vector_map (static)
-  /map           /planning      data     1        14.1 ms    vector_map (late join)
-  /system        /control       sampled  2        197.8 ms   emergency control_cmd, mrm_state (10 Hz)
-  /control       /planning      sampled  1        5.2 s      operation_mode/state (static this run)
-  ext:in         /sensing       data     6        –          bag: nav_sat_fix, imu_raw, velodyne_packets
-  ext:in         /control       sampled  1        56.2 ms    steering_status (bag)
-  /control       ext:out        data     6        –          control_cmd family (no vehicle node)
-  /perception    /planning      —        —        —          NOT ACTIVE (zero_exec subs)
-  /planning      /control       —        —        —          NOT ACTIVE
+  #topics = distinct topics behind the arrow; n(inst) = measured message
+  instances (publish↔take pairs / state reads) over the 60 s run; p50 over n.
+  n=0 for service/ext links = no per-instance pairing available.
+  from           to             kind     #topics  n(inst)  p50        note
+  /sensing       /perception    trigger  2        636      40.7 ms    concatenated/pointcloud, pointcloud_raw_ex
+  /sensing       /localization  trigger  3        1730     466 µs     imu_data, concatenated pointcloud, twist
+  /sensing       /localization  sampled  1        30       689 ms     gnss pose_with_covariance (1 Hz)
+  /localization  /perception    sampled  1        1146     19.5 ms    kinematic_state
+  /localization  /planning      sampled  1        1830     40.9 ms    kinematic_state
+  /localization  /planning      trigger  1        3675     1.6 ms     kinematic_state
+  /localization  /control       sampled  2        4372     37.6 ms    kinematic_state, acceleration
+  /localization  /sensing       trigger  1        209      704 µs     pose_with_covariance (feedback)
+  /localization  /sensing       sampled  1        1229     22.4 ms    kinematic_state (feedback)
+  /localization  /map           data     2        0        –          get_partial/differential_pointcloud_map (services)
+  /map           /localization  data     2        0        –          (service responses)
+  /map           /perception    data     2        8        71.1 ms    differential map service, vector_map
+  /map           /perception    sampled  1        1        68.1 s     vector_map (static)
+  /map           /planning      data     1        1        14.1 ms    vector_map (late join)
+  /system        /control       sampled  2        1193     197.8 ms   emergency control_cmd, mrm_state (10 Hz)
+  /control       /planning      sampled  1        2        5.2 s      operation_mode/state (static this run)
+  ext:in         /sensing       data     6        0        –          bag: nav_sat_fix, imu_raw, velodyne_packets
+  ext:in         /control       sampled  1        1        56.2 ms    steering_status (bag)
+  /control       ext:out        data     6        0        –          control_cmd family (no vehicle node)
+  /perception    /planning      —        —        —        —          NOT ACTIVE (zero_exec subs)
+  /planning      /control       —        —        —        —          NOT ACTIVE
 
 Verdict vs the "High-level architecture design" picture
 --------------------------------------------------------
