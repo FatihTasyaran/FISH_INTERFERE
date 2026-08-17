@@ -822,15 +822,29 @@ def _namespace_views(fnodes, edges, min_f=2):
         by_ns.setdefault(ns, set()).add(fid)
     views = []
     for ns, fids in sorted(by_ns.items()):
-        # pull in ext boundary nodes touching this namespace
-        touching = set(fids)
+        # pull in 1-hop neighbours outside the namespace (ext boundary nodes AND
+        # foreign F's in other namespaces) so cross-namespace links are visible;
+        # foreign F's are flagged and drawn faded by _wcc_to_dot.
+        touching = set(fids); foreign = set()
         for e in edges:
-            if e['src'] in fids and fnodes[e['dst']].get('ptype') == 'ext': touching.add(e['dst'])
-            if e['dst'] in fids and fnodes[e['src']].get('ptype') == 'ext': touching.add(e['src'])
+            if e['edge_class'] == 'infra':
+                continue   # /tf, /clock, /diagnostics publishers would drag half the graph in
+            if e['src'] in fids and e['dst'] not in fids: touching.add(e['dst']); foreign.add(e['dst'])
+            if e['dst'] in fids and e['src'] not in fids: touching.add(e['src']); foreign.add(e['src'])
         if len(fids) < min_f:
             continue
-        v_nodes = [fnodes[f] for f in sorted(touching)]
-        v_edges = [e for e in edges if e['src'] in touching and e['dst'] in touching]
+        v_nodes = []
+        for f in sorted(touching):
+            n = dict(fnodes[f])
+            if f in foreign and n.get('ptype') != 'ext':
+                n['foreign'] = True
+            v_nodes.append(n)
+        # edges: within the namespace + the boundary edges to neighbours (not
+        # neighbour↔neighbour, which would drag in other subsystems' internals)
+        v_edges = [e for e in edges
+                   if (e['src'] in fids and e['dst'] in fids)                                   # inside: data + infra (dashed)
+                   or (e['edge_class'] != 'infra' and ((e['src'] in fids and e['dst'] in touching)
+                                                       or (e['dst'] in fids and e['src'] in touching)))]  # boundary: data only
         n_infra = sum(1 for e in v_edges if e['edge_class'] == 'infra')
         views.append({
             'idx': f'ns:{ns}', 'kind': 'namespace', 'namespace': ns,
@@ -941,7 +955,10 @@ def _wcc_to_dot(wcc: dict) -> str:
 
     by_node = defaultdict(list)
     for n in nodes:
-        by_node[n.get('node') or '__external__'].append(n)
+        key = n.get('node') or '__external__'
+        if n.get('foreign'):
+            key = f"{n.get('node_full') or key}  (other namespace)"
+        by_node[key].append(n)
 
     out = []
     out.append('digraph wcc {')
@@ -959,8 +976,10 @@ def _wcc_to_dot(wcc: dict) -> str:
     for nm, items in sorted(by_node.items()):
         safe = re.sub(r'\W+', '_', nm)
         out.append(f'  subgraph cluster_{safe} {{')
-        out.append(f'    label="{_dot_escape(nm)}"; style="rounded"; '
-                   f'bgcolor="#fafafa"; color="#888"; fontsize=10;')
+        is_foreign = nm.endswith('(other namespace)')
+        out.append(f'    label="{_dot_escape(nm)}"; style="rounded{",dashed" if is_foreign else ""}"; '
+                   f'bgcolor="{"#ffffff" if is_foreign else "#fafafa"}"; color="{"#ccc" if is_foreign else "#888"}"; '
+                   f'fontcolor="{"#999" if is_foreign else "#000"}"; fontsize=10;')
         for n in items:
             etype = n.get('etype', 'ext')
             fill = _ETYPE_FILL.get(etype, '#ffffff')
@@ -986,9 +1005,12 @@ def _wcc_to_dot(wcc: dict) -> str:
             line1 = f"[{tag}]{jtag} {ent_label}" if etype != 'ext' else ent_label
             label = f"{_dot_escape(line1)}\\n{_dot_escape(cb)}"
             style = 'filled,rounded' + (',dashed' if n.get('delivery') in ('ipc', 'both') else '')
+            fontcolor = '#000000'
+            if n.get('foreign'):
+                fill = '#f2f2f2'; border = '#bbbbbb'; fontcolor = '#777777'
             out.append(
                 f'    n{n["id"]} [id="n{n["id"]}" label="{label}" style="{style}" '
-                f'fillcolor="{fill}" color="{border}" penwidth={penw}];'
+                f'fillcolor="{fill}" color="{border}" fontcolor="{fontcolor}" penwidth={penw}];'
             )
         out.append('  }')
 
