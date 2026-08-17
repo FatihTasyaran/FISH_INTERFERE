@@ -1020,10 +1020,12 @@ def _wcc_to_dot(wcc: dict) -> str:
         if e.get('nature') == 'gxf_internal':
             color = '#2ca02c'; pw = '2'
             label = 'GXF'
-        elif e.get('nature') == 'join':
-            # join membership tie (detect_joins): not a message hop
+        extra = ''
+        if e.get('nature') == 'join':
+            # join membership tie (detect_joins): not a message hop → no arrowhead,
+            # does not constrain the layout rank
             color = '#1f77b4'; pw = '1.5'; style = 'dotted'
-            label = 'join'
+            label = 'join'; extra = ' dir=none constraint=false'
         elif e.get('edge_class') == 'infra':
             color = '#bbbbbb'; pw = '0.8'; style = 'dashed'
             label = topic
@@ -1033,7 +1035,7 @@ def _wcc_to_dot(wcc: dict) -> str:
         out.append(
             f'  n{e["src"]} -> n{e["dst"]} '
             f'[label="{_dot_escape(label)}" color="{color}" fontcolor="{color}" '
-            f'penwidth={pw} style={style}];'
+            f'penwidth={pw} style={style}{extra}];'
         )
     out.append('}')
     return '\n'.join(out)
