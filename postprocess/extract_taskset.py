@@ -106,7 +106,7 @@ def fetch_callbacks(cur, session_id: str, scope: str) -> list[dict]:
     """Return one row per F callback with attached entity + node + executor metadata."""
     cur.execute("""
         SELECT
-          f.node_id AS f_id, f.cb_addr, f.label AS cb_symbol,
+          f.node_id AS f_id, f.cb_addr, f.label AS cb_symbol, f.attrs AS f_attrs,
           e.node_id AS e_id, e.etype, e.label AS entity_label, e.attrs AS e_attrs,
           n.label AS node_label,
           ex.label AS ex_label, ex.pid AS ex_pid, ex.attrs AS ex_attrs
@@ -281,6 +281,12 @@ def main():
             "period_source": source,
             "exec_time": _exec_time_stats(execs),
             "symbol": cb["cb_symbol"],
+            # Executor branch-5 dispatch: this sub is delivered intra-process
+            # via a SubscriptionIntraProcess Waitable (model_improved_pg binds
+            # the Waitable ptr to this F). Consumers can show the outer
+            # dispatch span / count under the same task instead of "unknown".
+            "intra_proc": bool((cb.get("f_attrs") or {}).get("intra_proc")),
+            "intra_proc_waitable": (cb.get("f_attrs") or {}).get("intra_proc_waitable"),
         })
 
     # Hyperperiod = LCM of tmr-nominal periods only. Subs no longer claim a

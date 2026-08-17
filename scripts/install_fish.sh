@@ -49,6 +49,13 @@ else
     echo "[FISH] WARNING: config/fish_settings.ini not found, using defaults"
 fi
 
+# --- Copy DDS vendor configs (e.g. cyclonedds_autoware.xml) ---
+# Referenced from fish_settings.ini [ros] cyclonedds_uri; the ros2 wrapper
+# exports CYCLONEDDS_URI=file://$FISH_ROOT/<name> when appropriate.
+for _xml in "$CONFIG_DIR"/*.xml; do
+    [[ -f "$_xml" ]] && cp "$_xml" $FISH_ROOT/
+done
+
 # --- Generate trace session script (bash) ---
 cat > $FISH_SCRIPTS/trace_session.sh << TRACE_EOF
 #!/bin/bash
@@ -330,6 +337,62 @@ fi
 
 # --- Automatic tracing when FISH_ENABLED=1 ---
 if [[ "\$FISH_ENABLED" == "1" && ("\$1" == "run" || "\$1" == "launch") ]]; then
+    # --- RMW guard (2026-08-16) ---
+    # Non-interactive shells (bash -lc, docker run ... bash -c) do NOT source
+    # ~/.bashrc, so an image-level "export RMW_IMPLEMENTATION=..." there is
+    # silently lost and ROS 2 falls back to rmw_fastrtps_cpp. Five Autoware
+    # sessions produced 0 CUDA kernels for exactly this reason. Resolution
+    # order: (1) env already set → keep; (2) [ros] rmw_implementation in
+    # fish_settings.ini → export it; (3) leave unset but say so loudly.
+    if [[ -z "\$RMW_IMPLEMENTATION" ]]; then
+        INI_RMW=\$(python3 - <<'PYRMW' 2>/dev/null
+import configparser
+c = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+c.read("/opt/ros/humble/fish/fish_settings.ini")
+print(c.get("ros", "rmw_implementation", fallback="").strip())
+PYRMW
+)
+        if [[ -n "\$INI_RMW" ]]; then
+            export RMW_IMPLEMENTATION="\$INI_RMW"
+            echo "[FISH] RMW_IMPLEMENTATION was unset → using '\$INI_RMW' from fish_settings.ini [ros]"
+        else
+            echo "[FISH] WARNING: RMW_IMPLEMENTATION unset → ROS 2 default (rmw_fastrtps_cpp)."
+            echo "[FISH]          Autoware requires rmw_cyclonedds_cpp; set it in the env or in"
+            echo "[FISH]          fish_settings.ini [ros] rmw_implementation."
+        fi
+    fi
+    echo "[FISH] Effective RMW_IMPLEMENTATION=\${RMW_IMPLEMENTATION:-<unset → rmw_fastrtps_cpp>}"
+
+    # CycloneDDS config: without CYCLONEDDS_URI Cyclone runs with
+    # MaxMessageSize ~14.7 kB and default socket buffers → large sensor
+    # frames (top Velodyne ~600 kB) get lost in IP-fragment reassembly.
+    if [[ "\$RMW_IMPLEMENTATION" == "rmw_cyclonedds_cpp" && -z "\$CYCLONEDDS_URI" ]]; then
+        INI_CDDS=\$(python3 - <<'PYCDDS' 2>/dev/null
+import configparser
+c = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+c.read("/opt/ros/humble/fish/fish_settings.ini")
+print(c.get("ros", "cyclonedds_uri", fallback="").strip())
+PYCDDS
+)
+        if [[ -n "\$INI_CDDS" ]]; then
+            case "\$INI_CDDS" in
+                file://*|/*) CDDS_URI="\$INI_CDDS" ;;
+                *)           CDDS_URI="file://\$FISH_ROOT/\$INI_CDDS" ;;
+            esac
+            CDDS_PATH="\${CDDS_URI#file://}"
+            if [[ -f "\$CDDS_PATH" ]]; then
+                export CYCLONEDDS_URI="\$CDDS_URI"
+                echo "[FISH] CYCLONEDDS_URI was unset → using '\$CDDS_URI' from fish_settings.ini [ros]"
+            else
+                echo "[FISH] WARNING: [ros] cyclonedds_uri points to missing file: \$CDDS_PATH"
+            fi
+        else
+            echo "[FISH] NOTE: CYCLONEDDS_URI unset (Cyclone defaults: MaxMessageSize ~14.7kB) —"
+            echo "[FISH]       Autoware needs config/cyclonedds_autoware.xml; set [ros] cyclonedds_uri."
+        fi
+    fi
+    echo "[FISH] Effective CYCLONEDDS_URI=\${CYCLONEDDS_URI:-<unset>}"
+
     \$FISH_SCRIPTS/trace_session.sh start
     trap "\$FISH_SCRIPTS/trace_session.sh stop; exit 0" SIGTERM SIGINT
     \$FISH_SCRIPTS/trace_session.sh inc

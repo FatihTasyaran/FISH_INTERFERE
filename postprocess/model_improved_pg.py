@@ -312,14 +312,31 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
     # sub/serv/tmr: it dispatches via Executor::execute_waitable and we wrap
     # that dispatch with callback_start/end using the Waitable's `this` ptr
     # as the cb-id. The same `this` is the entity's cb_addr.
+    #
+    # IntraProcessManager::add_subscription emits with node_handle=nullptr
+    # ("0x0") for intra-process subscription Waitables — those are NOT
+    # standalone entities, they're internal dispatch shims behind a parent
+    # rclcpp::Subscription that already has its own sub entity. We keep the
+    # event in the trace (for completeness + receive/publish attribution)
+    # but skip creating a Waitable entity for it, otherwise each intra-proc
+    # sub would emit a singleton "waitable@xxxx" node into the FT graph.
     waitables_by_node: dict[str, list[tuple[str, str]]] = {}
+    intra_proc_waitables_skipped = 0
     for d in _all_events(session_id, "ros2:fish_rclcpp_waitable_init"):
         p = d["payload"]
         nh = p.get("node_handle")
         wp = p.get("waitable")
         cg = p.get("callback_group")
-        if nh and wp:
-            waitables_by_node.setdefault(nh, []).append((wp, cg))
+        if not wp:
+            continue
+        if not nh or nh == "0x0":
+            intra_proc_waitables_skipped += 1
+            continue
+        waitables_by_node.setdefault(nh, []).append((wp, cg))
+    if intra_proc_waitables_skipped:
+        log(f"  Waitables: {intra_proc_waitables_skipped} intra-proc "
+            f"(IntraProcessManager-registered) — no standalone entity; bound to "
+            f"their parent sub entity/F in identify_callbacks via rclcpp_subscription_init")
 
     for node_id, node in nodes.items():
         full_name = node.A_v["full_name"]
@@ -488,8 +505,41 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
     rclcpp_sub_objs_by_handle = _group_all(rclcpp_sub_init, "subscription_handle", "subscription")
     rclcpp_sub_cb_all_by_sub = _group_all(rclcpp_sub_cb_added, "subscription", "callback")
 
+    # Intra-process subscriptions (rclcpp Humble): Subscription::post_init_setup
+    # creates a SubscriptionIntraProcess Waitable and emits a SECOND
+    # rclcpp_subscription_init(rcl_handle, <intra-proc obj>) plus a
+    # rclcpp_subscription_callback_added(<intra-proc obj>, &callback-copy).
+    # Our IntraProcessManager::add_subscription patch emits
+    # fish_rclcpp_waitable_init(<intra-proc obj>, node_handle=nullptr).
+    # Joining the two gives every intra-proc Waitable its (node, topic):
+    #   waitable ptr → rcl sub handle → topic (rcl_subscription_init) → node.
+    # Verified on Autoware fish_20260816_165836: 141/141 intra-proc Waitables
+    # matched, and outer-Waitable dispatch count == inner callback count.
+    _intra_wait_ptrs: set[str] = set()
+    for d in _all_events(session_id, "ros2:fish_rclcpp_waitable_init"):
+        p = d["payload"]
+        if p.get("waitable") and (not p.get("node_handle") or p.get("node_handle") == "0x0"):
+            _intra_wait_ptrs.add(p["waitable"])
+    intra_wait_by_handle: dict[str, str] = {}
+    for d in rclcpp_sub_init:
+        p = d["payload"]
+        if p["subscription"] in _intra_wait_ptrs:
+            intra_wait_by_handle[p["subscription_handle"]] = p["subscription"]
+    if _intra_wait_ptrs:
+        _bound_ptrs = set(intra_wait_by_handle.values())
+        log(f"  Intra-proc Waitables: {len(_intra_wait_ptrs)} distinct ptrs registered, "
+            f"{len(_bound_ptrs)} matched to rclcpp_subscription_init "
+            f"({len(intra_wait_by_handle)} handle bindings; "
+            f"{len(_intra_wait_ptrs) - len(_bound_ptrs)} unmatched)")
+
+    # Alternate FIRING callbacks per sub_handle that are not the primary F's
+    # cb_addr but belong to the same entity (see intra-proc note below).
+    # identify_callbacks attaches them to the entity as alt_cb_addrs so
+    # attribution (cb_to_entity) and the firing_cb_without_F check see them.
+    alt_cbs_by_handle: dict[str, list[str]] = {}
+
     def _resolve_sub_handle_to_cb(sub_handle: str, topic: str = "") -> str | None:
-        """Pick the active callback for a sub_handle, preferring firing ones.
+        """Pick the primary callback for a sub_handle, preferring firing ones.
         Logs warnings on disambiguation."""
         sub_objs = rclcpp_sub_objs_by_handle.get(sub_handle, [])
         if not sub_objs:
@@ -503,8 +553,28 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
             return None
         if len(candidates) == 1:
             return candidates[0]
-        # Multiple callbacks registered for this sub_handle — typical NITROS case
         firing = [c for c in candidates if c in _firing_cbs]
+        # Intra-process-enabled sub: TWO rclcpp objects share the rcl handle —
+        # the plain Subscription (callback runs for DDS / inter-process
+        # deliveries) and its SubscriptionIntraProcess Waitable (callback copy
+        # runs for same-process deliveries via executor branch 5). Both paths
+        # are live at once; which one fires depends on where the publisher
+        # lives (Autoware r7: concat's before_sync subs fire the DDS copy
+        # because the per-lidar preprocessors are separate containers, while
+        # centerpoint's concatenated/pointcloud sub fires the intra-proc copy).
+        # Primary F = the intra-proc copy IF it fired (branch-5 dispatch),
+        # else the firing DDS copy; every other firing copy is kept as an
+        # alternate cb of the same entity. Not a NITROS duplicate — no warn.
+        ip_obj = intra_wait_by_handle.get(sub_handle)
+        if ip_obj:
+            ip_cbs = [c for c in rclcpp_sub_cb_all_by_sub.get(ip_obj, []) if c in candidates]
+            fired_ip = [c for c in ip_cbs if c in _firing_cbs]
+            primary = (fired_ip or firing or ip_cbs or candidates)[0]
+            alts = [c for c in firing if c != primary]
+            if alts:
+                alt_cbs_by_handle[sub_handle] = alts
+            return primary
+        # Multiple callbacks registered for this sub_handle — typical NITROS case
         if len(firing) == 1:
             warn(
                 "nitros_duplicate_sub",
@@ -518,6 +588,7 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                 f"sub_handle={sub_handle} topic={topic!r} had {len(firing)} "
                 f"firing cb_addrs, keeping first {firing[0]}",
             )
+            alt_cbs_by_handle[sub_handle] = firing[1:]
             return firing[0]
         warn(
             "no_firing_cb_for_sub",
@@ -573,6 +644,16 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
             if cb_ptr:
                 info = _resolve_cb(cb_ptr)
                 if info:
+                    ip = intra_wait_by_handle.get(sub_handle)
+                    alts = alt_cbs_by_handle.get(sub_handle)
+                    if ip or alts:
+                        info = dict(info)
+                        if ip:
+                            info["intra_proc_waitable"] = ip
+                            # primary cb is the intra-proc copy only if it fired
+                            info["intra_proc_primary"] = cb_ptr in rclcpp_sub_cb_all_by_sub.get(ip, [])
+                        if alts:
+                            info["alt_cb_addrs"] = alts
                     sub_chain[topic] = info
                     continue
             cb_ptr = rclpy_sub_cb_by_handle.get(sub_handle)
@@ -639,13 +720,41 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                        "cb_addr": cb_info["callback"]}
                 if is_gpu:
                     f_A["gpu_node"] = True
+                ip = cb_info.get("intra_proc_waitable")
+                if ip:
+                    # Intra-process-enabled sub. If the primary cb is the
+                    # intra-proc copy, this F is reached via executor branch 5:
+                    # the outer callback_start carries the SubscriptionIntraProcess
+                    # Waitable's `this`, the inner one carries cb_addr. Keep
+                    # both so gantt/cb-stats/attribution can resolve either.
+                    entity.A_v["intra_proc_waitable"] = ip
+                    f_A["intra_proc"] = bool(cb_info.get("intra_proc_primary"))
+                    f_A["intra_proc_capable"] = True
+                    f_A["intra_proc_waitable"] = ip
+                alts = cb_info.get("alt_cb_addrs")
+                if alts:
+                    # Other FIRING callbacks of the same sub (e.g. the DDS copy
+                    # when the intra-proc copy is primary, or vice versa).
+                    entity.A_v["alt_cb_addrs"] = alts
+                    f_A["alt_cb_addrs"] = alts
                 f = FishVertex("F", next(vertex_counter), f_A, [], 3)
                 entity.Z_v.append(f.id_v)
                 functions[f.id_v] = f
 
+    n_cap = sum(1 for f in functions.values() if f.A_v.get("intra_proc_capable"))
+    n_ip = sum(1 for f in functions.values() if f.A_v.get("intra_proc"))
+    n_alt = sum(len(f.A_v.get("alt_cb_addrs") or []) for f in functions.values())
+    if n_cap:
+        log(f"  Intra-proc: {n_cap} sub F node(s) have a SubscriptionIntraProcess Waitable; "
+            f"{n_ip} fire via branch-5 (intra-proc delivery), "
+            f"{n_cap - n_ip} via DDS callback; {n_alt} alternate firing cb(s) attached")
+
     # Sanity check: any cb_addr that fired but didn't produce an F is a
     # silent attribution miss — warn at the end so it's visible.
     bound_cb_addrs = {f.A_v.get("cb_addr") for f in functions.values()}
+    bound_cb_addrs |= {f.A_v.get("intra_proc_waitable") for f in functions.values()}
+    for f in functions.values():
+        bound_cb_addrs |= set(f.A_v.get("alt_cb_addrs") or [])
     missed = _firing_cbs - bound_cb_addrs - {None}
     if missed:
         warn("firing_cb_without_F",
@@ -705,6 +814,16 @@ def attribute_aspects(session_id, executors, nodes, entities):
         cb = e.A_v.get("cb_addr")
         if cb and cb != "NA":
             cb_to_entity[cb] = (e_id, e)
+        # Outer branch-5 dispatch of an intra-process sub carries the
+        # SubscriptionIntraProcess Waitable ptr as `callback`; map it to the
+        # same entity so links emitted between the outer and inner
+        # callback_start (e.g. from Waitable::execute bookkeeping) attribute
+        # to the right place instead of being dropped as "unknown cb".
+        ip = e.A_v.get("intra_proc_waitable")
+        if ip:
+            cb_to_entity.setdefault(ip, (e_id, e))
+        for alt in (e.A_v.get("alt_cb_addrs") or []):
+            cb_to_entity.setdefault(alt, (e_id, e))
 
     publish_links = _all_events(session_id, "ros2:fish_rclcpp_publish_link")
     client_links = _all_events(session_id, "ros2:fish_rclcpp_client_link")

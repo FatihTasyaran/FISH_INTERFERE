@@ -614,25 +614,50 @@ def ingest_ros2_trace(session_id: str, session_dir: str, trace_date: datetime):
 # ----------------------------------------------------------------------------
 
 def _corrected_session_start_ns(conn: sqlite3.Connection, tz_name: str) -> int:
-    """ISSUE-002 fix: nsys utcEpochNs is local-epoch-ns (not UTC).
+    """nsys session start as absolute UTC epoch ns.
 
-    Parse the ISO-string columns (utcTime/localTime) as tz-aware local
-    wall-clock and convert to UTC ns. Fallback to raw utcEpochNs.
+    ISSUE-002 (2026-06): `utcEpochNs` was observed to be local-epoch-ns on
+    some images, so the ISO `utcTime` (really UTC) was preferred.
+
+    ISSUE-003 (2026-08-16): `utcTime` / `localTime` are SECOND-precision
+    strings ('2026-08-16T16:59:24'). Using them alone truncates the
+    sub-second part, giving every nsys report its own constant 0..999 ms
+    error (measured on fish_20260816_165836: pointcloud_container +60.061 ms,
+    other reports 169/484/880/947 ms). All GPU↔callback time-window
+    attribution inherited that offset. Fix: whole seconds from `utcTime`
+    (tz-safe), fractional second from `utcEpochNs % 1e9` — the fraction is
+    immune to any whole-hour local/UTC ambiguity of utcEpochNs.
+    Fallbacks unchanged: localTime (+tz_name), then raw utcEpochNs.
     """
+    from datetime import timezone
     row = conn.execute(
         "SELECT utcEpochNs, systemClockNs, utcTime, localTime "
         "FROM TARGET_INFO_SESSION_START_TIME LIMIT 1"
     ).fetchone()
     if row is None:
         return 0
-    iso = row[2] or row[3]
-    if iso:
+    utc_epoch_ns = int(row[0]) if row[0] is not None else None
+    frac_ns = (utc_epoch_ns % 1_000_000_000) if utc_epoch_ns is not None else 0
+    utc_iso = row[2]
+    if utc_iso:
         try:
-            dt_local = datetime.fromisoformat(iso).replace(tzinfo=ZoneInfo(tz_name))
-            return int(dt_local.timestamp() * 1e9)
+            dt = datetime.fromisoformat(utc_iso).replace(tzinfo=timezone.utc)
+            whole = int(dt.timestamp()) * 1_000_000_000
+            # If utcTime itself already carries fractional seconds, keep them.
+            if dt.microsecond:
+                return whole + dt.microsecond * 1000
+            return whole + frac_ns
         except ValueError:
             pass
-    return int(row[0]) if row[0] is not None else 0
+    local_iso = row[3]
+    if local_iso:
+        try:
+            dt = datetime.fromisoformat(local_iso).replace(tzinfo=ZoneInfo(tz_name))
+            whole = int(dt.timestamp()) * 1_000_000_000
+            return whole + (dt.microsecond * 1000 if dt.microsecond else frac_ns)
+        except ValueError:
+            pass
+    return utc_epoch_ns if utc_epoch_ns is not None else 0
 
 
 # nsys CUPTI table → PG hypertable spec
@@ -983,8 +1008,9 @@ def _ingest_nsys_metadata(sqlite_path: str, session_id: str):
                 corrected = utc_ns
                 if utc_str:
                     try:
-                        dt = datetime.fromisoformat(utc_str).replace(
-                            tzinfo=ZoneInfo(DEFAULT_TZ))
+                        # utcTime is in UTC — tag accordingly, not local.
+                        from datetime import timezone as _tz
+                        dt = datetime.fromisoformat(utc_str).replace(tzinfo=_tz.utc)
                         corrected = int(dt.timestamp() * 1e9)
                     except ValueError:
                         pass

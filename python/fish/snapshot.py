@@ -192,6 +192,112 @@ def _refresh_node_info(snapshot_dir: str) -> None:
     print(f"[FISH]   Node list: {len(all_nodes)} total ({len(phase1_nodes)} phase1 + {len(shutdown_nodes)} shutdown, {new_count} new)")
 
 
+# Environment variables that decide *how* ROS 2 / DDS behaved in this session.
+# Captured verbatim so a session can be diagnosed without inferring from
+# ps_tree (2026-08-16: five Autoware sessions had 0 GPU kernels because
+# RMW_IMPLEMENTATION silently fell back to rmw_fastrtps_cpp under `bash -lc`;
+# the only evidence was the ros2-daemon cmdline in ps_tree.txt).
+_ENV_KEYS = (
+    "RMW_IMPLEMENTATION", "CYCLONEDDS_URI", "FASTRTPS_DEFAULT_PROFILES_FILE",
+    "ROS_DOMAIN_ID", "ROS_LOCALHOST_ONLY", "ROS_DISTRO", "ROS_VERSION",
+    "AMENT_PREFIX_PATH", "LD_LIBRARY_PATH", "PYTHONPATH", "PATH",
+    "FISH_ENABLED", "FISH_CUDA_EVENT_TRACE", "FISH_NSYS_DRAIN", "FISH_TRACE_DIR",
+    "LTTNG_UST_REGISTER_TIMEOUT", "LTTNG_HOME",
+    "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES",
+    "SHELL", "USER", "HOME", "HOSTNAME",
+)
+
+
+def capture_env(snapshot_dir: str) -> str:
+    """
+    Capture the FISH daemon's environment (instant).
+
+    Writes snapshot/env.txt with the ROS/DDS/FISH-relevant variables plus a
+    few kernel sysctls that gate DDS behaviour. `<unset>` is written for
+    missing keys so their absence is visible, not silent.
+    """
+    output_path = os.path.join(snapshot_dir, "env.txt")
+    print("[FISH] Capturing environment...")
+    lines = ["# FISH daemon environment at shutdown snapshot"]
+    for k in _ENV_KEYS:
+        lines.append(f"{k}={os.environ.get(k, '<unset>')}")
+    # Effective RMW as ROS itself resolves it (empty env → rmw default).
+    rmw = os.environ.get("RMW_IMPLEMENTATION") or ""
+    lines.append(f"EFFECTIVE_RMW={rmw or 'rmw_fastrtps_cpp (Humble default; RMW_IMPLEMENTATION unset)'}")
+    lines.append("# --- kernel sysctls relevant to DDS (Autoware wants rmem_max=2147483647,"
+                 " ipfrag_time=3, ipfrag_high_thresh=134217728) ---")
+    for s in ("net.core.rmem_max", "net.core.wmem_max",
+              "net.ipv4.ipfrag_high_thresh", "net.ipv4.ipfrag_time",
+              "net.ipv4.udp_mem", "net.ipv4.udp_rmem_min"):
+        val = _run_cmd(f"sysctl -n {s}", timeout=5) or "<n/a>"
+        lines.append(f"{s}={val.strip()}")
+    # Aggregate UDP socket memory at snapshot time (pages of 4 KiB). Compare
+    # against udp_mem[1] (pressure) / udp_mem[2] (max): above pressure the
+    # kernel starts dropping datagrams for sockets over their fair share —
+    # this is what a large per-socket SocketReceiveBufferSize × ~500 DDS
+    # participants does (2026-08-16 r5: /tf delivery fell to 4%).
+    ss = _run_cmd("grep -E '^(UDP|FRAG):' /proc/net/sockstat", timeout=5)
+    for l in ss.splitlines():
+        lines.append(f"sockstat.{l.strip().replace(': ', '=').replace(' ', '_')}")
+    # Loopback multicast flag — Cyclone's lo-only config needs MULTICAST on lo.
+    lo = _run_cmd("ip -o link show lo", timeout=5)
+    lines.append(f"lo_multicast={'yes' if 'MULTICAST' in lo else 'no'}  # {lo.strip()[:120]}")
+    # If a CycloneDDS config is in effect, snapshot its content so the
+    # session is self-describing (MaxMessageSize, buffers, interfaces).
+    uri = os.environ.get("CYCLONEDDS_URI", "")
+    if uri.startswith("file://") or uri.startswith("/"):
+        path = uri[len("file://"):] if uri.startswith("file://") else uri
+        try:
+            with open(path) as f:
+                xml = f.read()
+            with open(os.path.join(snapshot_dir, "cyclonedds_effective.xml"), "w") as f:
+                f.write(xml)
+            lines.append(f"cyclonedds_config_snapshot=cyclonedds_effective.xml ({len(xml)} bytes)")
+        except OSError as e:
+            lines.append(f"cyclonedds_config_snapshot=<unreadable: {e}>")
+    with open(output_path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"[FISH]   → {output_path}")
+    return output_path
+
+
+# The FISH `ros2` wrapper tees the full `ros2 launch` stdout+stderr here.
+# It lives in /tmp inside the container and is lost with `docker run --rm`
+# unless we copy it into the session directory.
+FISH_LAUNCH_OUTPUT_LOG = "/tmp/fish_launch_output.log"
+
+
+def capture_launch_output(snapshot_dir: str) -> str:
+    """
+    Copy the full launch stdout/stderr into <session>/fishlog/launch_full.log.
+
+    Complements fishlog/launch_inspect.log (which only holds the static
+    launch-file inspector's stderr) with the actual runtime output of every
+    node — QoS warnings, driver errors, "empty pointcloud" spam, etc.
+    """
+    session_dir = os.path.dirname(snapshot_dir.rstrip("/"))
+    fishlog_dir = os.path.join(session_dir, "fishlog")
+    os.makedirs(fishlog_dir, exist_ok=True)
+    output_path = os.path.join(fishlog_dir, "launch_full.log")
+    src = os.environ.get("FISH_LAUNCH_LOG", FISH_LAUNCH_OUTPUT_LOG)
+    print("[FISH] Copying full launch output...")
+    try:
+        with open(src, "rb") as fin, open(output_path, "wb") as fout:
+            n = 0
+            while True:
+                chunk = fin.read(1 << 20)
+                if not chunk:
+                    break
+                fout.write(chunk)
+                n += len(chunk)
+        print(f"[FISH]   → {output_path} ({n} bytes)")
+    except FileNotFoundError:
+        with open(output_path, "w") as f:
+            f.write(f"# {src} not found — launch was not started via the FISH ros2 wrapper?\n")
+        print(f"[FISH]   {src} not found (wrote placeholder)")
+    return output_path
+
+
 def shutdown_snapshot() -> str:
     """
     Phase 2: Capture instant system state at shutdown time.
@@ -202,9 +308,11 @@ def shutdown_snapshot() -> str:
     snapshot_dir = get_snapshot_dir()
     print(f"\n[FISH] Shutdown snapshot → {snapshot_dir}/")
 
+    capture_env(snapshot_dir)
     capture_process_tree(snapshot_dir)
     capture_component_list(snapshot_dir)
     _refresh_node_info(snapshot_dir)
+    capture_launch_output(snapshot_dir)
 
     print("[FISH] Shutdown snapshot complete")
     return snapshot_dir

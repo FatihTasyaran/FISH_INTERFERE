@@ -182,3 +182,58 @@ User action:
     in fish_settings.ini → `cuda_event_trace = false` and fall back
     to the heuristic.
 
+
+
+ISSUE-004: nsys session start taken from SECOND-precision `utcTime` → every
+           nsys report carried its own constant 0..999 ms offset vs LTTng
+--------------------------------------------------------------------------
+Date discovered: 2026-08-16 (evening)
+Session: fish_20260816_165836 (Autoware logging_simulator, 0.5x, fishwait4)
+Fixed in: postprocess/ingest_pg.py::_corrected_session_start_ns
+Written by: Claude Fable 5 (Anthropic)
+
+Observation:
+  In pointcloud_container only 22 % of cuda_runtime calls on executor
+  threads fell inside ANY callback_start/end window; 63 % sat in "gaps"
+  between callbacks (median 133 ms after the previous callback_end, 47 ms
+  before the next start — nowhere near a window edge, so not a small
+  skew). Yet lidar_centerpoint's callback windows were 33 ms (= its
+  inference time) and each gap thread's launch count ≈ 30 × its
+  centerpoint executions. Sweeping an artificial offset δ over the launch
+  timestamps: inside-fraction 2.0 % at δ=0, **91.6 % at δ=+60.0 ms**, sharp
+  peak, constant across all four time quartiles (no drift).
+
+Root cause:
+  The ISSUE-002 fix made ingest take the nsys session start from the ISO
+  `utcTime` string. That string is second-precision
+  ('2026-08-16T16:59:24'); the fractional second was silently dropped.
+  Per report on that session:
+      utcEpochNs - iso(utcTime)  = 60.061 ms   (pointcloud_container)
+                                   169 / 484 / 880 / 947 ms (other reports)
+  i.e. each nsys report (each wrapped process) got a different constant
+  offset in [0, 1 s). Kernel COUNTS are unaffected; every time-window
+  based GPU↔callback attribution (gpu_attribution.py, gantt GPU-submitter
+  marks, gpu_task_graph causal edges, A2 per-callback GPU columns) inherited
+  the offset. Note also: on this image (TZ=UTC in container) utcEpochNs IS
+  plain UTC — ISSUE-002's "local-epoch" behaviour depends on the image's
+  TZ; do not rely on utcEpochNs' integer part.
+
+Fix (ingest_pg._corrected_session_start_ns):
+  whole seconds  ← utcTime (UTC, tz-safe)
+  fraction       ← utcEpochNs % 1e9  (immune to whole-hour tz ambiguity)
+  (if utcTime ever carries microseconds, those win). Verified on
+  fish_20260816_165836 after --force re-ingest: best δ = 0.0 ms, 91.6 % of
+  launches inside a callback window at δ=0; UNKNOWN-gap CUDA calls = 0.
+  Full accounting of pointcloud_container's 49 820 cuda_runtime calls:
+    42 028 inside a callback (lidar_centerpoint 26 190 / 12 417 launches;
+           _container/load_node 10 003 [engine load, cudaMalloc];
+           occupancy_grid_map_node 4 953+881), 7 792 teardown (after last
+           callback: cudaFree), 0 ctor, 0 oort, 0 unknown.
+
+Action required:
+  Every session ingested before 2026-08-16 must be re-ingested with
+  `--force` before any GPU↔callback timing result from it is used
+  (Isaac ROS A2 sheets, apriltag/stereo fixtures, June Autoware). Kernel
+  counts / per-kernel durations do NOT change; only absolute placement.
+  Checker: scratchpad gpu_owner_check.py (offset scan + classification) —
+  worth promoting into postprocess/ as a post-ingest sanity check.

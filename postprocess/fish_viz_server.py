@@ -281,6 +281,7 @@ def _serve_cb_stats(handler, qs):
                 if (H_tmr and anchor_ex) else None
             sess_stats = _window_stats(fires, anchor_session, H_session, session_end_ns) \
                 if (H_session and anchor_session) else None
+            ipw = t.get('intra_proc_waitable')
             rows.append({
                 'cb_addr': cb,
                 'symbol': t.get('symbol', '') or '',
@@ -291,6 +292,11 @@ def _serve_cb_stats(handler, qs):
                 'period_source': t.get('period_source'),
                 'period_ns': t.get('period_ns'),
                 'n_total': len(fires),
+                # intra-process sub: outer branch-5 Waitable dispatch count
+                # (should equal n_total; a gap = dispatches whose inner cb
+                # did not run, e.g. empty intra-proc buffer take).
+                'intra_proc': bool(t.get('intra_proc')),
+                'n_dispatch_waitable': len(fires_by_cb.get(ipw, [])) if ipw else None,
                 'h_tmr_ns': H_tmr,
                 'ex_stats': ex_stats,
                 'sess_stats': sess_stats,
@@ -752,6 +758,8 @@ def _wcc_to_dot(wcc: dict) -> str:
     out = []
     out.append('digraph wcc {')
     out.append('  rankdir=TB;')
+    out.append('  newrank=true;')  # critical for clustered graphs — without this,
+                                   # dot raises "init_rank" on big multi-cluster DAGs
     out.append('  graph [fontname="Helvetica" fontsize=11 nodesep=0.30 ranksep=0.55 '
                'bgcolor="white" splines=spline compound=true];')
     out.append('  node  [shape=box style="filled,rounded" fontname="Helvetica" '
@@ -1110,7 +1118,10 @@ class H(BaseHTTPRequestHandler):
             _serve_file(self, os.path.join(HERE, 'gantt_cb.html'), 'text/html; charset=utf-8')
         elif path in ('/cb-stats', '/cb-stats.html'):
             _serve_file(self, os.path.join(HERE, 'cb_stats.html'), 'text/html; charset=utf-8')
-        elif path in ('/wcc', '/wcc.html', '/wcc-view', '/wcc_view.html'):
+        elif path in ('/wcc', '/wcc.html', '/wcc-view', '/wcc_view.html',
+                      '/ft', '/ft.html', '/ft-view', '/ft_view.html'):
+            # FT = Fish Task — user-facing renaming of WCC view. Both URLs
+            # serve the same wcc_view.html (the page itself shows "FT" labels).
             _serve_file(self, os.path.join(HERE, 'wcc_view.html'), 'text/html; charset=utf-8')
         elif path == '/fish_graph.json':
             _serve_graph(self, qs)
@@ -1124,9 +1135,9 @@ class H(BaseHTTPRequestHandler):
             _serve_cb_stats(self, qs)
         elif path == '/api/task-graphs':
             _serve_task_graphs(self, qs)
-        elif path == '/api/wcc':
+        elif path in ('/api/wcc', '/api/ft'):
             _serve_wcc(self, qs)
-        elif path == '/api/wcc-svg':
+        elif path in ('/api/wcc-svg', '/api/ft-svg'):
             _serve_wcc_svg(self, qs)
         elif path == '/health':
             self.send_response(200); self.end_headers(); self.wfile.write(b'ok')
