@@ -262,10 +262,15 @@ async function loadSession(){
   try {
     const r = await fetch(`/api/wcc-svg?session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}&infra=${infra}&ext=${ext}&node=${nodeF}&topic=${topicF}`);
     if (!r.ok){ document.getElementById('summary').textContent = 'error: ' + r.status; return; }
+    const prevSel = document.getElementById('wccSelect').value;   // keep selection across filter changes
     allData = await r.json();
     populateSelect();
-    if (allData.wccs.length) renderWCC(allData.wccs[0]);
-    else {
+    if (allData.wccs.length){
+      const keep = allData.wccs.find(x => String(x.idx) === String(prevSel));
+      const w = keep || allData.wccs[0];
+      document.getElementById('wccSelect').value = String(w.idx);
+      renderWCC(w);
+    } else {
       document.getElementById('stage-inner').innerHTML = '';
       document.getElementById('summary').textContent = 'no FTs found';
     }
