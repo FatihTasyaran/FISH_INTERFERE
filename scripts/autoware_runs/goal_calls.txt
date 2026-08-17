@@ -1,0 +1,15 @@
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81470.167, y: 49967.151, z: 41.743}, orientation: {x: 0.0, y: 0.0, z: -0.954444, w: 0.298391}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81467.557, y: 49972.759, z: 41.874}, orientation: {x: 0.0, y: 0.0, z: -0.954618, w: 0.297832}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81470.193, y: 49970.982, z: 41.831}, orientation: {x: 0.0, y: 0.0, z: -0.954418, w: 0.298474}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81398.598, y: 50022.743, z: 40.026}, orientation: {x: 0.0, y: 0.0, z: -0.660942, w: 0.750437}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81478.237, y: 49969.938, z: 41.907}, orientation: {x: 0.0, y: 0.0, z: 0.988077, w: 0.153961}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81471.690, y: 49981.022, z: 41.904}, orientation: {x: 0.0, y: 0.0, z: 0.286896, w: 0.957962}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81488.382, y: 49946.145, z: 43.521}, orientation: {x: 0.0, y: 0.0, z: 0.778763, w: 0.627318}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81471.332, y: 49984.389, z: 41.862}, orientation: {x: 0.0, y: 0.0, z: 0.287083, w: 0.957906}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81476.078, y: 49978.602, z: 41.952}, orientation: {x: 0.0, y: 0.0, z: -0.956793, w: 0.290768}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81478.109, y: 49976.370, z: 41.906}, orientation: {x: 0.0, y: 0.0, z: -0.957094, w: 0.289778}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81480.014, y: 49973.862, z: 41.890}, orientation: {x: 0.0, y: 0.0, z: -0.957273, w: 0.289186}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81471.289, y: 49988.091, z: 41.783}, orientation: {x: 0.0, y: 0.0, z: 0.286320, w: 0.958134}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81503.203, y: 49921.241, z: 45.661}, orientation: {x: 0.0, y: 0.0, z: -0.995173, w: 0.098140}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81388.965, y: 50042.328, z: 39.600}, orientation: {x: 0.0, y: 0.0, z: 0.755566, w: 0.655072}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 81489.005, y: 49979.360, z: 41.845}, orientation: {x: 0.0, y: 0.0, z: -0.967213, w: 0.253968}}}

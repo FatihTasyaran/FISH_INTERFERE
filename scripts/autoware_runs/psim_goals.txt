@@ -1,0 +1,4 @@
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 89515.118, y: 42436.968, z: -2.500}, orientation: {x: 0.0, y: 0.0, z: 0.850541, w: 0.525908}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 89538.790, y: 42444.815, z: -2.500}, orientation: {x: 0.0, y: 0.0, z: -0.507721, w: 0.861522}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 89539.384, y: 42451.081, z: -2.500}, orientation: {x: 0.0, y: 0.0, z: -0.507837, w: 0.861453}}}
+{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 89542.459, y: 42452.993, z: -2.500}, orientation: {x: 0.0, y: 0.0, z: -0.507795, w: 0.861478}}}
