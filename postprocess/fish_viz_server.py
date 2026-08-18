@@ -818,7 +818,7 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
     return fnodes, edges, out_wccs, len(wccs)
 
 
-def _namespace_views(fnodes, edges, min_f=2, neighbors='show', isolated='hide'):
+def _namespace_views(fnodes, edges, min_f=2, neighbors='show', isolated='hide', depth=1):
     """One pseudo-FT per TOP-LEVEL ROS namespace (/sensing, /perception, …):
     every F whose owning node lives under that namespace + the edges among
     them (data AND infra, the renderer fades infra). Unlike FTs these are
@@ -832,7 +832,10 @@ def _namespace_views(fnodes, edges, min_f=2, neighbors='show', isolated='hide'):
         if n.get('ptype') == 'ext' or not full.startswith('/'):
             continue
         parts = full.strip('/').split('/')
-        ns = '/' + parts[0] if len(parts) > 1 else '/'   # top-level namespace ('/' for root nodes)
+        # namespace of the node (everything but the node name), cut at `depth`
+        # levels: depth 1 → /sensing, 2 → /sensing/lidar, 3 → /sensing/lidar/top
+        ns_parts = parts[:-1][:max(1, depth)]
+        ns = '/' + '/'.join(ns_parts) if ns_parts else '/'   # '/' for root nodes
         by_ns.setdefault(ns, set()).add(fid)
     views = []
     for ns, fids in sorted(by_ns.items()):
@@ -1154,6 +1157,10 @@ def _serve_wcc(handler, qs):
     isolated = (qs.get('isolated', ['hide'])[0] or 'hide').lower()
     if isolated not in ('show', 'hide'):
         isolated = 'hide'
+    try:
+        ns_depth = max(1, min(3, int((qs.get('ns_depth', ['1'])[0] or '1'))))
+    except ValueError:
+        ns_depth = 1
 
     try:
         fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(
@@ -1163,7 +1170,7 @@ def _serve_wcc(handler, qs):
         return
 
     n_infra = sum(1 for e in edges if e['edge_class'] == 'infra')
-    ns_views = _namespace_views(fnodes, edges, neighbors=neighbors, isolated=isolated)
+    ns_views = _namespace_views(fnodes, edges, neighbors=neighbors, isolated=isolated, depth=ns_depth)
     body = json.dumps({
         'session_id': sid, 'scope': scope,
         'allowed_phases': sorted(allowed),
@@ -1409,6 +1416,10 @@ def _serve_wcc_svg(handler, qs):
     isolated = (qs.get('isolated', ['hide'])[0] or 'hide').lower()
     if isolated not in ('show', 'hide'):
         isolated = 'hide'
+    try:
+        ns_depth = max(1, min(3, int((qs.get('ns_depth', ['1'])[0] or '1'))))
+    except ValueError:
+        ns_depth = 1
 
     try:
         fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(
@@ -1424,7 +1435,7 @@ def _serve_wcc_svg(handler, qs):
     only = qs.get('only', [None])[0]
     render_all = (qs.get('render_all', ['0'])[0] == '1')
     rendered = []
-    all_entries = out_wccs + _namespace_views(fnodes, edges, neighbors=neighbors, isolated=isolated)
+    all_entries = out_wccs + _namespace_views(fnodes, edges, neighbors=neighbors, isolated=isolated, depth=ns_depth)
     for pos, w in enumerate(all_entries):
         want = render_all or (only is not None and str(w['idx']) == str(only)) or (only is None and pos == 0)
         if not want:
