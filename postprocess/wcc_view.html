@@ -93,7 +93,13 @@ body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;ove
   <div style="margin-top:3px">
        <span class="legend-box" style="background:#fff;border-color:#d62728;border-width:3px"></span>GPU
        <span style="margin-left:14px;color:#2ca02c">━━</span> GXF intra-node
-       <span style="margin-left:8px;color:#444">━━</span> ROS L3</div>
+       <span style="margin-left:8px;color:#222">━━</span> trigger hop (receiver continues the chain)
+       <span style="margin-left:8px;color:#8c8c8c">──</span> delivery hop (receiver only deposits / is polled / leaf)</div>
+  <div style="margin-top:3px">
+       <span style="color:#e07b00">──▷</span> polled read (observed, age p50)
+       <span style="margin-left:8px;color:#e07b00">┄┄▷</span> inferred state read (age p50)
+       <span style="margin-left:8px;color:#1f77b4">┈┈</span> join tie
+       <span style="margin-left:8px;color:#bbb">┄┄</span> infra</div>
 </div>
 
 <div id="hint">scroll = zoom · drag = pan · hover node = details</div>

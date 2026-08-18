@@ -1217,6 +1217,14 @@ def _wcc_to_dot(wcc: dict) -> str:
     from collections import defaultdict
     nodes = wcc['nodes']
     edges = wcc['edges']
+    # trigger vs delivery: a msg hop into an F that only DEPOSITS (no outgoing
+    # msg edge; it is read later via a state/polled edge, or it is a leaf) is a
+    # delivery, not a trigger of further work → drawn grey/thin. A hop into an
+    # F that itself has outgoing msg edges continues the chain → black.
+    _continues = {e['src'] for e in edges
+                  if e.get('nature') not in ('state', 'join', 'gxf_internal') and e.get('edge_class') != 'infra'}
+    _reads = {e['src'] for e in edges if e.get('nature') == 'state'}   # deposit F's with a state consumer
+    _by_id = {n['id']: n for n in nodes}
 
     by_node = defaultdict(list)
     for n in nodes:
@@ -1287,9 +1295,17 @@ def _wcc_to_dot(wcc: dict) -> str:
     for n in nodes:
         if n.get('join_group'):
             jg[n['join_group']].append(n['id'])
+    # NOTE: rank=same across cluster members + weight-0 edges makes Graphviz
+    # abort with "trouble in init_rank" on dense views (r18 /planning), so the
+    # rank pin is emitted only when the group has no polled/state edges nearby;
+    # _render_dot_to_svg's caller retries without it on failure (see below).
+    join_rank_lines = []
     for _t, ids in jg.items():
         if len(ids) >= 2:
-            out.append('  {rank=same; ' + '; '.join(f'n{i}' for i in ids) + ';}')
+            join_rank_lines.append('  {rank=same; ' + '; '.join(f'n{i}' for i in ids) + ';}')
+    if wcc.get('_no_join_rank'):
+        join_rank_lines = []
+    out.extend(join_rank_lines)
 
     for e in edges:
         topic = e.get('topic') or ''
@@ -1302,7 +1318,7 @@ def _wcc_to_dot(wcc: dict) -> str:
             # join membership tie (detect_joins): not a message hop → no arrowhead,
             # does not constrain the layout rank
             color = '#1f77b4'; pw = '1.5'; style = 'dotted'
-            label = 'join'; extra = ' dir=none constraint=false'
+            label = 'join'; extra = ' dir=none weight=0'   # weight=0, see state edges (init_rank)
         elif e.get('nature') == 'state':
             # inferred sample-and-hold read inside the node: NOT a trigger; label = data age
             age = e.get('age_ns_p50')
@@ -1313,14 +1329,29 @@ def _wcc_to_dot(wcc: dict) -> str:
             else:
                 color = '#e07b00'; pw = '1.2'; style = 'dashed'
                 label = 'state' + (f'  age p50 {age/1e6:.0f} ms' if age else '')
-            extra = ' constraint=false arrowhead=onormal'
+            # weight=0 (not constraint=false): many constraint=false edges inside
+            # node clusters make Graphviz abort with "trouble in init_rank"
+            # (r18 /control with 150 polled edges); weight=0 keeps the layout free
+            extra = ' weight=0 arrowhead=onormal'
         elif e.get('edge_class') == 'infra':
             color = '#bbbbbb'; pw = '0.8'; style = 'dashed'
             label = topic
         else:
-            color = '#444'; pw = '1.2'
             hop = e.get('hop_ns_p50')
-            label = topic + (f'  ⌀{hop/1e3:.0f}µs' if hop and hop < 1e6 else (f'  ⌀{hop/1e6:.1f}ms' if hop else ''))
+            hop_s = (f'  ⌀{hop/1e3:.0f}µs' if hop and hop < 1e6 else (f'  ⌀{hop/1e6:.1f}ms' if hop else ''))
+            dst = _by_id.get(e['dst'], {})
+            dst_ext = dst.get('ptype') == 'ext'
+            if e['dst'] not in _continues and not dst_ext:
+                # delivery only: the receiving F deposits (state read follows) or is polled/leaf
+                if dst.get('polled') or e['dst'] in _reads:
+                    color = '#8c8c8c'; pw = '1.0'
+                    label = topic + hop_s + '  ▹deliver'
+                else:
+                    color = '#8c8c8c'; pw = '1.0'; style = 'solid'
+                    label = topic + hop_s + '  ▹leaf'
+            else:
+                color = '#222222'; pw = '1.4'
+                label = topic + hop_s
         out.append(
             f'  n{e["src"]} -> n{e["dst"]} '
             f'[label="{_dot_escape(label)}" color="{color}" fontcolor="{color}" '
@@ -1339,6 +1370,7 @@ def _render_dot_to_svg(dot_source: str) -> str:
     if p.returncode != 0:
         raise RuntimeError(f'dot failed: {p.stderr.decode()[:400]}')
     return p.stdout.decode()
+
 
 
 def _serve_wcc_svg(handler, qs):
@@ -1399,10 +1431,14 @@ def _serve_wcc_svg(handler, qs):
             svg = None
         else:
             try:
-                dot_src = _wcc_to_dot(w)
-                svg = _render_dot_to_svg(dot_src)
+                svg = _render_dot_to_svg(_wcc_to_dot(w))
             except Exception as e:
-                svg = f"<!-- render failed: {e} -->"
+                # retry without the join rank pins (Graphviz init_rank on dense views)
+                try:
+                    w2 = dict(w); w2['_no_join_rank'] = True
+                    svg = _render_dot_to_svg(_wcc_to_dot(w2))
+                except Exception as e2:
+                    svg = f"<!-- render failed: {e2} -->"
         # nodes_meta: id → full metadata so client can hover/lookup
         meta = {str(n['id']): n for n in w['nodes']}
         rendered.append({
