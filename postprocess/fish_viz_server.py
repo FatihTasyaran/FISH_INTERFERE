@@ -1823,7 +1823,10 @@ class H(BaseHTTPRequestHandler):
             _serve_wcc_svg(self, qs)
         elif path == '/api/sessions':
             _serve_sessions(self, qs)
-        elif path in ('/fishiris', '/fishiris/', '/fishiris/index.html', '/site', '/site/'):
+        elif path in ('/fishiris', '/site'):
+            # relative assets (bg.jpg) need the trailing slash
+            self.send_response(301); self.send_header('Location', path + '/'); self.end_headers()
+        elif path in ('/fishiris/', '/fishiris/index.html', '/site/'):
             _serve_file(self, os.path.join(SITE, 'index.html'), 'text/html; charset=utf-8')
         elif path.startswith('/fishiris/') or path.startswith('/site/'):
             name = os.path.basename(path)
