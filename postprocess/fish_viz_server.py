@@ -818,7 +818,7 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
     return fnodes, edges, out_wccs, len(wccs)
 
 
-def _namespace_views(fnodes, edges, min_f=2, neighbors='show'):
+def _namespace_views(fnodes, edges, min_f=2, neighbors='show', isolated='hide'):
     """One pseudo-FT per TOP-LEVEL ROS namespace (/sensing, /perception, …):
     every F whose owning node lives under that namespace + the edges among
     them (data AND infra, the renderer fades infra). Unlike FTs these are
@@ -864,6 +864,15 @@ def _namespace_views(fnodes, edges, min_f=2, neighbors='show'):
                    if (e['src'] in fids and e['dst'] in fids)                                   # inside: data + infra (dashed)
                    or ((e['src'] in fids and e['dst'] in touching) or (e['dst'] in fids and e['src'] in touching))
                       and (e['edge_class'] != 'infra' or _is_ext(e['src']) or _is_ext(e['dst']))]  # boundary: data, or infra to an ext node
+        if isolated == 'hide' and v_edges:
+            # F's whose every edge was filtered away (e.g. /clock, /tf subs with
+            # infra hidden) would float as edge-less boxes — drop them (rqt's
+            # "hide dead sinks / leaf topics"); keep the view if that empties it
+            deg = set()
+            for e in v_edges: deg.add(e['src']); deg.add(e['dst'])
+            kept = [n for n in v_nodes if n['id'] in deg]
+            if kept:
+                v_nodes = kept
         n_infra = sum(1 for e in v_edges if e['edge_class'] == 'infra')
         views.append({
             'idx': f'ns:{ns}', 'kind': 'namespace', 'namespace': ns,
@@ -1142,6 +1151,9 @@ def _serve_wcc(handler, qs):
     neighbors = (qs.get('neighbors', ['show'])[0] or 'show').lower()
     if neighbors not in ('show', 'hide'):
         neighbors = 'show'
+    isolated = (qs.get('isolated', ['hide'])[0] or 'hide').lower()
+    if isolated not in ('show', 'hide'):
+        isolated = 'hide'
 
     try:
         fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(
@@ -1151,7 +1163,7 @@ def _serve_wcc(handler, qs):
         return
 
     n_infra = sum(1 for e in edges if e['edge_class'] == 'infra')
-    ns_views = _namespace_views(fnodes, edges, neighbors=neighbors)
+    ns_views = _namespace_views(fnodes, edges, neighbors=neighbors, isolated=isolated)
     body = json.dumps({
         'session_id': sid, 'scope': scope,
         'allowed_phases': sorted(allowed),
@@ -1362,6 +1374,9 @@ def _serve_wcc_svg(handler, qs):
     neighbors = (qs.get('neighbors', ['show'])[0] or 'show').lower()
     if neighbors not in ('show', 'hide'):
         neighbors = 'show'
+    isolated = (qs.get('isolated', ['hide'])[0] or 'hide').lower()
+    if isolated not in ('show', 'hide'):
+        isolated = 'hide'
 
     try:
         fnodes, edges, out_wccs, n_wccs = _fetch_wcc_payload(
@@ -1377,7 +1392,7 @@ def _serve_wcc_svg(handler, qs):
     only = qs.get('only', [None])[0]
     render_all = (qs.get('render_all', ['0'])[0] == '1')
     rendered = []
-    all_entries = out_wccs + _namespace_views(fnodes, edges, neighbors=neighbors)
+    all_entries = out_wccs + _namespace_views(fnodes, edges, neighbors=neighbors, isolated=isolated)
     for pos, w in enumerate(all_entries):
         want = render_all or (only is not None and str(w['idx']) == str(only)) or (only is None and pos == 0)
         if not want:

@@ -71,6 +71,7 @@ body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;ove
   </div>
   <div style="margin-top:2px" title="Namespace views only: 1-hop callbacks from OTHER namespaces connected by data edges are drawn faded ('other namespace' clusters). Uncheck to see just the namespace's own callbacks (cross-namespace links then disappear).">
     <label><input type="checkbox" id="showNeighbors" checked> NS views: show neighbours from other namespaces</label>
+    <label title="Drop F boxes whose every edge is filtered away (e.g. /clock, /tf subscribers with infra hidden)"><input type="checkbox" id="hideIsolated" checked> NS views: hide edge-less callbacks</label>
   </div>
   <div style="margin-top:4px" title="rqt_graph-style globs, comma-separated, '-' prefix excludes. Node: owning ROS node name. Topic: edge topic.">
     <label>Node <input type="text" id="nodeFilter" size="18" placeholder="/sensing/*,-*rviz*"></label>
@@ -282,12 +283,13 @@ async function loadSession(){
   const infra    = document.getElementById('includeInfra').checked ? 'include' : 'exclude';
   const ext      = document.getElementById('hideExt').checked ? 'hide' : 'show';
   const nb       = document.getElementById('showNeighbors').checked ? 'show' : 'hide';
+  const iso      = document.getElementById('hideIsolated').checked ? 'hide' : 'show';
   const nodeF    = encodeURIComponent(document.getElementById('nodeFilter').value.trim());
   const topicF   = encodeURIComponent(document.getElementById('topicFilter').value.trim());
   document.getElementById('summary').textContent = 'loading…';
   try {
     const prevSel = document.getElementById('wccSelect').value;   // keep selection across filter changes
-    _lastQuery = `session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}&infra=${infra}&ext=${ext}&neighbors=${nb}&node=${nodeF}&topic=${topicF}`;
+    _lastQuery = `session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}&infra=${infra}&ext=${ext}&neighbors=${nb}&isolated=${iso}&node=${nodeF}&topic=${topicF}`;
     _svgCache.clear();
     const firstOnly = prevSel ? `&only=${encodeURIComponent(prevSel)}` : '';
     const r = await fetch(`/api/wcc-svg?${_lastQuery}${firstOnly}`, {signal});
@@ -320,7 +322,7 @@ document.getElementById('wccSelect').addEventListener('change', async e => {
   try { await fetchSvgFor(w); renderWCC(w); }
   catch (err){ document.getElementById('summary').textContent = 'svg error: ' + err.message; }
 });
-['includeInit','includeZeroExec','includeUnknown','includeInfra','hideExt','showNeighbors'].forEach(id =>
+['includeInit','includeZeroExec','includeUnknown','includeInfra','hideExt','showNeighbors','hideIsolated'].forEach(id =>
   document.getElementById(id).addEventListener('change', loadSession));
 document.getElementById('fitBtn').addEventListener('click', fitToStage);
 document.getElementById('resetZoomBtn').addEventListener('click', () => {
