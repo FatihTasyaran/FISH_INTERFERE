@@ -11,8 +11,11 @@ snapshots from inside the container where your ROS 2 nodes run.
 :caption: Contents
 
 installation
+operating_modes
 tracepoints
 usage
+images
+pipeline
 mission
 graph_store
 dependencies

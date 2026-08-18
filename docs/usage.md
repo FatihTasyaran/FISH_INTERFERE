@@ -157,3 +157,13 @@ name or a unique substring of their command line to `SKIP_PATTERNS`.
 - Custom tracepoint patches use markers (`# FISH_TRACEPOINTS_OVERLAY`,
   `# FISH_ENABLED`) in `.bashrc` so they can be cleanly updated or removed
   without affecting other entries.
+
+## See also
+
+- `operating_modes.md` — what the wrapper does step by step, the two nsys
+  attach modes (launch_wrap vs kill-and-resurrect), stabilisation, replay,
+  session stop and the shutdown snapshot.
+- `images.md` — how each reference workload (AAS, Isaac ROS r2b, Autoware
+  rosbag / planning_simulator / AWSIM, TIRIS) is run with FISH.
+- `pipeline.md` — host-side ingest → model → Tempo → viz server → Grafana.
+- `tracepoints.md` — every enabled event, its payload, probe site and consumer.

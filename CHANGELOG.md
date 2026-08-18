@@ -5,6 +5,29 @@ minor versions.
 
 ## Unreleased
 
+### Added (2026-08, Autoware campaign)
+- Tracepoints: intra-process Waitable registration hook
+  (`IntraProcessManager::add_subscription` → `fish_rclcpp_waitable_init` with
+  node_handle=0x0) and ABI-safe intra-process publish attribution in
+  `PublisherBase::get_intra_process_subscription_count()` (`fish_rclcpp_publish_link`).
+- `[trace] per_instance` mode (`ros2:rcl_publish` + `ros2:rmw_take`, LTTng CLI
+  channel 4×2 MB with `/dev/shm` guard, `fishlog/discards.txt`).
+- Model: `detect_joins`, `detect_state_links` (inferred sample-and-hold),
+  `detect_polled_subs` (observed sample-and-hold via `rmw_take` inside a foreign
+  callback window), `measure_flows` (per-instance hop latency and data age),
+  `graph_store_pg` ANALYZE after save; `join_analysis.py`, `gpu_coverage_check.py`.
+- Viz: FT view namespace views, filters, delivery/join/polled badges, state
+  edges; `/components` Layer-B component graph (architecture-row layout).
+- Wrapper: RMW guard, `[ros] cyclonedds_uri`, `snapshot/env.txt`,
+  `fishlog/launch_full.log`; `scripts/autoware_runs/` (bag, planning_sim+goal,
+  AWSIM e2e, AWSIM via lavapipe).
+- Docs: `operating_modes.md`, `images.md`, `pipeline.md`; `tracepoints.md`
+  rewritten (36 events); `installation.md` refreshed.
+
+### Fixed
+- ISSUE-004 nsys session start second-precision offset (ingest_pg).
+- ISSUE-005 empty trace with default Docker shm (guard + `--shm-size=2g`).
+
 ### Changed
 - Top-level repo layout: shell scripts under `scripts/`, config files
   under `config/`, example missions under `examples/` (previously
