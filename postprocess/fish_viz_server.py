@@ -971,7 +971,7 @@ _ARCH_ORDER = ['ext:in', '/map', '/sensing', '/localization', '/perception', '/p
 _CROSSCUT = {'/system', '/adapi', '/default_adapi', '/viz', '/', '/pointcloud_container'}
 
 
-def _components_to_dot(cg, show_infra=False, show_crosscut=False, compact=True, rankdir='TB', splines='spline', ext_split=True):
+def _components_to_dot(cg, show_infra=False, show_crosscut=False, compact=True, rankdir='TB', splines='spline', ext_split=True, pin_rows=None):
     def esc(x): return _dot_escape(str(x))
     comps = [c for c in cg['components'] if show_crosscut or c['name'] not in _CROSSCUT]
     names = {c['name'] for c in comps}
@@ -1009,8 +1009,7 @@ def _components_to_dot(cg, show_infra=False, show_crosscut=False, compact=True, 
             if l['dst'] == 'ext:out' and l['src'] in ids and ('out', l['src']) not in ext_ids:
                 ext_ids[('out', l['src'])] = f"ext_out_{ids[l['src']]}"
                 out.append(f'  {ext_ids[("out", l["src"])]} [label="ext:out" {ext_style}];')
-        for (kind, comp), eid in ext_ids.items():
-            out.append(f'  {{rank=same; {ids[comp]}; {eid};}}')
+        # (rank=same for ext nodes is emitted below, only when rows are pinned)
     else:
         for k in ('ext:in', 'ext:out'):
             if k in names:
@@ -1022,19 +1021,24 @@ def _components_to_dot(cg, show_infra=False, show_crosscut=False, compact=True, 
     # architecture rows (top→bottom): sources · sensing+map · localization ·
     # perception · planning · control · sinks
     rows = [['ext:in'], ['/sensing'], ['/localization', '/map'], ['/perception'], ['/planning'], ['/control'], ['ext:out']]
-    placed = set()
-    for row in rows:
-        members = [ids[n] for n in row if n in ids]
-        if members:
-            out.append('  {rank=same; ' + '; '.join(members) + ';}')
-            placed.update(n for n in row if n in ids)
-    for c in comps:                       # unknown components: their own row after control
-        if c['name'] not in placed and c['name'] in ids:
-            out.append(f'  {{rank=same; {ids[c["name"]]};}}')
-    chain = [r for r in rows if any(n in ids for n in r)]
-    for r1, r2 in zip(chain, chain[1:]):
-        a = next(ids[n] for n in r1 if n in ids); b = next(ids[n] for n in r2 if n in ids)
-        out.append(f'  {a} -> {b} [style=invis weight=100];')
+    # Row pinning only makes sense when the components ARE the architecture
+    # rows (depth 1). With sub-namespaces (depth ≥ 2) or mostly-unknown
+    # components, rank=same groups + the invisible chain conflict with real
+    # edges and Graphviz aborts with "trouble in init_rank" — let dot lay out.
+    n_known = sum(1 for c in comps if c['name'] in _ARCH_ORDER)
+    if pin_rows is None:
+        pin_rows = n_known >= max(2, len(comps) // 2)
+    if pin_rows:
+        for (kind, comp), eid in ext_ids.items():
+            out.append(f'  {{rank=same; {ids[comp]}; {eid};}}')
+        for row in rows:
+            members = [ids[n] for n in row if n in ids]
+            if members:
+                out.append('  {rank=same; ' + '; '.join(members) + ';}')
+        chain = [r for r in rows if any(n in ids for n in r)]
+        for r1, r2 in zip(chain, chain[1:]):
+            a = next(ids[n] for n in r1 if n in ids); b = next(ids[n] for n in r2 if n in ids)
+            out.append(f'  {a} -> {b} [style=invis weight=100];')
     for l in links:
         a, b = ids.get(l['src']), ids.get(l['dst'])
         if ext_split:
@@ -1084,7 +1088,11 @@ def _serve_components(handler, qs, svg=False):
         body = {'session_id': sid, 'scope': scope, **cg}
         if svg:
             try:
-                body['svg'] = _render_dot_to_svg(_components_to_dot(cg, show_infra, show_crosscut, ext_split=ext_split))
+                svg = _render_dot_to_svg(_components_to_dot(cg, show_infra, show_crosscut, ext_split=ext_split))
+                if 'render failed' in (svg or '')[:200]:
+                    # retry without architecture-row pinning (Graphviz init_rank conflicts)
+                    svg = _render_dot_to_svg(_components_to_dot(cg, show_infra, show_crosscut, ext_split=ext_split, pin_rows=False))
+                body['svg'] = svg
             except Exception as e:
                 body['svg'] = f'<!-- render failed: {e} -->'
     except Exception as e:
