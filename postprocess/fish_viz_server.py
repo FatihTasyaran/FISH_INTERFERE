@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+SITE = os.path.join(os.path.dirname(HERE), 'site')   # fishiris.com landing page (repo /site)
 sys.path.insert(0, HERE)
 
 import graph_store_pg as gs
@@ -1384,6 +1385,66 @@ def _render_dot_to_svg(dot_source: str) -> str:
 
 
 
+
+# Human labels for the reference sessions (fishiris.com landing page dropdown).
+_SESSION_LABELS = {
+    'fish_20260817_134427': 'Autoware · logging_simulator + rosbag 0.5x (r11, cp_0)',
+    'fish_20260817_172259': 'Autoware · planning_simulator + goal, first closed loop (r18, cp_1)',
+    'fish_20260816_165836': 'Autoware · logging_simulator + rosbag, 14 461 kernels (r7)',
+    'fish_20260817_112346': 'Autoware · logging_simulator, per_instance joins (r10b)',
+    'fish_20260817_101732': 'Autoware · logging_simulator, per_instance joins (r9)',
+    'fish_20260817_094147': 'Autoware · logging_simulator (r8, fishwait5 verify)',
+    'fish_20260629_115617': 'Autoware · logging_simulator (June, fishwait)',
+    'dtdl_apriltag_20260616_172344': 'Isaac ROS · AprilTag r2b (DTDL emitter demo)',
+    'stereo_custom_full_20260622_184919': 'Isaac ROS · stereo_image_proc custom (full)',
+    'stereo_custom_20260622_173945': 'Isaac ROS · stereo_image_proc custom',
+}
+
+
+def _serve_sessions(handler, qs):
+    """/api/sessions — every session that has a graph (graph_nodes) plus its
+    time range (sessions table) for building dashboard URLs. Used by the
+    fishiris landing page ("select your fish")."""
+    import psycopg2
+    dsn = os.environ.get('FISH_PG_DSN', 'host=localhost port=5432 dbname=fish user=fish password=fish')
+    rows = []
+    try:
+        conn = psycopg2.connect(dsn)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT g.session_id, g.scope, g.n_nodes,
+                           s.start_ts_ns, s.end_ts_ns, s.duration_ns, s.start_utc,
+                           s.target_image, s.session_dir
+                    FROM (SELECT session_id, scope, count(*) AS n_nodes
+                          FROM graph_nodes GROUP BY session_id, scope) g
+                    LEFT JOIN sessions s ON s.session_id = g.session_id
+                    ORDER BY s.start_ts_ns DESC NULLS LAST, g.session_id DESC
+                """)
+                for sid, scope, n_nodes, t0, t1, dur, utc, img, sdir in cur.fetchall():
+                    if n_nodes < 5:
+                        continue
+                    rows.append({
+                        'session_id': sid, 'scope': scope, 'n_graph_nodes': n_nodes,
+                        'start_ts_ns': int(t0) if t0 else None, 'end_ts_ns': int(t1) if t1 else None,
+                        'duration_ns': int(dur) if dur else None,
+                        'start_utc': utc.isoformat() if utc else None,
+                        'target_image': img, 'session_dir': sdir,
+                        'label': _SESSION_LABELS.get(sid),
+                    })
+        finally:
+            conn.close()
+    except Exception as e:
+        handler.send_error(500, f'sessions query failed: {e}'); return
+    data = json.dumps(rows, default=str).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(data)))
+    handler.send_header('Access-Control-Allow-Origin', '*')
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
 def _serve_wcc_svg(handler, qs):
     """Same payload shape as /api/wcc but each WCC also carries a server-
     rendered Graphviz SVG. Use `dot` for the layout (rankdir=TB, layered
@@ -1760,6 +1821,14 @@ class H(BaseHTTPRequestHandler):
             _serve_wcc(self, qs)
         elif path in ('/api/wcc-svg', '/api/ft-svg'):
             _serve_wcc_svg(self, qs)
+        elif path == '/api/sessions':
+            _serve_sessions(self, qs)
+        elif path in ('/fishiris', '/fishiris/', '/fishiris/index.html', '/site', '/site/'):
+            _serve_file(self, os.path.join(SITE, 'index.html'), 'text/html; charset=utf-8')
+        elif path.startswith('/fishiris/') or path.startswith('/site/'):
+            name = os.path.basename(path)
+            ct = 'image/jpeg' if name.endswith('.jpg') else 'image/png' if name.endswith('.png') else 'text/css' if name.endswith('.css') else 'application/javascript' if name.endswith('.js') else 'text/plain'
+            _serve_file(self, os.path.join(SITE, name), ct)
         elif path == '/health':
             self.send_response(200); self.end_headers(); self.wfile.write(b'ok')
         else:
