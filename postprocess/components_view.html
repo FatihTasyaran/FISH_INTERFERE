@@ -18,7 +18,7 @@
   <b>FISH — Components (Layer B)</b>
   <div style="margin-top:6px">Session: <input type="text" id="sessionId"> <button id="loadBtn" class="small-btn">Load</button></div>
   <div style="margin-top:4px">
-    depth <select id="depth"><option value="1">1 (/sensing)</option><option value="2">2 (/sensing/lidar)</option></select>
+    grouping <select id="depth" title="How many namespace levels form one component"><option value="1">top-level namespaces (/sensing, /localization, /perception, …)</option><option value="2">sub-namespaces (/sensing/lidar, /perception/object_recognition, …)</option></select>
     <label><input type="checkbox" id="showInfra"> show infra links</label>
     <label title="/system, /adapi, /viz, root-namespace nodes, /pointcloud_container"><input type="checkbox" id="showCrosscut"> cross-cutting</label>
     <label title="one ext:in/ext:out per component (default) vs single merged nodes"><input type="checkbox" id="mergeExt"> merge ext</label>
