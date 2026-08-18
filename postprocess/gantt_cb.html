@@ -88,6 +88,11 @@
   #tooltip { position: absolute; background: rgba(0,0,0,0.85); color: #fff; padding: 6px 9px; border-radius: 4px; font-size: 11px; pointer-events: none; z-index: 100; max-width: 500px; word-break: break-all; }
   #tooltip .k { color: #aaa; }
   #empty { padding: 30px; color: #888; }
+
+  #loadbox { position:fixed; left:50%; top:40%; transform:translate(-50%,-50%); z-index:50; background:rgba(20,30,40,.92); color:#fff; padding:16px 22px; border-radius:10px; font: 13px system-ui, sans-serif; min-width:340px; box-shadow:0 8px 30px rgba(0,0,0,.4); }
+  #loadbox .bar { height:8px; background:#33475b; border-radius:4px; overflow:hidden; margin-top:8px; }
+  #loadbox .bar > div { height:100%; width:0; background:#4fc3f7; transition:width .15s; }
+  #loadbox .sub { color:#b8c7d6; font-size:12px; margin-top:6px; }
 </style>
 </head>
 <body>
@@ -129,7 +134,8 @@
     </div>
     <ul id="tree-root"></ul>
   </div>
-  <div id="chart-wrap"><svg id="chart"></svg></div>
+  <div id="loadbox"><div id="loadmsg">loading gantt data…</div><div class="bar"><div id="loadfill"></div></div><div class="sub" id="loadsub"></div></div>
+<div id="chart-wrap"><svg id="chart"></svg></div>
 </div>
 <div id="tooltip" style="display:none"></div>
 
@@ -139,7 +145,7 @@ const session_id = qs.get('session_id') || qs.get('session') || '';
 const scope = qs.get('scope') || '__main__';
 document.title = `FISH gantt-cb — ${session_id}`;
 
-const gurl = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
+const gurl = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}&fmt=v2`;
 const curl = `/api/causal?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
 const turl = `/api/taskset?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
 
@@ -150,27 +156,55 @@ if (!session_id) {
   document.body.innerHTML = `<div id="empty">Missing <code>?session_id=...</code> in URL.<br>` +
     `Try: <code>/gantt-cb?session_id=&lt;your_session_id&gt;</code></div>`;
 } else {
+
+  // --- loading overlay: bytes received / total, then parse + index phases ---
+  const _lb = document.getElementById('loadbox'), _lm = document.getElementById('loadmsg'), _lf = document.getElementById('loadfill'), _ls = document.getElementById('loadsub');
+  const fmtMB = b => (b/1048576).toFixed(1) + ' MB';
+  function setLoad(msg, frac, sub) { if (!_lb) return; _lm.textContent = msg; _lf.style.width = Math.round((frac||0)*100) + '%'; _ls.textContent = sub || ''; }
+  function hideLoad() { if (_lb) _lb.style.display = 'none'; }
+  window.__fishHideLoad = hideLoad;
+  const fetchJsonProgress = async (url, label) => {
+    const r = await fetch(url);
+    if (!r.ok) { const txt = await r.text(); throw new Error(`${label} HTTP ${r.status}: ${txt.slice(0, 200)}`); }
+    const total = +r.headers.get('Content-Length') || 0;
+    const reader = r.body.getReader(); const chunks = []; let got = 0;
+    for (;;) {
+      const {done, value} = await reader.read(); if (done) break;
+      chunks.push(value); got += value.length;
+      setLoad(`loading ${label} data…`, total ? got/total : 0, total ? `${fmtMB(got)} / ${fmtMB(total)}` : fmtMB(got));
+    }
+    setLoad(`parsing ${label} data…`, 1, fmtMB(got));
+    await new Promise(res => setTimeout(res, 0));   // let the overlay paint
+    const buf = new Uint8Array(got); let off = 0; for (const c of chunks) { buf.set(c, off); off += c.length; }
+    const txt = new TextDecoder().decode(buf);
+    try { return JSON.parse(txt); }
+    catch (e) { throw new Error(`${label} returned non-JSON (first 200 chars): ${txt.slice(0, 200)}`); }
+  };
   const fetchJson = (url, label) => fetch(url).then(async r => {
     const txt = await r.text();
     if (!r.ok) throw new Error(`${label} HTTP ${r.status}: ${txt.slice(0, 200)}`);
     try { return JSON.parse(txt); }
     catch (e) { throw new Error(`${label} returned non-JSON (first 200 chars): ${txt.slice(0, 200)}`); }
   });
-  Promise.all([fetchJson(gurl, 'gantt'), fetchJson(curl, 'causal'), fetchJson(turl, 'taskset').catch(_=>null)])
+  Promise.all([fetchJsonProgress(gurl, 'gantt'), fetchJson(curl, 'causal'), fetchJson(turl, 'taskset').catch(_=>null)])
     .then(([gantt, causal, ts]) => {
       gpuSubmitterCbs = new Set(gantt.gpu_submitter_cbs || []);
       taskset = ts;
-      render(gantt, causal);
+      setLoad('building index…', 1, `${(gantt.n_spans||0).toLocaleString()} spans`);
+      setTimeout(() => { render(gantt, causal); hideLoad(); }, 0);
     })
     .catch(err => document.body.innerHTML = `<div id="empty">Error: ${err.message || err}</div>`);
 }
 
 function render(raw, causal) {
   // Spans with stable id = index
+  const D = raw.dicts || null;                       // fmt=v2 dictionary decoding
+  const dec = (k, v) => (D ? D[k][v] : v);
   const spans = raw.spans.map((a, idx) => ({
     id: idx,
     pid: a[0], vtid: a[1], t0: a[2], t1: a[3],
-    node: a[4], entity: a[5], etype: a[6], symbol: a[7], cb_addr: a[8],
+    node: dec('node', a[4]), entity: dec('entity', a[5]), etype: dec('etype', a[6]),
+    symbol: dec('symbol', a[7]), cb_addr: dec('cb_addr', a[8]),
   }));
   const t0_min = raw.t0_min_ns;
 
@@ -355,6 +389,7 @@ function render(raw, causal) {
   let hpBands = [];
   let xScale = null, xZoomed = null, yScale = null;
   let curSpans = spans, curCbs = [];   // curCbs = ordered cb_addrs for current view
+  let curPidFilter = null;
   let traceState = null;   // {anchor, up:{visited,edges}, down:{visited,edges}}
 
   // Pid → human label (container name preferred). Available outside draw()
@@ -404,15 +439,21 @@ function render(raw, causal) {
     return Array.from({length: total}, (_, i) => _hslToHex(h, Math.max(40, s), lMin + i*step));
   }
 
+  let _zoomRaf = 0;
   const zoom = d3.zoom().scaleExtent([1, 100000]).on('zoom', ev => {
     xZoomed = ev.transform.rescaleX(xScale);
-    redrawBars(); redrawArrows(); redrawHyperperiods();
-    gMain.select('.x-axis').call(d3.axisTop(xZoomed).tickFormat(d => `${(d/1e6).toFixed(2)}ms`));
+    if (_zoomRaf) return;
+    _zoomRaf = requestAnimationFrame(() => {
+      _zoomRaf = 0;
+      redrawBars(); redrawArrows(); redrawHyperperiods();
+      gMain.select('.x-axis').call(d3.axisTop(xZoomed).tickFormat(d => `${(d/1e6).toFixed(2)}ms`));
+    });
   });
 
   function draw() {
     svg.selectAll('*').remove();
     const pidV = pidSel.value;
+    curPidFilter = pidV ? +pidV : null;
     curSpans = pidV ? spans.filter(s => s.pid===+pidV) : spans;
     if (!curSpans.length) { svg.append('text').attr('x', 40).attr('y', 40).text('No spans'); return; }
 
@@ -689,11 +730,66 @@ function render(raw, causal) {
     return 'dim';
   }
 
+  // Per-row (cb_addr) index sorted by t0 + longest span per row → binary
+  // search instead of filtering all spans on every zoom event.
+  const spansByCb = new Map();
+  for (const s of spans) { let a = spansByCb.get(s.cb_addr); if (!a) { a = []; spansByCb.set(s.cb_addr, a); } a.push(s); }
+  const cbMaxDur = new Map();
+  for (const [cb, arr] of spansByCb) { arr.sort((a, b) => a.t0 - b.t0); let m = 0; for (const s of arr) if (s.t1 - s.t0 > m) m = s.t1 - s.t0; cbMaxDur.set(cb, m); }
+  function spansInView(x0, x1) {
+    const out = [];
+    for (const cb of curCbs) {
+      const arr = spansByCb.get(cb); if (!arr) continue;
+      const lim = x0 - (cbMaxDur.get(cb) || 0);
+      let lo = 0, hi = arr.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m].t0 < lim) lo = m + 1; else hi = m; }
+      for (let i = lo; i < arr.length; i++) {
+        const s = arr[i]; if (s.t0 > x1) break;
+        if (s.t1 >= x0 && !muted.has(s.node) && (curPidFilter === null || s.pid === curPidFilter)) out.push(s);
+      }
+    }
+    return out;
+  }
+  const MAX_RECTS = 20000;   // above this: density strips per row (see gantt.html)
   function redrawBars() {
     gBars.selectAll('rect').remove();
-    const visible = curSpans.filter(s => !muted.has(s.node));
     const [x0, x1] = xZoomed.domain();
-    const inView = visible.filter(s => s.t1 >= x0 && s.t0 <= x1);
+    const inView = spansInView(x0, x1);
+    const stat = document.getElementById('stats');
+    if (inView.length > MAX_RECTS) {
+      const wpx = Math.max(1, Math.round(xZoomed.range()[1] - xZoomed.range()[0]));
+      const bw = (x1 - x0) / wpx;
+      const bins = new Map();
+      for (const s of inView) {
+        let row = bins.get(s.cb_addr); if (!row) { row = new Map(); bins.set(s.cb_addr, row); }
+        const b0 = Math.max(0, Math.floor((s.t0 - x0) / bw)), b1 = Math.min(wpx - 1, Math.floor((s.t1 - x0) / bw));
+        for (let b = b0; b <= b1; b++) {
+          let cell = row.get(b); if (!cell) { cell = {busy: 0, n: 0, byPid: new Map()}; row.set(b, cell); }
+          const lo = Math.max(s.t0, x0 + b * bw), hi = Math.min(s.t1, x0 + (b + 1) * bw);
+          const ov = Math.max(0, hi - lo); cell.busy += ov; cell.n++;
+          const p = vtidToPid.get(s.vtid) || s.pid; cell.byPid.set(p, (cell.byPid.get(p) || 0) + ov);
+        }
+      }
+      const rects = [];
+      for (const [cb, row] of bins) for (const [b, cell] of row) {
+        let best = null, bestv = -1; for (const [p, val] of cell.byPid) if (val > bestv) { bestv = val; best = p; }
+        rects.push({cb, b, frac: Math.min(1, cell.busy / bw), n: cell.n, pid: best});
+      }
+      const xr0 = xZoomed.range()[0];
+      gBars.selectAll('rect').data(rects).enter().append('rect')
+        .attr('class', 'bar density')
+        .attr('x', d => xr0 + d.b).attr('y', d => yScale(d.cb))
+        .attr('width', 1.05).attr('height', yScale.bandwidth())
+        .attr('fill', d => pidColor(d.pid)).attr('opacity', d => 0.25 + 0.75 * d.frac)
+        .on('mousemove', (ev, d) => {
+          tooltip.style('display', 'block').style('left', (ev.clientX + 12) + 'px').style('top', (ev.clientY + 12) + 'px')
+            .html(`<b>density</b> — zoom in for individual executions<br><span class="k">executions in column:</span> ${d.n}<br><span class="k">busy:</span> ${(d.frac*100).toFixed(0)} %<br><span class="k">dominant pid:</span> ${d.pid}`);
+        })
+        .on('mouseleave', () => tooltip.style('display', 'none'));
+      if (stat) stat.textContent = `${spans.length} spans · density view (${inView.length} in window, zoom in for bars)`;
+      return;
+    }
+    if (stat) stat.textContent = `${spans.length} spans · ${inView.length} in view`;
 
     gBars.selectAll('rect')
       .data(inView, s => s.id)
