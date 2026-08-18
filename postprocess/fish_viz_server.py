@@ -1657,6 +1657,8 @@ class H(BaseHTTPRequestHandler):
             _serve_file(self, os.path.join(HERE, 'gantt_cb.html'), 'text/html; charset=utf-8')
         elif path in ('/cb-stats', '/cb-stats.html'):
             _serve_file(self, os.path.join(HERE, 'cb_stats.html'), 'text/html; charset=utf-8')
+        elif path in ('/component-links', '/component-links.html', '/component_links.html'):
+            _serve_file(self, os.path.join(HERE, 'component_links.html'), 'text/html; charset=utf-8')
         elif path in ('/wcc', '/wcc.html', '/wcc-view', '/wcc_view.html',
                       '/ft', '/ft.html', '/ft-view', '/ft_view.html'):
             # FT = Fish Task — user-facing renaming of WCC view. Both URLs
