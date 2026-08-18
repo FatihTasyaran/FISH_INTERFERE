@@ -139,7 +139,7 @@ const session_id = qs.get('session_id') || qs.get('session') || '';
 const scope = qs.get('scope') || '__main__';
 document.title = `FISH gantt — ${session_id}`;
 
-const gurl = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
+const gurl = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}&fmt=v2`;
 const curl = `/api/causal?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
 const turl = `/api/taskset?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
 
@@ -167,10 +167,15 @@ if (!session_id) {
 
 function render(raw, causal) {
   // Spans with stable id = index
+  // fmt=v2: strings are dictionary-encoded (indices into raw.dicts.*) — ~8x
+  // smaller payload than v1 for 1.4 M spans; decode here once.
+  const D = raw.dicts || null;
+  const dec = (k, v) => (D ? D[k][v] : v);
   const spans = raw.spans.map((a, idx) => ({
     id: idx,
     pid: a[0], vtid: a[1], t0: a[2], t1: a[3],
-    node: a[4], entity: a[5], etype: a[6], symbol: a[7], cb_addr: a[8],
+    node: dec('node', a[4]), entity: dec('entity', a[5]), etype: dec('etype', a[6]),
+    symbol: dec('symbol', a[7]), cb_addr: dec('cb_addr', a[8]),
   }));
   const t0_min = raw.t0_min_ns;
 
@@ -343,17 +348,25 @@ function render(raw, causal) {
   let hpBands = [];
   let xScale = null, xZoomed = null, yScale = null;
   let curSpans = spans, curVtids = [];
+  let curPidFilter = null;   // numeric pid when the dropdown narrows the view
   let traceState = null;   // {anchor, up:{visited,edges}, down:{visited,edges}}
 
+  let _zoomRaf = 0;
   const zoom = d3.zoom().scaleExtent([1, 100000]).on('zoom', ev => {
     xZoomed = ev.transform.rescaleX(xScale);
-    redrawBars(); redrawArrows(); redrawHyperperiods();
-    gMain.select('.x-axis').call(d3.axisTop(xZoomed).tickFormat(d => `${(d/1e6).toFixed(2)}ms`));
+    // coalesce bursts of zoom events into one redraw per animation frame
+    if (_zoomRaf) return;
+    _zoomRaf = requestAnimationFrame(() => {
+      _zoomRaf = 0;
+      redrawBars(); redrawArrows(); redrawHyperperiods();
+      gMain.select('.x-axis').call(d3.axisTop(xZoomed).tickFormat(d => `${(d/1e6).toFixed(2)}ms`));
+    });
   });
 
   function draw() {
     svg.selectAll('*').remove();
     const pidV = pidSel.value;
+    curPidFilter = pidV ? +pidV : null;
     curSpans = pidV ? spans.filter(s => s.pid===+pidV) : spans;
     if (!curSpans.length) { svg.append('text').attr('x', 40).attr('y', 40).text('No spans'); return; }
     // Group vtids by their parent pid, then sort lanes by (pid, vtid).
@@ -609,11 +622,71 @@ function render(raw, causal) {
     return 'dim';
   }
 
+  // Per-lane index for fast "spans overlapping [x0,x1]" queries: spans sorted
+  // by t0 (spansByVtid) + the longest span per lane, so a binary search on
+  // t0 >= x0 - maxDur finds the first candidate without scanning 1.4 M spans.
+  const laneMaxDur = new Map();
+  for (const [v, arr] of spansByVtid) { let m = 0; for (const s of arr) if (s.t1 - s.t0 > m) m = s.t1 - s.t0; laneMaxDur.set(v, m); }
+  function spansInView(x0, x1) {
+    const out = [];
+    for (const v of curVtids) {
+      const arr = spansByVtid.get(v); if (!arr) continue;
+      const lim = x0 - (laneMaxDur.get(v) || 0);
+      let lo = 0, hi = arr.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m].t0 < lim) lo = m + 1; else hi = m; }
+      for (let i = lo; i < arr.length; i++) {
+        const s = arr[i]; if (s.t0 > x1) break;
+        if (s.t1 >= x0 && !muted.has(s.node) && (curPidFilter === null || s.pid === curPidFilter)) out.push(s);
+      }
+    }
+    return out;
+  }
+  // Above this many rects the SVG becomes the bottleneck (a full-Autoware
+  // session has 1.4 M spans): draw per-lane density strips instead — one rect
+  // per pixel column, opacity = busy fraction, colour = dominant node — and
+  // switch to real bars as the user zooms in.
+  const MAX_RECTS = 20000;
   function redrawBars() {
     gBars.selectAll('rect').remove();
-    const visible = curSpans.filter(s => !muted.has(s.node));
     const [x0, x1] = xZoomed.domain();
-    const inView = visible.filter(s => s.t1 >= x0 && s.t0 <= x1);
+    const inView = spansInView(x0, x1);
+    const stat = document.getElementById('stats');
+    if (inView.length > MAX_RECTS) {
+      const wpx = Math.max(1, Math.round(xZoomed.range()[1] - xZoomed.range()[0]));
+      const bw = (x1 - x0) / wpx;
+      const bins = new Map();  // vtid → Map(bucket → {busy, n, byNode})
+      for (const s of inView) {
+        let lane = bins.get(s.vtid); if (!lane) { lane = new Map(); bins.set(s.vtid, lane); }
+        const b0 = Math.max(0, Math.floor((s.t0 - x0) / bw)), b1 = Math.min(wpx - 1, Math.floor((s.t1 - x0) / bw));
+        for (let b = b0; b <= b1; b++) {
+          let cell = lane.get(b); if (!cell) { cell = {busy: 0, n: 0, byNode: new Map()}; lane.set(b, cell); }
+          const lo = Math.max(s.t0, x0 + b * bw), hi = Math.min(s.t1, x0 + (b + 1) * bw);
+          const ov = Math.max(0, hi - lo); cell.busy += ov; cell.n++;
+          cell.byNode.set(s.node, (cell.byNode.get(s.node) || 0) + ov);
+        }
+      }
+      const rects = [];
+      for (const [v, lane] of bins) for (const [b, cell] of lane) {
+        let best = null, bestv = -1; for (const [n, val] of cell.byNode) if (val > bestv) { bestv = val; best = n; }
+        rects.push({vtid: v, b, frac: Math.min(1, cell.busy / bw), n: cell.n, node: best});
+      }
+      const xr0 = xZoomed.range()[0];
+      gBars.selectAll('rect').data(rects).enter().append('rect')
+        .attr('class', 'bar density')
+        .attr('x', d => xr0 + d.b).attr('y', d => yScale(d.vtid))
+        .attr('width', 1.05).attr('height', yScale.bandwidth())
+        .attr('fill', d => colorFor.get(d.node)).attr('opacity', d => 0.25 + 0.75 * d.frac)
+        .on('mousemove', (ev, d) => {
+          tooltip.style('display', 'block').style('left', (ev.clientX + 12) + 'px').style('top', (ev.clientY + 12) + 'px')
+            .html(`<b>density</b> — zoom in for individual callbacks<br><span class="k">vtid:</span> ${d.vtid}<br>` +
+                  `<span class="k">callbacks in column:</span> ${d.n}<br><span class="k">busy:</span> ${(d.frac*100).toFixed(0)} %<br>` +
+                  `<span class="k">dominant node:</span> ${d.node}`);
+        })
+        .on('mouseleave', () => tooltip.style('display', 'none'));
+      if (stat) stat.textContent = `${spans.length} spans · density view (${inView.length} in window, zoom in for bars)`;
+      return;
+    }
+    if (stat) stat.textContent = `${spans.length} spans · ${inView.length} in view`;
 
     gBars.selectAll('rect')
       .data(inView, s => s.id)

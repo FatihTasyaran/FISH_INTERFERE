@@ -1554,23 +1554,7 @@ def _serve_wcc_svg(handler, qs):
     handler.wfile.write(body)
 
 
-def _serve_gantt_data(handler, qs):
-    """JSON for per-thread gantt: one record per callback execution with
-    {vtid, t0, t1, node, entity, etype, symbol, cb_addr}. Resolves cb_addr → E → N
-    via the graph edges (callback function → owning entity → owning ROS node)."""
-    import psycopg2, psycopg2.extras
-    sid = (qs.get('session_id') or qs.get('session') or [''])[0]
-    scope = (qs.get('scope') or ['__main__'])[0]
-    pid_filter = qs.get('pid', [None])[0]
-    if not sid:
-        handler.send_error(400, 'session_id required')
-        return
-    dsn = os.environ.get('FISH_PG_DSN',
-        'host=localhost port=5432 dbname=fish user=fish password=fish')
-    try:
-        conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
-        cur = conn.cursor()
-        sql = """
+_GANTT_CTES = """
         WITH e_to_n AS (
           SELECT e.session_id, e.scope, e.node_id AS e_id,
                  n.label AS node_name
@@ -1671,108 +1655,172 @@ def _serve_gantt_data(handler, qs):
                  lead(event) OVER (PARTITION BY vtid ORDER BY ts_ns) AS next_event
           FROM events
         )
-        SELECT p.pid, p.vtid, p.t0, p.t1, p.cb_addr,
-               COALESCE(fn.node_name, pn.node_name, '(unknown)') AS node,
-               COALESCE(fn.entity, p.cb_addr)                     AS entity,
-               COALESCE(fn.etype, '?')                            AS etype,
-               COALESCE(fn.cb_symbol, '')                         AS symbol
-        FROM paired p
-        LEFT JOIN f_to_n fn ON fn.cb_addr = p.cb_addr
-        LEFT JOIN pid_to_owning_node pn ON pn.pid = p.pid
-        WHERE p.event='ros2:callback_start' AND p.next_event='ros2:callback_end'
-          AND p.t1 IS NOT NULL
-        """
-        # Param order: e_to_n(sid,scope), f_to_n_graph(sid,scope), sub_cb_to_topic(sid),
-        # cb_symbols(sid), pid_to_owning_node(sid), events(sid)
-        params = [sid, scope, sid, scope, sid, sid, sid, sid]
+"""
+
+_GANTT_SPANS_DDL = """
+CREATE TABLE IF NOT EXISTS gantt_spans (
+  session_id text NOT NULL, scope text NOT NULL,
+  pid bigint, vtid bigint, t0_ns bigint NOT NULL, t1_ns bigint NOT NULL,
+  cb_addr text, node text, entity text, etype text, symbol text
+);
+CREATE INDEX IF NOT EXISTS gantt_spans_sid_t0 ON gantt_spans (session_id, scope, t0_ns);
+CREATE INDEX IF NOT EXISTS gantt_spans_sid_vtid ON gantt_spans (session_id, scope, vtid, t0_ns);
+CREATE TABLE IF NOT EXISTS gantt_meta (
+  session_id text NOT NULL, scope text NOT NULL, n_spans bigint, t0_min bigint, t1_max bigint,
+  gpu_submitter_cbs text[], built_at timestamptz DEFAULT now(), PRIMARY KEY (session_id, scope)
+);
+"""
+
+_GANTT_SPANS_SQL = """SELECT p.pid, p.vtid, p.t0, p.t1, p.cb_addr,
+       COALESCE(fn.node_name, pn.node_name, '(unknown)') AS node,
+       COALESCE(fn.entity, p.cb_addr)                     AS entity,
+       COALESCE(fn.etype, '?')                            AS etype,
+       COALESCE(fn.cb_symbol, '')                         AS symbol
+FROM paired p
+LEFT JOIN f_to_n fn ON fn.cb_addr = p.cb_addr
+LEFT JOIN pid_to_owning_node pn ON pn.pid = p.pid
+WHERE p.event='ros2:callback_start' AND p.next_event='ros2:callback_end'
+  AND p.t1 IS NOT NULL"""
+
+
+def _ensure_gantt_spans(cur, sid, scope):
+    """Materialise the per-session callback spans once (39 s → ms afterwards).
+    Idempotent: gantt_meta row present → nothing to do. Returns the meta row."""
+    cur.execute(_GANTT_SPANS_DDL)
+    cur.execute("SELECT n_spans, t0_min, t1_max, gpu_submitter_cbs FROM gantt_meta WHERE session_id=%s AND scope=%s", (sid, scope))
+    r = cur.fetchone()
+    if r:
+        return dict(r) if not isinstance(r, dict) else r
+    sys.stderr.write(f"[fish-viz] building gantt_spans for {sid}/{scope} …\n")
+    cur.execute("INSERT INTO gantt_spans (session_id, scope, pid, vtid, t0_ns, t1_ns, cb_addr, node, entity, etype, symbol) "
+                "SELECT %s, %s, q.pid, q.vtid, q.t0, q.t1, q.cb_addr, q.node, q.entity, q.etype, q.symbol FROM (" + _GANTT_CTES + _GANTT_SPANS_SQL + ") q",
+                [sid, scope, sid, scope, sid, scope, sid, sid, sid, sid])
+    cur.execute("""SELECT DISTINCT cb_addr FROM gantt_spans g WHERE session_id=%s AND scope=%s AND EXISTS (
+                     SELECT 1 FROM cuda_runtime cr WHERE cr.session_id=%s AND cr.tid=g.vtid AND cr.ts_ns BETWEEN g.t0_ns AND g.t1_ns LIMIT 1)""",
+                (sid, scope, sid))
+    gpu = [row[0] if not isinstance(row, dict) else row['cb_addr'] for row in cur.fetchall()]
+    cur.execute("SELECT count(*), min(t0_ns), max(t1_ns) FROM gantt_spans WHERE session_id=%s AND scope=%s", (sid, scope))
+    row = cur.fetchone(); row = list(row.values()) if isinstance(row, dict) else row
+    cur.execute("INSERT INTO gantt_meta (session_id, scope, n_spans, t0_min, t1_max, gpu_submitter_cbs) VALUES (%s,%s,%s,%s,%s,%s)",
+                (sid, scope, row[0], row[1], row[2], gpu))
+    cur.execute("ANALYZE gantt_spans")
+    return {'n_spans': row[0], 't0_min': row[1], 't1_max': row[2], 'gpu_submitter_cbs': gpu}
+
+
+def _serve_gantt_data(handler, qs):
+    """JSON for the gantt views. Spans come from the materialised gantt_spans
+    table (built on first request per session, see _ensure_gantt_spans).
+
+    Params: session_id, scope, [pid], [fmt=v1|v2], [t0,t1 (abs ns window)],
+            [px (pixel columns for density)], [max_spans (default 40000)]
+      fmt=v1 (default, gantt_cb.html): full rows with repeated strings.
+      fmt=v2 (gantt.html): dictionary-encoded columns → ~10x smaller.
+      With t0/t1: only spans overlapping the window; if more than max_spans
+      the response is mode='density' (per lane × pixel bucket: count, busy_ns,
+      dominant node) instead of individual spans."""
+    import psycopg2, psycopg2.extras
+    sid = (qs.get('session_id') or qs.get('session') or [''])[0]
+    scope = (qs.get('scope') or ['__main__'])[0]
+    pid_filter = (qs.get('pid') or [''])[0]
+    fmt = (qs.get('fmt') or ['v1'])[0]
+    if not sid:
+        handler.send_error(400, 'session_id required'); return
+    dsn = os.environ.get('FISH_PG_DSN', 'host=localhost port=5432 dbname=fish user=fish password=fish')
+    # Full (unwindowed, unfiltered) responses are cached on disk: encoding 1.4 M
+    # spans to JSON costs ~10 s in Python; the file streams in < 1 s.
+    cache_path = None
+    if not pid_filter and not qs.get('t0') and not qs.get('t1'):
+        cache_dir = os.environ.get('FISH_GANTT_CACHE', os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'), 'fish_gantt'))
+        cache_path = os.path.join(cache_dir, f"{sid}__{scope}__{fmt}.json".replace('/', '_'))
+        if os.path.exists(cache_path) and (qs.get('nocache', ['0'])[0] != '1'):
+            with open(cache_path, 'rb') as f: data = f.read()
+            handler.send_response(200)
+            handler.send_header('Content-Type', 'application/json')
+            handler.send_header('Content-Length', str(len(data)))
+            handler.send_header('Access-Control-Allow-Origin', '*')
+            handler.send_header('Cache-Control', 'no-store')
+            handler.end_headers()
+            handler.wfile.write(data)
+            return
+    try:
+        conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+        conn.autocommit = True
+        cur = conn.cursor()
+        meta = _ensure_gantt_spans(cur, sid, scope)
+        t0_min = int(meta['t0_min'] or 0); t1_max = int(meta['t1_max'] or 0)
+        gpu_submitter_cbs = list(meta.get('gpu_submitter_cbs') or [])
+        w0 = int(qs['t0'][0]) if qs.get('t0') else None
+        w1 = int(qs['t1'][0]) if qs.get('t1') else None
+        px = max(100, min(8000, int((qs.get('px') or ['1400'])[0])))
+        max_spans = int((qs.get('max_spans') or ['40000'])[0])
+        where = "session_id=%s AND scope=%s"; params = [sid, scope]
         if pid_filter:
-            sql += " AND p.pid = %s"
-            params.append(int(pid_filter))
-        sql += " ORDER BY p.t0"
-        cur.execute(sql, params)
-        rows = [dict(r) for r in cur.fetchall()]
-
-        # GPU-submitter detection: a cb_addr is marked as a GPU submitter if at
-        # least one of its execution windows on the right vtid coincided with
-        # cuda_runtime calls. Coarse-grained (per cb_addr, not per execution)
-        # — keeps the response small and the rendering legible.
-        gpu_submitter_cbs: list[str] = []
-        try:
-            cur.execute("""
-                SELECT DISTINCT cb_addr FROM (
-                  WITH events AS (
-                    SELECT vpid AS pid, vtid, ts_ns, event,
-                           payload->>'callback' AS cb_addr
-                    FROM ros2_trace
-                    WHERE session_id=%s
-                      AND event IN ('ros2:callback_start','ros2:callback_end')
-                  ),
-                  paired AS (
-                    SELECT vtid, cb_addr, ts_ns AS t0,
-                           lead(ts_ns) OVER (PARTITION BY vtid ORDER BY ts_ns) AS t1,
-                           lead(event) OVER (PARTITION BY vtid ORDER BY ts_ns) AS next_event,
-                           event
-                    FROM events
-                  )
-                  SELECT p.cb_addr, p.vtid, p.t0, p.t1
-                  FROM paired p
-                  WHERE p.event='ros2:callback_start' AND p.next_event='ros2:callback_end'
-                ) p
-                WHERE EXISTS (
-                  SELECT 1 FROM cuda_runtime cr
-                  WHERE cr.session_id = %s
-                    AND cr.tid = p.vtid
-                    AND cr.ts_ns >= p.t0 AND cr.ts_ns <= p.t1
-                  LIMIT 1
-                )
-            """, (sid, sid))
-            gpu_submitter_cbs = [r['cb_addr'] for r in cur.fetchall()]
-        except Exception as e:
-            sys.stderr.write(f"[fish-viz WARN] gpu_submitter detection failed: {e}\n")
+            where += " AND pid=%s"; params.append(int(pid_filter))
+        if w0 is not None and w1 is not None:
+            where += " AND t1_ns >= %s AND t0_ns <= %s"; params += [w0, w1]
+        mode = 'spans'
+        rows = []
+        if w0 is not None and w1 is not None:
+            cur.execute(f"SELECT count(*) AS n FROM gantt_spans WHERE {where}", params)
+            n_win = cur.fetchone()['n']
+            if n_win > max_spans:
+                mode = 'density'
+        if mode == 'spans':
+            cur.execute(f"SELECT pid, vtid, t0_ns AS t0, t1_ns AS t1, cb_addr, node, entity, etype, symbol FROM gantt_spans WHERE {where} ORDER BY t0_ns", params)
+            rows = cur.fetchall()
+        else:
+            bw = max(1, (w1 - w0) // px)
+            cur.execute(f"""
+                SELECT pid, vtid, ((GREATEST(t0_ns, %s) - %s) / %s)::int AS b,
+                       count(*) AS n,
+                       sum(LEAST(t1_ns, %s) - GREATEST(t0_ns, %s)) AS busy,
+                       mode() WITHIN GROUP (ORDER BY node) AS node
+                FROM gantt_spans WHERE {where}
+                GROUP BY pid, vtid, b ORDER BY pid, vtid, b""", [w0, w0, bw, w1, w0] + params)
+            rows = cur.fetchall()
+        # lanes always (so density mode can label rows)
+        cur.execute("SELECT pid, vtid, count(*) AS n, mode() WITHIN GROUP (ORDER BY node) AS node FROM gantt_spans WHERE session_id=%s AND scope=%s GROUP BY pid, vtid ORDER BY pid, vtid", (sid, scope))
+        lanes = [dict(r) for r in cur.fetchall()]
         conn.close()
-
-        # WARN: how many spans were resolved via the raw-tracepoint fallback
-        # (i.e. the model didn't bind their cb_addr to an F node)?
-        unresolved_via_graph = sum(
-            1 for r in rows
-            if r["etype"] == "sub" and r["entity"].startswith("sub:") and r["node"] != "(unknown)"
-        )
-        truly_unresolved = sum(1 for r in rows if r["node"] == "(unknown)")
-        # Heuristic: a span resolved 'sub:<topic>' with no symbol attached
-        # came through the fallback path. The model fix should reduce this to 0.
-        n_fallback = sum(1 for r in rows if r["etype"] == "sub" and not r["symbol"])
-        if truly_unresolved or n_fallback:
-            sys.stderr.write(
-                f"[fish-viz WARN] gantt session={sid} scope={scope}: "
-                f"{len(rows)} spans, {n_fallback} resolved via tracepoint fallback "
-                f"(model missed), {truly_unresolved} still node=(unknown)\n"
-            )
     except Exception as e:
-        handler.send_error(500, f'PG error: {e}')
-        return
-
-    t0_min = min((r['t0'] for r in rows), default=0)
-    t1_max = max((r['t1'] for r in rows), default=0)
-    body = json.dumps({
-        'session_id': sid, 'scope': scope,
-        'pid_filter': pid_filter,
-        'n_spans': len(rows),
-        't0_min_ns': t0_min, 't1_max_ns': t1_max,
-        'gpu_submitter_cbs': gpu_submitter_cbs,
-        'spans': [
-            [r['pid'], r['vtid'], r['t0'] - t0_min, r['t1'] - t0_min,
-             r['node'], r['entity'], r['etype'], r['symbol'], r['cb_addr']]
-            for r in rows
-        ],
-        'fields': ['pid', 'vtid', 't0_rel_ns', 't1_rel_ns', 'node', 'entity', 'etype', 'symbol', 'cb_addr'],
-    }).encode()
+        handler.send_error(500, f'PG error: {e}'); return
+    body = {'session_id': sid, 'scope': scope, 'pid_filter': pid_filter, 'mode': mode, 'fmt': fmt,
+            'n_spans_total': int(meta['n_spans'] or 0), 'n_spans': len(rows),
+            't0_min_ns': t0_min, 't1_max_ns': t1_max, 'gpu_submitter_cbs': gpu_submitter_cbs,
+            'lanes': [[l['pid'], l['vtid'], l['n'], l['node']] for l in lanes]}
+    if mode == 'density':
+        body['bucket_ns'] = max(1, (w1 - w0) // px); body['w0_ns'] = w0; body['w1_ns'] = w1
+        body['bins'] = [[r['pid'], r['vtid'], r['b'], r['n'], int(r['busy'] or 0), r['node']] for r in rows]
+    elif fmt == 'v2':
+        dicts = {'node': {}, 'entity': {}, 'etype': {}, 'symbol': {}, 'cb_addr': {}}
+        def enc(k, v):
+            d = dicts[k]; v = v or ''
+            if v not in d: d[v] = len(d)
+            return d[v]
+        body['spans'] = [[r['pid'], r['vtid'], r['t0'] - t0_min, r['t1'] - t0_min,
+                          enc('node', r['node']), enc('entity', r['entity']), enc('etype', r['etype']),
+                          enc('symbol', r['symbol']), enc('cb_addr', r['cb_addr'])] for r in rows]
+        body['dicts'] = {k: [x for x, _ in sorted(d.items(), key=lambda kv: kv[1])] for k, d in dicts.items()}
+        body['fields'] = ['pid', 'vtid', 't0_rel_ns', 't1_rel_ns', 'node_i', 'entity_i', 'etype_i', 'symbol_i', 'cb_addr_i']
+    else:
+        body['spans'] = [[r['pid'], r['vtid'], r['t0'] - t0_min, r['t1'] - t0_min,
+                          r['node'], r['entity'], r['etype'], r['symbol'], r['cb_addr']] for r in rows]
+        body['fields'] = ['pid', 'vtid', 't0_rel_ns', 't1_rel_ns', 'node', 'entity', 'etype', 'symbol', 'cb_addr']
+    data = json.dumps(body, default=str, separators=(',', ':')).encode()
+    if cache_path:
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path + '.tmp', 'wb') as f: f.write(data)
+            os.replace(cache_path + '.tmp', cache_path)
+        except Exception as e:
+            sys.stderr.write(f"[fish-viz WARN] gantt cache write failed: {e}\n")
     handler.send_response(200)
     handler.send_header('Content-Type', 'application/json')
-    handler.send_header('Content-Length', str(len(body)))
+    handler.send_header('Content-Length', str(len(data)))
     handler.send_header('Access-Control-Allow-Origin', '*')
     handler.send_header('Cache-Control', 'no-store')
     handler.end_headers()
-    handler.wfile.write(body)
+    handler.wfile.write(data)
 
 
 class H(BaseHTTPRequestHandler):
