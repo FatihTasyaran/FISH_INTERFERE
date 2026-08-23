@@ -1401,6 +1401,40 @@ _SESSION_LABELS = {
 }
 
 
+
+def _serve_state_edges(handler, qs):
+    """/api/state-edges — ALL L3 state links of a session (the /api/wcc payload
+    only carries intra-FT edges; state links mostly CROSS FTs — that is their
+    point — so the chord/HEB views fetch them here)."""
+    import psycopg2
+    sid = (qs.get('session_id') or qs.get('session') or [''])[0]
+    scope = (qs.get('scope') or ['__main__'])[0]
+    if not sid:
+        handler.send_error(400, 'session_id required'); return
+    dsn = os.environ.get('FISH_PG_DSN', 'host=localhost port=5432 dbname=fish user=fish password=fish')
+    try:
+        conn = psycopg2.connect(dsn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT source, target, attrs->>'topic', attrs->>'polled',
+                       (attrs->>'age_ns_p50')::bigint, (attrs->>'flow_n')::bigint
+                FROM graph_edges
+                WHERE session_id=%s AND scope=%s AND level='L3' AND attrs->>'nature'='state'
+            """, (sid, scope))
+            rows = [{'src': r[0], 'dst': r[1], 'topic': r[2], 'polled': r[3] == 'true',
+                     'age_ns_p50': r[4], 'flow_n': r[5], 'nature': 'state'} for r in cur.fetchall()]
+        conn.close()
+    except Exception as e:
+        handler.send_error(500, f'PG error: {e}'); return
+    data = json.dumps(rows).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(data)))
+    handler.send_header('Access-Control-Allow-Origin', '*')
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
 def _serve_sessions(handler, qs):
     """/api/sessions — every session that has a graph (graph_nodes) plus its
     time range (sessions table) for building dashboard URLs. Used by the
@@ -1842,6 +1876,8 @@ class H(BaseHTTPRequestHandler):
             _serve_file(self, os.path.join(HERE, 'cb_stats.html'), 'text/html; charset=utf-8')
         elif path in ('/component-links', '/component-links.html', '/component_links.html'):
             _serve_file(self, os.path.join(HERE, 'component_links.html'), 'text/html; charset=utf-8')
+        elif path in ('/chord', '/chord.html', '/chord_view.html'):
+            _serve_file(self, os.path.join(HERE, 'chord_view.html'), 'text/html; charset=utf-8')
         elif path in ('/wcc', '/wcc.html', '/wcc-view', '/wcc_view.html',
                       '/ft', '/ft.html', '/ft-view', '/ft_view.html'):
             # FT = Fish Task — user-facing renaming of WCC view. Both URLs
@@ -1869,6 +1905,8 @@ class H(BaseHTTPRequestHandler):
             _serve_wcc(self, qs)
         elif path in ('/api/wcc-svg', '/api/ft-svg'):
             _serve_wcc_svg(self, qs)
+        elif path == '/api/state-edges':
+            _serve_state_edges(self, qs)
         elif path == '/api/sessions':
             _serve_sessions(self, qs)
         elif path in ('/fishiris', '/site'):
