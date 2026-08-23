@@ -1424,14 +1424,20 @@ def _serve_trisector(handler, qs):
         _ensure_gantt_spans(cur, sid, scope)
         cur.execute("""
             WITH f2n AS (
-              SELECT f.cb_addr, COALESCE(n.full_name, n.label) AS node_full
+              SELECT f.cb_addr, COALESCE(n.full_name, n.label) AS node_full,
+                     ex.node_id AS ex_id, ex.label AS ex_label,
+                     ex.attrs->>'executor_type' AS ex_type, ex.attrs->>'num_threads' AS ex_threads
               FROM graph_nodes f
               JOIN graph_edges ge  ON ge.session_id=f.session_id AND ge.scope=f.scope AND ge.target=f.node_id AND ge.rel='contains'
               JOIN graph_nodes e   ON e.session_id=ge.session_id AND e.scope=ge.scope AND e.node_id=ge.source AND e.type='E'
               JOIN graph_edges ge2 ON ge2.session_id=e.session_id AND ge2.scope=e.scope AND ge2.target=e.node_id AND ge2.rel='contains'
               JOIN graph_nodes n   ON n.session_id=ge2.session_id AND n.scope=ge2.scope AND n.node_id=ge2.source AND n.type='N'
+              JOIN graph_edges ge3 ON ge3.session_id=n.session_id AND ge3.scope=n.scope AND ge3.target=n.node_id AND ge3.rel='contains'
+              JOIN graph_nodes ex  ON ex.session_id=ge3.session_id AND ex.scope=ge3.scope AND ex.node_id=ge3.source AND ex.type='EX'
               WHERE f.session_id=%s AND f.scope=%s AND f.type='F' AND f.cb_addr IS NOT NULL)
             SELECT s.cb_addr, s.pid, min(f2n.node_full) AS node_full, min(s.node) AS proc_label,
+                   min(f2n.ex_id) AS ex_id, min(f2n.ex_label) AS ex_label,
+                   min(f2n.ex_type) AS ex_type, min(f2n.ex_threads) AS ex_threads,
                    sum(s.t1_ns - s.t0_ns) AS exec_ns, count(*) AS n
             FROM gantt_spans s LEFT JOIN f2n ON f2n.cb_addr = s.cb_addr
             WHERE s.session_id=%s AND s.scope=%s

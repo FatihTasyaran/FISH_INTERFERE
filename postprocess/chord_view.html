@@ -70,7 +70,7 @@
 
 <section>
   <h2>4 · Tri-sector — the three axes as 120° sectors</h2>
-  <div class="sub">arcs: ROS classes (top, sized by CPU execution time) · OS executors/processes (left, CPU execution time) · GPU streams (right, kernel time).
+  <div class="sub">arcs: ROS classes (top, sized by CPU execution time) · OS executors (left: EX vertices — process-primary executors, type/threads; CPU execution time) · GPU streams (right, kernel time).
   Ribbons are NOT messages: each ribbon is the SAME set of facts seen from two axes (a meet cell) — e.g. "this namespace's callbacks ran in this process",
   "this namespace's callbacks submitted this much kernel time to this stream". width = total time (additive) · opacity = fact count
   (message size is not traced at the ROS layer — alpha uses counts; GPU ribbons show memcpy bytes in the tooltip).</div>
@@ -240,23 +240,29 @@ function drawTri() {
     const parts = full.replace(/^\//,'').split('/');
     if (lvl >= 3 || parts.length <= 1) return full;
     return '/' + parts.slice(0, Math.min(lvl, parts.length - 1)).join('/'); };
-  const cb2ns = new Map(), cb2pid = new Map(), pidLabel = new Map(), pidExec = new Map();
+  // OS axis key = EX vertex (the process's primary executor in the IR; CBG-level
+  // refinement is the next OS slider step). Fallback for callbacks the model
+  // did not bind: the pid itself.
+  const cb2ns = new Map(), cb2os = new Map(), osLabel = new Map();
   for (const r of tri.cpu) {
-    cb2ns.set(r.cb_addr, rosKey(r.node_full)); cb2pid.set(r.cb_addr, r.pid);
-    const e = +r.exec_ns;
-    if ((pidExec.get(r.pid)||0) < e) { pidExec.set(r.pid, e); pidLabel.set(r.pid, r.node_full || r.proc_label || ('pid '+r.pid)); }
+    cb2ns.set(r.cb_addr, rosKey(r.node_full));
+    const osk = r.ex_id != null ? 'X'+r.ex_id : 'P'+r.pid;
+    cb2os.set(r.cb_addr, osk);
+    if (!osLabel.has(osk)) osLabel.set(osk, r.ex_id != null
+      ? `${r.ex_label} ${r.ex_type ? '· '+r.ex_type + (r.ex_threads && +r.ex_threads>1 ? '('+r.ex_threads+')' : '') : ''}`
+      : 'pid '+r.pid);
   }
   const agg = (rows, kA, kB, w) => { const m = new Map();
     for (const r of rows) { const a = kA(r), b = kB(r); if (a==null||b==null) continue;
       const k = a+'\u0001'+b; const cur = m.get(k) || {a,b,w:0,n:0}; cur.w += +w(r); cur.n += +r.n; m.set(k, cur); }
     return [...m.values()]; };
-  const osros = agg(tri.cpu, r=>'P'+r.pid, r=>rosKey(r.node_full), r=>r.exec_ns);
+  const osros = agg(tri.cpu, r=>(r.ex_id!=null?'X'+r.ex_id:'P'+r.pid), r=>rosKey(r.node_full), r=>r.exec_ns);
   const rosgpu = agg(tri.gpu, r=>cb2ns.get(r.cb_addr)||'(unresolved)', r=>'S'+r.stream, r=>r.gpu_ns);
-  const osgpu  = agg(tri.gpu, r=>'P'+r.pid, r=>'S'+r.stream, r=>r.gpu_ns);
+  const osgpu  = agg(tri.gpu, r=>cb2os.get(r.cb_addr)||('P'+r.pid), r=>'S'+r.stream, r=>r.gpu_ns);
   const cpBytes = new Map();   // "ns|S<id>" and "P<pid>|S<id>" -> bytes
-  for (const m of (tri.memcpy||[])) { const ns = cb2ns.get(m.cb_addr), pid = cb2pid.get(m.cb_addr);
+  for (const m of (tri.memcpy||[])) { const ns = cb2ns.get(m.cb_addr);
     if (ns) cpBytes.set(ns+'\u0001S'+m.stream, (cpBytes.get(ns+'\u0001S'+m.stream)||0) + +m.bytes);
-    if (pid!=null) cpBytes.set('P'+pid+'\u0001S'+m.stream, (cpBytes.get('P'+pid+'\u0001S'+m.stream)||0) + +m.bytes); }
+    const osk = cb2os.get(m.cb_addr); if (osk) cpBytes.set(osk+'\u0001S'+m.stream, (cpBytes.get(osk+'\u0001S'+m.stream)||0) + +m.bytes); }
   // class totals per sector (additive time)
   const tot = new Map(); const add = (k,v) => tot.set(k, (tot.get(k)||0) + v);
   for (const l of osros) { add(l.a, l.w); add(l.b, l.w); }
@@ -279,7 +285,7 @@ function drawTri() {
       const span = (a1 - a0 - pad*sec.classes.length) * weights[i] / sum;
       const s0 = a, s1 = a + span; a = s1 + pad;
       angle.set(c, (s0+s1)/2);
-      const lbl = c.startsWith('P') ? (pidLabel.get(+c.slice(1)) || c) : c.startsWith('S') ? ('stream '+c.slice(1)) : c;
+      const lbl = (c.startsWith('X')||c.startsWith('P')) ? (osLabel.get(c) || c) : c.startsWith('S') ? ('stream '+c.slice(1)) : c;
       g.append('path').attr('d', d3.arc()({innerRadius:R, outerRadius:R+16, startAngle:s0, endAngle:s1}))
         .attr('fill', color(c)).attr('stroke','#fff')
         .on('mousemove', ev => showTip(ev, `<b>${lbl}</b><br>${name} class · total time ${(tot.get(c)/1e6).toFixed(1)} ms`))
@@ -297,9 +303,9 @@ function drawTri() {
   }
   const pt = c => { const a = angle.get(c) - Math.PI/2, r = R - 4; return [Math.cos(a)*r, Math.sin(a)*r]; };
   const pairSets = [
-    {links: osros,  color: '#456',    lbl: (l)=>`${pidLabel.get(+l.a.slice(1))||l.a} ⟷ ${l.b}`, unit: 'CPU exec'},
+    {links: osros,  color: '#456',    lbl: (l)=>`${osLabel.get(l.a)||l.a} ⟷ ${l.b}`, unit: 'CPU exec'},
     {links: rosgpu, color: '#2ca02c', lbl: (l)=>`${l.a} ⟷ stream ${l.b.slice(1)}`, unit: 'kernel time'},
-    {links: osgpu,  color: '#9467bd', lbl: (l)=>`${pidLabel.get(+l.a.slice(1))||l.a} ⟷ stream ${l.b.slice(1)}`, unit: 'kernel time'},
+    {links: osgpu,  color: '#9467bd', lbl: (l)=>`${osLabel.get(l.a)||l.a} ⟷ stream ${l.b.slice(1)}`, unit: 'kernel time'},
   ];
   for (const ps of pairSets) {
     if (!ps.links.length) continue;
