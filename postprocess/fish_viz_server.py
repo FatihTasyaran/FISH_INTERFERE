@@ -1402,6 +1402,73 @@ _SESSION_LABELS = {
 
 
 
+
+def _serve_trisector(handler, qs):
+    """/api/trisector — fact aggregates for the tri-sector (OS/ROS/GPU) view.
+    CPU facts: per callback -> (pid, node_full, total exec time, count) from the
+    materialised gantt_spans + graph containment. GPU facts: kernel/memcpy ->
+    submitting callback via correlation_id -> cuda_runtime(tid, ts) inside a
+    callback window -> (cb, pid, stream, gpu time, count, bytes). The client
+    aggregates these by the chosen level per axis; ribbons are CO-MEMBERSHIP of
+    the same facts across two axes (the meets), not message edges."""
+    import psycopg2, psycopg2.extras
+    sid = (qs.get('session_id') or qs.get('session') or [''])[0]
+    scope = (qs.get('scope') or ['__main__'])[0]
+    if not sid:
+        handler.send_error(400, 'session_id required'); return
+    dsn = os.environ.get('FISH_PG_DSN', 'host=localhost port=5432 dbname=fish user=fish password=fish')
+    try:
+        conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+        conn.autocommit = True
+        cur = conn.cursor()
+        _ensure_gantt_spans(cur, sid, scope)
+        cur.execute("""
+            WITH f2n AS (
+              SELECT f.cb_addr, COALESCE(n.full_name, n.label) AS node_full
+              FROM graph_nodes f
+              JOIN graph_edges ge  ON ge.session_id=f.session_id AND ge.scope=f.scope AND ge.target=f.node_id AND ge.rel='contains'
+              JOIN graph_nodes e   ON e.session_id=ge.session_id AND e.scope=ge.scope AND e.node_id=ge.source AND e.type='E'
+              JOIN graph_edges ge2 ON ge2.session_id=e.session_id AND ge2.scope=e.scope AND ge2.target=e.node_id AND ge2.rel='contains'
+              JOIN graph_nodes n   ON n.session_id=ge2.session_id AND n.scope=ge2.scope AND n.node_id=ge2.source AND n.type='N'
+              WHERE f.session_id=%s AND f.scope=%s AND f.type='F' AND f.cb_addr IS NOT NULL)
+            SELECT s.cb_addr, s.pid, min(f2n.node_full) AS node_full, min(s.node) AS proc_label,
+                   sum(s.t1_ns - s.t0_ns) AS exec_ns, count(*) AS n
+            FROM gantt_spans s LEFT JOIN f2n ON f2n.cb_addr = s.cb_addr
+            WHERE s.session_id=%s AND s.scope=%s
+            GROUP BY s.cb_addr, s.pid
+        """, (sid, scope, sid, scope))
+        cpu = [dict(r) for r in cur.fetchall()]
+        cur.execute("""
+            SELECT sp.cb_addr, sp.pid, k.stream_id AS stream, sum(k.duration_ns) AS gpu_ns, count(*) AS n
+            FROM gpu_kernels k
+            JOIN cuda_runtime r ON r.session_id=k.session_id AND r.correlation_id=k.correlation_id AND r.source=k.source
+            JOIN gantt_spans sp ON sp.session_id=k.session_id AND sp.scope=%s
+                 AND sp.vtid=r.tid AND r.ts_ns BETWEEN sp.t0_ns AND sp.t1_ns
+            WHERE k.session_id=%s GROUP BY 1,2,3
+        """, (scope, sid))
+        gpu = [dict(r) for r in cur.fetchall()]
+        cur.execute("""
+            SELECT sp.cb_addr, m.stream_id AS stream, sum(m.bytes) AS bytes, sum(m.duration_ns) AS copy_ns, count(*) AS n
+            FROM gpu_memcpy m
+            JOIN cuda_runtime r ON r.session_id=m.session_id AND r.correlation_id=m.correlation_id AND r.source=m.source
+            JOIN gantt_spans sp ON sp.session_id=m.session_id AND sp.scope=%s
+                 AND sp.vtid=r.tid AND r.ts_ns BETWEEN sp.t0_ns AND sp.t1_ns
+            WHERE m.session_id=%s GROUP BY 1,2
+        """, (scope, sid))
+        memcpy = [dict(r) for r in cur.fetchall()]
+        conn.close()
+    except Exception as e:
+        handler.send_error(500, f'PG error: {e}'); return
+    data = json.dumps({'session_id': sid, 'scope': scope, 'cpu': cpu, 'gpu': gpu, 'memcpy': memcpy},
+                      default=str, separators=(',', ':')).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(data)))
+    handler.send_header('Access-Control-Allow-Origin', '*')
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
 def _serve_state_edges(handler, qs):
     """/api/state-edges — ALL L3 state links of a session (the /api/wcc payload
     only carries intra-FT edges; state links mostly CROSS FTs — that is their
@@ -1905,6 +1972,8 @@ class H(BaseHTTPRequestHandler):
             _serve_wcc(self, qs)
         elif path in ('/api/wcc-svg', '/api/ft-svg'):
             _serve_wcc_svg(self, qs)
+        elif path == '/api/trisector':
+            _serve_trisector(self, qs)
         elif path == '/api/state-edges':
             _serve_state_edges(self, qs)
         elif path == '/api/sessions':

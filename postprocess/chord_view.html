@@ -68,6 +68,19 @@
   <svg id="heb" width="920" height="920"></svg>
 </section>
 
+<section>
+  <h2>4 · Tri-sector — the three axes as 120° sectors</h2>
+  <div class="sub">arcs: ROS classes (top, sized by CPU execution time) · OS executors/processes (left, CPU execution time) · GPU streams (right, kernel time).
+  Ribbons are NOT messages: each ribbon is the SAME set of facts seen from two axes (a meet cell) — e.g. "this namespace's callbacks ran in this process",
+  "this namespace's callbacks submitted this much kernel time to this stream". width = total time (additive) · opacity = fact count
+  (message size is not traced at the ROS layer — alpha uses counts; GPU ribbons show memcpy bytes in the tooltip).</div>
+  <div class="controls">
+    ROS level <select id="trosLvl"><option value="1">ns¹</option><option value="2">ns²</option><option value="3">node</option></select>
+    <span class="note" id="tristat"></span>
+  </div>
+  <svg id="tri" width="980" height="980"></svg>
+</section>
+
 <script>
 const qs = new URLSearchParams(location.search);
 const sid0 = qs.get('session_id') || qs.get('session') || '';
@@ -77,7 +90,7 @@ const CROSS = new Set(['/system','/adapi','/default_adapi','/viz','/','/pointclo
 const tip = document.getElementById('tip');
 const showTip = (ev, html) => { tip.style.display='block'; tip.style.left=(ev.clientX+12)+'px'; tip.style.top=(ev.clientY+12)+'px'; tip.innerHTML=html; };
 const hideTip = () => tip.style.display='none';
-let comp = null, wccRaw = null;
+let comp = null, wccRaw = null, tri = null;
 
 function chordData() {
   const wkey = document.getElementById('wsel').value;
@@ -203,18 +216,110 @@ function drawHEB() {
 async function load() {
   const sid = document.getElementById('sid').value.trim(); if (!sid) return;
   document.getElementById('stat').textContent = 'loading…';
-  const [c, w, se] = await Promise.all([
+  const [c, w, se, tr] = await Promise.all([
     fetch(`/api/components?session=${encodeURIComponent(sid)}&scope=${encodeURIComponent(scope)}&depth=1`).then(r=>r.json()),
     fetch(`/api/wcc?session_id=${encodeURIComponent(sid)}&scope=${encodeURIComponent(scope)}&neighbors=hide&ext=hide`).then(r=>r.json()),
     fetch(`/api/state-edges?session_id=${encodeURIComponent(sid)}&scope=${encodeURIComponent(scope)}`).then(r=>r.json()).catch(_=>[]),
+    fetch(`/api/trisector?session_id=${encodeURIComponent(sid)}&scope=${encodeURIComponent(scope)}`).then(r=>r.json()).catch(_=>null),
   ]);
   comp = c; wccRaw = w; wccRaw.state_edges = se;   // cross-FT state links live only here
+  tri = tr;
   document.getElementById('stat').textContent = `${c.components.length} components · ${c.links.length} links`;
-  drawChord('c1', true); drawChord('c2', false); drawHEB();
+  drawChord('c1', true); drawChord('c2', false); drawHEB(); drawTri();
 }
 ['wsel','wsqrt','ktrig','ksamp','crossc'].forEach(id => document.getElementById(id).addEventListener('change', () => { if(comp){ drawChord('c1',true); drawChord('c2',false); } }));
 document.getElementById('beta').addEventListener('input', () => { if(wccRaw) drawHEB(); });
 document.getElementById('hebState').addEventListener('change', () => { if(wccRaw) drawHEB(); });
+document.getElementById('trosLvl').addEventListener('change', () => { if (tri) drawTri(); });
+
+function drawTri() {
+  const svg = d3.select('#tri'); svg.selectAll('*').remove();
+  if (!tri) return;
+  const lvl = +document.getElementById('trosLvl').value;
+  const rosKey = full => { if (!full) return '(unresolved)';
+    const parts = full.replace(/^\//,'').split('/');
+    if (lvl >= 3 || parts.length <= 1) return full;
+    return '/' + parts.slice(0, Math.min(lvl, parts.length - 1)).join('/'); };
+  const cb2ns = new Map(), cb2pid = new Map(), pidLabel = new Map(), pidExec = new Map();
+  for (const r of tri.cpu) {
+    cb2ns.set(r.cb_addr, rosKey(r.node_full)); cb2pid.set(r.cb_addr, r.pid);
+    const e = +r.exec_ns;
+    if ((pidExec.get(r.pid)||0) < e) { pidExec.set(r.pid, e); pidLabel.set(r.pid, r.node_full || r.proc_label || ('pid '+r.pid)); }
+  }
+  const agg = (rows, kA, kB, w) => { const m = new Map();
+    for (const r of rows) { const a = kA(r), b = kB(r); if (a==null||b==null) continue;
+      const k = a+'\u0001'+b; const cur = m.get(k) || {a,b,w:0,n:0}; cur.w += +w(r); cur.n += +r.n; m.set(k, cur); }
+    return [...m.values()]; };
+  const osros = agg(tri.cpu, r=>'P'+r.pid, r=>rosKey(r.node_full), r=>r.exec_ns);
+  const rosgpu = agg(tri.gpu, r=>cb2ns.get(r.cb_addr)||'(unresolved)', r=>'S'+r.stream, r=>r.gpu_ns);
+  const osgpu  = agg(tri.gpu, r=>'P'+r.pid, r=>'S'+r.stream, r=>r.gpu_ns);
+  const cpBytes = new Map();   // "ns|S<id>" and "P<pid>|S<id>" -> bytes
+  for (const m of (tri.memcpy||[])) { const ns = cb2ns.get(m.cb_addr), pid = cb2pid.get(m.cb_addr);
+    if (ns) cpBytes.set(ns+'\u0001S'+m.stream, (cpBytes.get(ns+'\u0001S'+m.stream)||0) + +m.bytes);
+    if (pid!=null) cpBytes.set('P'+pid+'\u0001S'+m.stream, (cpBytes.get('P'+pid+'\u0001S'+m.stream)||0) + +m.bytes); }
+  // class totals per sector (additive time)
+  const tot = new Map(); const add = (k,v) => tot.set(k, (tot.get(k)||0) + v);
+  for (const l of osros) { add(l.a, l.w); add(l.b, l.w); }
+  for (const l of rosgpu) add('S'+l.b.slice(1), 0);
+  for (const l of osgpu) add(l.b, l.w);   // GPU stream arcs sized by kernel time
+  const sectors = {
+    ROS: {range: [-Math.PI/3+0.07,  Math.PI/3-0.07], classes: [...new Set(osros.map(l=>l.b))].sort()},
+    GPU: {range: [ Math.PI/3+0.07,  Math.PI-0.07],   classes: [...new Set(osgpu.map(l=>l.b))].sort()},
+    OS:  {range: [-Math.PI+0.07,   -Math.PI/3-0.07], classes: [...new Set(osros.map(l=>l.a))].sort()},
+  };
+  const W = 980, R = W/2 - 130;
+  const g = svg.append('g').attr('transform', `translate(${W/2},${W/2})`);
+  const angle = new Map();   // class -> mid angle
+  const color = d3.scaleOrdinal(d3.schemeTableau10.concat(d3.schemeSet3));
+  for (const [name, sec] of Object.entries(sectors)) {
+    const [a0, a1] = sec.range; const pad = 0.012;
+    const weights = sec.classes.map(c => Math.max(tot.get(c)||0, 1e-9));
+    const sum = d3.sum(weights); let a = a0;
+    sec.classes.forEach((c, i) => {
+      const span = (a1 - a0 - pad*sec.classes.length) * weights[i] / sum;
+      const s0 = a, s1 = a + span; a = s1 + pad;
+      angle.set(c, (s0+s1)/2);
+      const lbl = c.startsWith('P') ? (pidLabel.get(+c.slice(1)) || c) : c.startsWith('S') ? ('stream '+c.slice(1)) : c;
+      g.append('path').attr('d', d3.arc()({innerRadius:R, outerRadius:R+16, startAngle:s0, endAngle:s1}))
+        .attr('fill', color(c)).attr('stroke','#fff')
+        .on('mousemove', ev => showTip(ev, `<b>${lbl}</b><br>${name} class · total time ${(tot.get(c)/1e6).toFixed(1)} ms`))
+        .on('mouseleave', hideTip);
+      const mid = (s0+s1)/2 - Math.PI/2;
+      g.append('text').attr('class','arcLbl')
+        .attr('transform', `rotate(${mid*180/Math.PI}) translate(${R+20},0) ${mid>Math.PI/2-0.01||mid<-Math.PI/2?'rotate(180)':''}`)
+        .attr('text-anchor', (mid>Math.PI/2-0.01||mid<-Math.PI/2) ? 'end' : 'start')
+        .text(lbl.length>26 ? lbl.slice(0,25)+'…' : lbl);
+    });
+    const mid = (a0+a1)/2 - Math.PI/2;
+    g.append('text').attr('font-weight',700).attr('font-size',15).attr('fill','#345')
+      .attr('transform', `rotate(${mid*180/Math.PI}) translate(${R+92},0) rotate(${-mid*180/Math.PI})`)
+      .attr('text-anchor','middle').text(name);
+  }
+  const pt = c => { const a = angle.get(c) - Math.PI/2, r = R - 4; return [Math.cos(a)*r, Math.sin(a)*r]; };
+  const pairSets = [
+    {links: osros,  color: '#456',    lbl: (l)=>`${pidLabel.get(+l.a.slice(1))||l.a} ⟷ ${l.b}`, unit: 'CPU exec'},
+    {links: rosgpu, color: '#2ca02c', lbl: (l)=>`${l.a} ⟷ stream ${l.b.slice(1)}`, unit: 'kernel time'},
+    {links: osgpu,  color: '#9467bd', lbl: (l)=>`${pidLabel.get(+l.a.slice(1))||l.a} ⟷ stream ${l.b.slice(1)}`, unit: 'kernel time'},
+  ];
+  for (const ps of pairSets) {
+    if (!ps.links.length) continue;
+    const wmax = d3.max(ps.links, l=>l.w), nmax = d3.max(ps.links, l=>l.n);
+    g.append('g').attr('fill','none').selectAll('path').data(ps.links).join('path')
+      .attr('d', l => { const [x1,y1] = pt(l.a), [x2,y2] = pt(l.b);
+        if (x1===undefined||x2===undefined) return null;
+        return `M${x1},${y1} Q${(x1+x2)*0.14},${(y1+y2)*0.14} ${x2},${y2}`; })
+      .attr('stroke', ps.color)
+      .attr('stroke-width', l => 1 + 24*(l.w/wmax))
+      .attr('stroke-opacity', l => 0.28 + 0.55*Math.sqrt(l.n/nmax))
+      .on('mousemove', (ev,l) => { const by = cpBytes.get(l.a+'\u0001'+l.b) || cpBytes.get(l.b+'\u0001'+l.a);
+        showTip(ev, `<b>${ps.lbl(l)}</b><br>${ps.unit}: ${(l.w/1e6).toFixed(1)} ms · facts: ${l.n.toLocaleString()}` +
+          (by ? `<br>memcpy: ${(by/1048576).toFixed(1)} MB` : '')); })
+      .on('mouseleave', hideTip);
+  }
+  document.getElementById('tristat').textContent =
+    `${sectors.OS.classes.length} processes · ${sectors.ROS.classes.length} ROS classes · ${sectors.GPU.classes.length} streams · ribbons: ${osros.length}+${rosgpu.length}+${osgpu.length}`;
+}
+
 document.getElementById('load').addEventListener('click', load);
 document.getElementById('sid').addEventListener('keydown', e => { if (e.key==='Enter') load(); });
 if (sid0) load();
