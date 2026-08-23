@@ -111,6 +111,62 @@ Fixed decisions (2026-08-21, Fatih)
 [F3] Terminology stays axis / level / pivot FOR NOW; RTS-aligned names are
      to be chosen only after the problem is fully solved.
 
+Fixed decisions, continued (2026-08-21/22, Fatih + discussion)
+---------------------------------------------------------------
+[F4] ROS-axis key = a PREFIX OF THE NODE'S FQN (Definition B), not of its
+     namespace part: level-k class of a fact = first min(k, len) segments of
+     its node's fully qualified name. Consequences: a node whose FQN is also
+     other nodes' namespace (r11: /pointcloud_container,
+     /system/mrm_comfortable_stop_operator, /system/mrm_emergency_stop_operator)
+     is NOT an ambiguity — the class is a fact set, the string is only its
+     label; such classes carry a [node+ns] badge. The container node's own
+     facts land in the same class as its children's (the intuitive reading).
+     (The current _namespace_views/_component_graph implementation uses the
+     namespace-part variant and must be migrated.)
+
+[F5] Level 0 of EVERY axis = the application, one class containing all facts
+     (ROS: '/', OS: the launching process, GPU: the device/app context).
+     Slider position 0 = everything. Classes may stop refining early (a
+     depth-1 node's class persists unchanged through deeper levels) — the
+     chain condition constrains the partition sequence, not every class.
+     Evidence that this is needed: the EX→ns tree of r11 is heterogeneous,
+     depths 1–5 under one executor (scratch ex_tree_r11.txt).
+
+[F6] LEVELS NEED NOT NEST: the exact object is a LEVEL DAG, trees are
+     presentations of it.
+     (iv) EXACT: a sequence of levels, each an exact partition of the facts,
+          with WEIGHTED INCIDENCE EDGES between adjacent levels = the meet
+          cells ((/perception, EX 1799): 86.7 s …). No class is split, no
+          class is copied, nothing is misassigned. Aggregation rule: always
+          sum over CELLS (edges); a box's mass = sum of its incident cell
+          masses — never sum child boxes across a many-parent step (double
+          counting).
+     A CHAIN (slider, nested boxes) is the special case where each
+     consecutive incidence matrix has exactly one nonzero per column (every
+     child class meets one parent class). Chain-ness is an EMPIRICAL,
+     per-session property to be tested and reported, not assumed.
+     Derived tree presentations of the DAG, both legitimate:
+     (i)  cumulative keys ns→(ns,EX): exact, but a namespace-spanning EX is
+          drawn once per parent (⧉ copies = the finding);
+     (ii) cumulative keys EX→ns: exact, EX whole, namespaces fragmented
+          (= the ex_tree list; the scheduling view — an EX class is the
+          indivisible unit of schedulability analysis and must not be split
+          in analyses of executor contention);
+     (iii) lifted-attribute tree ns*(EX) (assign each EX to its
+          dominant-by-exec-time namespace): both whole, but ns* ≈ ns with a
+          declared misassignment mass ε — reported per session, and read as
+          THE scalar design/deployment-mismatch metric.
+     Helper-node folding (transform_listener_impl_*, managed_tf_listener_*,
+     _ros2cli_*) is a σ-step applied before computing incidence/ε, else the
+     mismatch statistics are artificially inflated.
+     Evidence (r11, helpers folded): EX↔ns¹ incidence is single-parent for
+     71/72 executors — the level pair is 98.6 % chain; the only DAG spot is
+     pointcloud_container (PID 1799): /perception 86.7 s (77 %),
+     /pointcloud_container 12.2 s, /sensing 7.5 s, /localization 6.4 s.
+     Under (iii): ε = 26.0 s = 6.11 % of 425.6 s total exec — "the
+     deployment is 93.9 % faithful to the design; all deviation lives in the
+     shared GPU container."
+
 Open (not yet decided)
 ----------------------
 - Pooled-percentile aggregation everywhere vs per-edge summaries labelled
