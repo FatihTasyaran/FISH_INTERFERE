@@ -1949,6 +1949,8 @@ class H(BaseHTTPRequestHandler):
             _serve_file(self, os.path.join(HERE, 'cb_stats.html'), 'text/html; charset=utf-8')
         elif path in ('/component-links', '/component-links.html', '/component_links.html'):
             _serve_file(self, os.path.join(HERE, 'component_links.html'), 'text/html; charset=utf-8')
+        elif path in ('/butterfly', '/butterfly.html', '/butterfly_cpu_ros.html'):
+            _serve_file(self, os.path.join(HERE, 'butterfly_cpu_ros.html'), 'text/html; charset=utf-8')
         elif path in ('/axes', '/axes.html', '/axes_diagram.html'):
             _serve_file(self, os.path.join(HERE, 'axes_diagram.html'), 'text/html; charset=utf-8')
         elif path in ('/chord', '/chord.html', '/chord_view.html'):
