@@ -78,3 +78,16 @@ Findings after the sheet (2026-08-24 evening):
 Next (step by step): extend the correctness check to the tracepoints added AFTER the Isaac
   A2 verification — waitable (fish_rclcpp_waitable_init), intra-process waitables, receive_link,
   publish_link, client/action events — with expected counts per API call (API sheet rows).
+
+r25 = fish_20260824_154257 (fishwait7: GenericSubscription users rebuilt against the overlay,
+LTTNG_UST_REGISTER_TIMEOUT=-1) — sheet AUTOWARE-LOGSIM-R25-NODE-A2
+(https://docs.google.com/spreadsheets/d/1gJP9k6ASwc5p7auBKf_EkGCtddvUn5GxWZ0MNJrizhw):
+  trace completeness: node_list 222/222 in graph (236 N), processes without rcl_node_init 0 (r24: 10),
+  sub E without F 0 (r24: 19), callback executions not attributable to a registered callback
+  0.9 % (r24: 11.5 %) — the residual is ~47 callback addresses in the pointcloud / lidar
+  containers with no registration event of any kind (candidate: intra-process waitables — next
+  step, together with the waitable tracepoints in the correctness check).
+  A2: 224 nodes → OK 163, OK:range 34, ctx 12, plugins 3,
+  mismatch 12; expected E/F 2081/2081 vs counted 2378/2378 (ΔE == ΔF on every node).
+  VCC_GS rule is now image-aware: F counted only for packages listed in the overlay's
+  fish_rebuilt_packages.json (or a source-built stack); prebuilt → E only.
