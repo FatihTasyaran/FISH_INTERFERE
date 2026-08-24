@@ -111,7 +111,12 @@ All routes write sessions to `~/fish_traces/fish_<YYYYMMDD_HHMMSS>/{ros2,nsys,fi
   (2026-08-16: intra-process Waitable registration hook in
   `IntraProcessManager::add_subscription`) → **`-fishwait5`** (2026-08-17:
   ABI-safe intra-process publish link in `publisher_base.cpp`; per-lidar
-  chains restored). Current image for every Autoware script.
+  chains restored) → **`-fishwait6`** (2026-08-24: + provenance layer —
+  sources at the base image's revision `5dfb0900` under `/opt/fish_provenance/src`
+  (465/465 package versions verified), ctags index, configure-only
+  `compile_commands.json` for 383 packages; `ros2 run fish provenance <session>`;
+  see `provenance.md`). fishwait5 remains the tracepoint-overlay baseline; fishwait6
+  adds only the provenance assets on top of it.
 * **Run**: `scripts/autoware_runs/run_logging_sim_bag.sh` (r11 = `notes/cp_0.txt`):
   fresh container `--gpus all --privileged --net host --shm-size=2g -v
   ~/fish_traces:/root/fish_traces -e FISH_ENABLED=1 -e FISH_CUDA_EVENT_TRACE=1
