@@ -999,6 +999,16 @@ def _count_executor_started() -> Optional[int]:
         return None
 
 
+
+def _capture_libs_at_stable(logger=None):
+    """Provenance layer 1 at the moment everything is alive (system_stable)."""
+    try:
+        from fish.snapshot import capture_mapped_libs, get_snapshot_dir
+        capture_mapped_libs(get_snapshot_dir(), "stable")
+    except Exception as e:
+        print(f"[FISH]   maps_libs capture at stable failed: {e}")
+
+
 def _write_signal(name: str, logger: FishLogger) -> None:
     """Write a signal file and log to fishlog."""
     path = os.path.join(FISH_SIGNAL_DIR, f"fish_{name}")
@@ -1242,6 +1252,7 @@ def _wait_for_stable(logger: FishLogger) -> None:
 
     _write_signal("system_stable", logger)
     print(f"[FISH] System stable (both checks passed)")
+    _capture_libs_at_stable(logger)
 
 
 # ---------------------------------------------------------------------------
@@ -1630,6 +1641,7 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
         # We already scanned and handled all processes → stable
         _write_signal("system_stable", logger)
         print(f"[FISH] System stable (initial scan complete)")
+        _capture_libs_at_stable(logger)
 
     # Phase 3: Start live collectors (system is stable, GPU relaunch done)
     if initial_nodes:

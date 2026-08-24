@@ -298,6 +298,55 @@ def capture_launch_output(snapshot_dir: str) -> str:
     return output_path
 
 
+
+def capture_mapped_libs(snapshot_dir: str, tag: str = "shutdown") -> str:
+    """Provenance layer 1 (runtime → binaries): for every process that maps a
+    ROS 2 library, record its executable and the full set of shared objects
+    mapped at this instant (from /proc/<pid>/maps). Written as
+    snapshot/maps_libs_<tag>.json; the daemon calls it at system_stable
+    (processes alive) and shutdown_snapshot at stop (whatever is left).
+    Consumed by fish.provenance (binary → package → source → includes)."""
+    import glob, json, re
+    ros_markers = ("librclcpp", "librclpy", "librcl.so", "librcl_", "rclpy")
+    out = {"tag": tag, "ts_ns": time.time_ns(), "processes": []}
+    for pdir in glob.glob("/proc/[0-9]*"):
+        pid = int(pdir.rsplit("/", 1)[1])
+        try:
+            with open(f"{pdir}/maps") as f:
+                maps = f.read()
+        except Exception:
+            continue
+        if not any(m in maps for m in ros_markers):
+            continue
+        libs = set()
+        for ln in maps.splitlines():
+            parts = ln.split(None, 5)
+            if len(parts) == 6 and parts[5].startswith("/") and re.search(r"\.so(\.[0-9.]+)?$", parts[5]):
+                libs.add(parts[5])
+        libs = sorted(libs)
+        try:
+            exe = os.readlink(f"{pdir}/exe")
+        except Exception:
+            exe = None
+        try:
+            with open(f"{pdir}/cmdline", "rb") as f:
+                cmd = f.read().replace(b"\0", b" ").decode(errors="replace").strip()
+        except Exception:
+            cmd = ""
+        try:
+            with open(f"{pdir}/comm") as f:
+                comm = f.read().strip()
+        except Exception:
+            comm = ""
+        out["processes"].append({"pid": pid, "comm": comm, "exe": exe, "cmdline": cmd[:4000], "libs": libs})
+    path = os.path.join(snapshot_dir, f"maps_libs_{tag}.json")
+    os.makedirs(snapshot_dir, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(out, f)
+    print(f"[FISH]   → {path} ({len(out['processes'])} ROS processes)")
+    return path
+
+
 def shutdown_snapshot() -> str:
     """
     Phase 2: Capture instant system state at shutdown time.
@@ -310,6 +359,10 @@ def shutdown_snapshot() -> str:
 
     capture_env(snapshot_dir)
     capture_process_tree(snapshot_dir)
+    try:
+        capture_mapped_libs(snapshot_dir, "shutdown")
+    except Exception as e:
+        print(f"[FISH]   maps_libs capture failed: {e}")
     capture_component_list(snapshot_dir)
     _refresh_node_info(snapshot_dir)
     capture_launch_output(snapshot_dir)

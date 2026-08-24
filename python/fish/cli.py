@@ -116,6 +116,12 @@ def cmd_gpu(args: list[str]) -> int:
         return 1
 
 
+def cmd_provenance(args: list[str]) -> int:
+    """Session → binaries → packages → sources → includes (fish.provenance)."""
+    from fish.provenance import main as prov_main
+    return prov_main(args)
+
+
 def cmd_snapshot(args: list[str]) -> int:
     """Take a shutdown snapshot (process tree + component list)."""
     shutdown_snapshot()
@@ -135,6 +141,7 @@ def main() -> int:
         print("  gpu daemon status   — Check daemon status")
         print("  gpu daemon fg       — Run daemon in foreground (debug)")
         print("  snapshot            — Take shutdown snapshot (ps tree + components)")
+        print("  provenance <dir>    — Resolve a session to binaries/packages/sources/includes")
         return 0
 
     cmd = sys.argv[1]
@@ -142,6 +149,8 @@ def main() -> int:
 
     if cmd == "gpu":
         return cmd_gpu(args)
+    elif cmd == "provenance":
+        return cmd_provenance(args)
     elif cmd == "snapshot":
         return cmd_snapshot(args)
     else:
