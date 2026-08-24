@@ -16,6 +16,7 @@ tracepoints
 usage
 images
 pipeline
+provenance
 mission
 graph_store
 dependencies
