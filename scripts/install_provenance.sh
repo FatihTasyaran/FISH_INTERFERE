@@ -44,9 +44,18 @@ git -C "$PROV/autoware" fetch -q origin "$AUTOWARE_REVISION" 2>/dev/null || true
 git -C "$PROV/autoware" checkout -q "$AUTOWARE_REVISION" || { log "checkout $AUTOWARE_REVISION failed"; exit 2; }
 mkdir -p "$PROV/src"
 if [ ! -f "$PROV/src/.imported" ]; then
-  log "vcs import (shallow) from autoware.repos"
-  ( cd "$PROV" && vcs import --shallow --recursive src < autoware/autoware.repos > "$PROV/vcs_import.log" 2>&1 ) \
+  REPOS=""
+  for f in autoware/repositories/autoware.repos autoware/autoware.repos; do [ -f "$PROV/$f" ] && REPOS="$PROV/$f" && break; done
+  [ -n "$REPOS" ] || { log "no autoware.repos found in the clone"; ls "$PROV/autoware"; exit 2; }
+  log "vcs import (shallow) from $REPOS"
+  ( cd "$PROV" && vcs import --shallow --recursive --retry 3 --input "$REPOS" src > "$PROV/vcs_import.log" 2>&1 ) \
     && touch "$PROV/src/.imported" || log "WARN: vcs import reported errors (see vcs_import.log)"
+  EXTRA="$PROV/autoware/repositories/extra-packages.repos"
+  if [ -f "$EXTRA" ]; then
+    log "vcs import extra-packages.repos"
+    ( cd "$PROV" && vcs import --shallow --recursive --retry 3 --input "$EXTRA" src >> "$PROV/vcs_import.log" 2>&1 ) || log "WARN: extra-packages import reported errors"
+  fi
+  log "sources: $(find "$PROV/src" -name package.xml | wc -l) package.xml files"
 fi
 
 # 3. versions: installed package.xml vs source package.xml -------------------
