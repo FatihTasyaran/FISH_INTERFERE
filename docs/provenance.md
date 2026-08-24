@@ -86,6 +86,25 @@ is mounted) and writes `<session>/provenance/`:
 Options: `--prov-extra DIR` (repeatable; extra tags roots), `--no-includes`,
 `--max-tus N`, `--prov/--install/--ros` roots.
 
+## Expected-vs-counted for Autoware (A2 method, mechanised)
+
+`scripts/aw_a2_expected.py <session> <fish_graph.json>` (in a fishwait6
+container, with `~/fish_provenance_ros` mounted) identifies every N vertex's
+C++ class (launch_components plugin → CMake `rclcpp_components_register_node`
+→ container's mapped component libs → callback-symbol majority preferring
+`rclcpp::Node` descendants), scans the class's own method bodies + class
+body + base classes (ctags `line`/`end` ranges) for entity-creating calls —
+the Humble VCC rules plus the Autoware wrapper rules (VCCA1..11: polling
+subscriber, LoggerLevelConfigure, diagnostic_updater::Updater, RTCInterface,
+component_interface_utils, message_filters, image_transport,
+TransformListener, VehicleStopChecker, WatchdogTimer, …) — and compares
+`VCC1 [+ /clock] + Σ rows` with the counted E/F. Rows under `if`/`for`/other
+methods are flagged, never multiplied; verdicts: `OK`, `OK:range`,
+`mismatch:ctx`, `mismatch:plugins`, `mismatch`. `scripts/aw_a2_sheet.py`
+writes the Google Sheet (REFERENCE · bench_node · expected_vertex ·
+actual_vertex · node_reviews · class_map · mismatch_detail · ros2cli_helpers).
+r24: 198 nodes, 140 exact + 32 in range (87 %); `notes/a2_autoware_r24.txt`.
+
 ## Limits (state them when you use the numbers)
 
 * Layer 1 needs a healthy launch: in r23 (fishwait6 validation, no DISPLAY)

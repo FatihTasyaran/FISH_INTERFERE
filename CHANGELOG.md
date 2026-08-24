@@ -6,6 +6,10 @@ minor versions.
 ## Unreleased
 
 ### Added (2026-08, Autoware campaign)
+- Autoware A2 expected-vs-counted, mechanised (`scripts/aw_a2_expected.py`,
+  `scripts/aw_a2_sheet.py`): per-node class identification, ctags-ranged
+  scan of creation calls incl. Autoware wrapper rules, Google Sheet
+  AUTOWARE-LOGSIM-R24-NODE-A2 (r24: 140 exact + 32 in-range of 198 nodes).
 - Provenance layer (`python/fish/provenance.py`, `docs/provenance.md`):
   session → binaries (`snapshot/maps_libs_{stable,shutdown}.json`) → packages
   (ament index / pluginlib / install layout) → sources (universal-ctags over
