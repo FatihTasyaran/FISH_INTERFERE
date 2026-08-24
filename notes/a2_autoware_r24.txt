@@ -62,3 +62,19 @@ Remaining mismatch nodes (verdict != OK/OK:range):
   mismatch:plugins  /planning/scenario_planning/lane_driving/behavior_planning/beh exp 22/22 act 46/46  BehaviorPathPlannerNode
   mismatch:plugins  /planning/scenario_planning/lane_driving/behavior_planning/beh exp 20/20 act 42/42  BehaviorVelocityPlannerNode
   mismatch:plugins  /planning/scenario_planning/lane_driving/motion_planning/motio exp 19/19 act 26/26  MotionVelocityPlannerNode
+
+Findings after the sheet (2026-08-24 evening):
+  * r24 trace hole: 10 processes (planning+control launch burst, first events at 41-43 s) have
+    callback_start but no rcl_node_init / callback_register → 26 node_list nodes absent from the
+    graph, 11.5 % of callback executions unattributable; discard counter 0; r11 had 0 such
+    processes. Cause: LTTng-UST registration timeout (3 s default) — process runs untraced until
+    sessiond registers it. Fix: ros2 wrapper exports LTTNG_UST_REGISTER_TIMEOUT=-1 (install_fish.sh).
+  * GenericSubscription F gap in prebuilt Autoware: the overlay patch is header-level (template
+    ctor) → prebuilt binaries keep the stock instantiation. Fix: rebuild the instantiating
+    packages against the overlay (scripts/rebuild_header_tracepoint_users.sh) → fishwait7.
+  * PRINCIPLE (Fatih): whenever a tracepoint is added to a source file, the code that
+    instantiates it must be recompiled; users compile these at installation, so our prebuilt
+    images must yield exactly the output a source-built user gets.
+Next (step by step): extend the correctness check to the tracepoints added AFTER the Isaac
+  A2 verification — waitable (fish_rclcpp_waitable_init), intra-process waitables, receive_link,
+  publish_link, client/action events — with expected counts per API call (API sheet rows).

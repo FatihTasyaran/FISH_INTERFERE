@@ -6,6 +6,11 @@ minor versions.
 ## Unreleased
 
 ### Added (2026-08, Autoware campaign)
+- `scripts/rebuild_header_tracepoint_users.sh` + `scripts/build_fishwait7.sh`:
+  packages instantiating header-level FISH tracepoints (GenericSubscription
+  users) rebuilt against the overlay for prebuilt stacks; `ros2` wrapper now
+  exports `LTTNG_UST_REGISTER_TIMEOUT=-1` (r24 lost 26 nodes' init events to
+  the 3 s UST registration timeout during the planning/control launch burst).
 - Autoware A2 expected-vs-counted, mechanised (`scripts/aw_a2_expected.py`,
   `scripts/aw_a2_sheet.py`): per-node class identification, ctags-ranged
   scan of creation calls incl. Autoware wrapper rules, Google Sheet

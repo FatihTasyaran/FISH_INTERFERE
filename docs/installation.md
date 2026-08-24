@@ -96,6 +96,32 @@ The full event list, payloads and probe sites are in `tracepoints.md`.
 An image whose overlay was built with an older installer is never patched in
 place: build a new tag (e.g. `autoware-dev-trt-a1000-fishwait5`).
 
+### `scripts/rebuild_header_tracepoint_users.sh` — prebuilt stacks only
+
+Some FISH tracepoints live in rclcpp **headers** (template constructors:
+`GenericSubscription` → `rclcpp_subscription_init` + `callback_added` +
+`callback_register`; intra-process publish link in `publisher.hpp`). A
+header patch only reaches code that is *compiled against the overlay*. If
+you build your stack from source after `source
+/root/trace_overlay_ws/install/setup.bash`, nothing else is needed — every
+package instantiates the patched headers. If your stack is **prebuilt**
+(apt packages, the official Autoware images), the users of those headers keep
+the stock instantiation: FISH sees the entity (rcl, shared library) but never
+the callback (`E` without `F`). Run this script inside the container: it finds
+every installed package whose sources call
+`create_generic_subscription`/`GenericSubscription` (provenance source roots),
+stages them into the overlay workspace, builds them against the overlay
+(verified via the compile database's include paths) and records
+`fish_rebuilt_packages.json`. The overlay's `setup.bash` — already sourced by
+every FISH shell — shadows the prebuilt copies. The same output as a
+source-built install is the goal: a FISH user compiling from source and a
+FISH user on a prebuilt image must produce identical traces.
+
+Also part of the framework since 2026-08-24: the `ros2` wrapper exports
+`LTTNG_UST_REGISTER_TIMEOUT=-1` so that a process started during a launch
+burst waits for its lttng-sessiond registration instead of running untraced
+for its first seconds (r24: 26 nodes lost that way, discard counter 0).
+
 ### `scripts/install_fish.sh`
 
 Installs the FISH framework: ros2 wrapper, trace session management, GPU

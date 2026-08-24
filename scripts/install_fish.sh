@@ -406,6 +406,16 @@ fi
 
 # --- Automatic tracing when FISH_ENABLED=1 ---
 if [[ "\$FISH_ENABLED" == "1" && ("\$1" == "run" || "\$1" == "launch") ]]; then
+    # --- LTTng-UST registration guard (2026-08-24) ---
+    # A traced process must register with lttng-sessiond before its first
+    # tracepoint; the default LTTNG_UST_REGISTER_TIMEOUT is 3000 ms, after
+    # which the app runs UNTRACED until registration completes. When a launch
+    # group starts ~20 processes at once (Autoware planning+control, r24:
+    # first events 41-43 s), sessiond falls behind and the first seconds —
+    # rcl_node_init, callback registrations, component loads — are lost
+    # silently (discard counter stays 0): 26 nodes missing, 11.5 % of
+    # callback executions unattributable. -1 = wait for registration.
+    export LTTNG_UST_REGISTER_TIMEOUT=\${LTTNG_UST_REGISTER_TIMEOUT:--1}
     # --- RMW guard (2026-08-16) ---
     # Non-interactive shells (bash -lc, docker run ... bash -c) do NOT source
     # ~/.bashrc, so an image-level "export RMW_IMPLEMENTATION=..." there is
@@ -539,6 +549,7 @@ done
 
 # --- Automatic tracing when FISH_ENABLED=1 ---
 if [[ "\$FISH_ENABLED" == "1" ]]; then
+    export LTTNG_UST_REGISTER_TIMEOUT=\${LTTNG_UST_REGISTER_TIMEOUT:--1}   # see ros2 wrapper: never run untraced
     \$FISH_SCRIPTS/trace_session.sh start
     trap "\$FISH_SCRIPTS/trace_session.sh stop; exit 0" SIGTERM SIGINT
     \$FISH_SCRIPTS/trace_session.sh inc

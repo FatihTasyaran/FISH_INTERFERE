@@ -115,8 +115,16 @@ All routes write sessions to `~/fish_traces/fish_<YYYYMMDD_HHMMSS>/{ros2,nsys,fi
   sources at the base image's revision `5dfb0900` under `/opt/fish_provenance/src`
   (465/465 package versions verified), ctags index, configure-only
   `compile_commands.json` for 383 packages; `ros2 run fish provenance <session>`;
-  see `provenance.md`). fishwait5 remains the tracepoint-overlay baseline; fishwait6
-  adds only the provenance assets on top of it.
+  see `provenance.md`) → **`-fishwait7`** (2026-08-24: the packages that
+  *instantiate* header-level FISH tracepoints — `GenericSubscription` users
+  `autoware_topic_state_monitor`, `autoware_pipeline_latency_monitor`,
+  `autoware_topic_relay_controller`, `topic_tools` — rebuilt against the
+  overlay into `/root/trace_overlay_ws` (`scripts/rebuild_header_tracepoint_users.sh`,
+  manifest `fish_rebuilt_packages.json`); ROS-core sources baked in at
+  `/opt/fish_provenance_ros`; `ros2` wrapper exports
+  `LTTNG_UST_REGISTER_TIMEOUT=-1`). fishwait5 remains the tracepoint-overlay
+  baseline; fishwait6 adds only the provenance assets, fishwait7 the rebuilt
+  header-tracepoint users.
 * **Run**: `scripts/autoware_runs/run_logging_sim_bag.sh` (r11 = `notes/cp_0.txt`):
   fresh container `--gpus all --privileged --net host --shm-size=2g -v
   ~/fish_traces:/root/fish_traces -e FISH_ENABLED=1 -e FISH_CUDA_EVENT_TRACE=1
