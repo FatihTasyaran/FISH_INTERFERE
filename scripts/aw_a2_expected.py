@@ -36,7 +36,7 @@ import argparse, collections, glob, json, os, re, sys, time
 VCC = [
     ("VCC2",      r"\bcreate_subscription\s*<",                (1, 1, 0, 0), "rclcpp create_subscription<T>"),
     ("VCC2",      r"\bcreate_subscription\s*\(",               (1, 1, 0, 0), "rclcpp create_subscription(...) (deduced T)"),
-    ("VCC_GS",    r"\bcreate_generic_subscription\s*\(",       (1, 0, 0, 0), "generic (type-erased) subscription — E only: the Autoware fishwait overlay has no GenericSubscription callback_added patch (Isaac commit 0743b32), so no F"),
+    ("VCC_GS",    r"\bcreate_generic_subscription\s*\(",       (1, 1, 0, 0), "generic (type-erased) subscription — header-level tracepoints: F only if the package was compiled against the FISH overlay (fish_rebuilt_packages.json / source build); prebuilt stock binaries give E only"),
     ("VCC3",      r"\bcreate_publisher\s*<",                   (0, 0, 1, 0), "rclcpp create_publisher<T> → pub aspect"),
     ("VCC3",      r"\bcreate_publisher\s*\(",                  (0, 0, 1, 0), "rclcpp create_publisher(...) → pub aspect"),
     ("VCC_GP",    r"\bcreate_generic_publisher\s*\(",          (0, 0, 1, 0), "generic publisher → pub aspect"),
@@ -419,6 +419,8 @@ def main(argv=None):
     ap.add_argument("--prov", default="/opt/fish_provenance")
     ap.add_argument("--prov-extra", action="append", default=["/opt/fish_provenance_ros"])
     ap.add_argument("--out", default=None)
+    ap.add_argument("--overlay-ws", default="/root/trace_overlay_ws",
+                    help="FISH overlay workspace; its fish_rebuilt_packages.json lists prebuilt packages recompiled against the overlay headers")
     ap.add_argument("--sim-time", choices=["auto", "yes", "no"], default="auto",
                     help="use_sim_time → every rclcpp node gets a /clock sub (TimeSource); auto = majority of counted nodes")
     a = ap.parse_args(argv)
@@ -432,6 +434,12 @@ def main(argv=None):
     src_roots = [os.path.join(r, "src") for r in roots]
     reg, exes, pkg_of = cmake_index(src_roots)
     log(f"cmake: {sum(len(v) for v in reg.values())} registered component executables, {sum(len(v) for v in exes.values())} plain executables")
+    rebuilt = set()
+    try:
+        rebuilt = set(json.load(open(os.path.join(a.overlay_ws, "fish_rebuilt_packages.json"))).get("rebuilt", {}))
+    except Exception:
+        pass
+    log(f"packages rebuilt against the overlay (header-level tracepoints reach them): {sorted(rebuilt) or 'none'}")
     comp, exe_nodes = load_launch_components(a.session_dir)
     pid_exe = {}; pid_libs = {}
     try:
@@ -651,6 +659,15 @@ def main(argv=None):
                 if not info["resolved"]:
                     rec["notes"].append("class not found in ctags index (no sources) — expected = VCC1 baseline only")
                 acc = []; flatten_rows(info, acc, set())
+                for r in acc:
+                    if r["vcc"] == "VCC_GS":
+                        pkg = source_package(os.path.join(a.prov, r["file"]) if not os.path.isabs(r["file"]) else r["file"])[0]
+                        for root in roots:
+                            if os.path.exists(os.path.join(root, r["file"])):
+                                pkg = source_package(os.path.join(root, r["file"]))[0]; break
+                        if pkg not in rebuilt:
+                            r["delta"] = [1, 0, 0, 0]
+                            r["ctx"] = (r["ctx"] + "; " if r["ctx"] else "") + f"prebuilt {pkg}: GenericSubscription header tracepoints not compiled in → E only, no F"
                 rec["rows"] = acc
                 rec["base_rclcpp"] = info.get("base_rclcpp")
                 rec["lifecycle"] = info.get("lifecycle", False)
