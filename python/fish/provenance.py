@@ -51,9 +51,29 @@ def load_maps(session_dir: str) -> dict:
 
 class PackageResolver:
     """Map an executable / shared object path to the ROS package that ships it."""
-    def __init__(self, roots: list[str]):
+    # libraries that are neither packages nor system: the DDS vendor stack
+    _VENDOR = {"ddsc": "cyclonedds", "iceoryx_binding_c": "iceoryx", "iceoryx_hoofs": "iceoryx",
+               "iceoryx_platform": "iceoryx", "iceoryx_posh": "iceoryx", "fastcdr": "fastcdr", "fastrtps": "fastrtps"}
+
+    def __init__(self, roots: list[str], src_roots: list[str] | None = None):
         self.roots = [os.path.normpath(r) for r in roots if os.path.isdir(r)]
         self.lib2pkg: dict[str, str] = {}
+        # CMake target name → package, from the provenance sources' CMakeLists
+        # (add_library(concatenate_data SHARED …) in autoware_pointcloud_preprocessor
+        # is a plain library used by a component lib: in no ament index at all)
+        self.target2pkg: dict[str, str] = {}
+        for sr in (src_roots or []):
+            for cm in glob.glob(os.path.join(sr, "**", "CMakeLists.txt"), recursive=True):
+                try:
+                    txt = open(cm, errors="replace").read()
+                except Exception:
+                    continue
+                pkg = None
+                for m in re.finditer(r"(?:ament_auto_add_library|add_library|cuda_add_library|ament_auto_add_gtest|pybind11_add_module)\s*\(\s*([\w.\-]+)", txt):
+                    if pkg is None:
+                        pkg = source_package(cm)[0]
+                    if pkg:
+                        self.target2pkg.setdefault(m.group(1), pkg)
         self.class2lib: dict[str, tuple[str, str]] = {}   # plugin class → (pkg, lib path)
         self.pkgs: set[str] = set()
         for root in self.roots:
@@ -99,7 +119,7 @@ class PackageResolver:
         self._by_len = sorted(self.pkgs, key=len, reverse=True)
 
     def resolve(self, path: str) -> tuple[str, str]:
-        """→ (package, how). how ∈ index | exe_dir | heuristic | system"""
+        """→ (package, how). how ∈ index | exe_dir | cmake | vendor | heuristic | system"""
         if not path:
             return ("?", "none")
         p = os.path.normpath(path)
@@ -113,6 +133,11 @@ class PackageResolver:
         if any(p.startswith(r + "/") for r in self.roots):
             stem = re.sub(r"\.so(\.[0-9.]+)?$", "", base)
             stem = stem[3:] if stem.startswith("lib") else stem
+            stem = stem.split(".cpython-")[0].lstrip("_")     # _rclpy_pybind11.cpython-310-… → rclpy_pybind11
+            if stem in self.target2pkg:
+                return (self.target2pkg[stem], "cmake")
+            if stem in self._VENDOR:
+                return (self._VENDOR[stem], "vendor")
             for pkg in self._by_len:
                 if stem == pkg or stem.startswith(pkg + "_") or stem.startswith(pkg):
                     return (pkg, "heuristic")
@@ -348,7 +373,7 @@ def run(session_dir: str, prov: str, install: str, ros: str, do_includes: bool, 
 
     # layer 1 + 2
     procs = load_maps(session_dir)
-    resolver = PackageResolver([install, ros])
+    resolver = PackageResolver([install, ros], [os.path.join(r, "src") for r in [prov] + prov_extra])
     pkg_use = collections.defaultdict(lambda: {"pids": set(), "libs": set(), "exes": set()})
     for pid, pr in procs.items():
         exe_pkg, how = resolver.resolve(pr.get("exe") or "")
