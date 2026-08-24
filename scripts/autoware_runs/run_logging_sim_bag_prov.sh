@@ -16,7 +16,7 @@ DEST=$HOME/fish_traces
 mkdir -p "$DEST"
 IMG=${IMG:-autoware-dev-trt-a1000-fishwait6:latest}
 FISH_SRC=/home/tue037807/fish_interfere
-NAME=${NAME:-autoware-fishwait6-run-r23}
+NAME=${NAME:-autoware-fishwait6-run-r24}
 docker image inspect $IMG >/dev/null 2>&1 || { echo "[run] $IMG not built"; exit 2; }
 docker rm -f $NAME 2>/dev/null || true
 
@@ -29,6 +29,7 @@ docker run -d --gpus all --privileged --net host --shm-size=2g \
     --name $NAME \
     -v "$DEST:/root/fish_traces" \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -v "$HOME/fish_provenance_ros:/opt/fish_provenance_ros:ro" \
     -e DISPLAY=$DISPLAY \
     -e FISH_ENABLED=1 \
     -e FISH_CUDA_EVENT_TRACE=1 \
@@ -75,7 +76,7 @@ timeout $LAUNCH_TIMEOUT docker exec $NAME bash -lc '
     timeout 420 ros2 launch autoware_launch logging_simulator.launch.xml \
         map_path:=/root/autoware_map/sample-map-rosbag \
         vehicle_model:=sample_vehicle \
-        sensor_model:=sample_sensor_kit
+        sensor_model:=sample_sensor_kit rviz:=false
     rc=$?
     echo "[AW-fishwait6-r23] ros2 launch rc=$rc"
     sleep 25
@@ -83,6 +84,6 @@ timeout $LAUNCH_TIMEOUT docker exec $NAME bash -lc '
     S=$(ls -td /root/fish_traces/fish_2026* | head -1)
     echo "[prov] running fish.provenance on $S"
     export PYTHONPATH=/opt/ros/humble/fish/python:$PYTHONPATH
-    ( time python3 -m fish.provenance "$S" --max-tus 400 ) 2>&1 | tail -40
+    ( time python3 -m fish.provenance "$S" --max-tus 400 --prov-extra /opt/fish_provenance_ros ) 2>&1 | tail -40
 '
 echo "[AW-fishwait6-r23] exec rc=$?"

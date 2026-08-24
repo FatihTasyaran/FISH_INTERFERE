@@ -6,6 +6,15 @@ minor versions.
 ## Unreleased
 
 ### Added (2026-08, Autoware campaign)
+- Provenance layer (`python/fish/provenance.py`, `docs/provenance.md`):
+  session → binaries (`snapshot/maps_libs_{stable,shutdown}.json`) → packages
+  (ament index / pluginlib / install layout) → sources (universal-ctags over
+  the sources the image was built from) → includes (`-E -H` with
+  configure-only `compile_commands.json`). Image side
+  `scripts/install_provenance.sh` → `autoware-dev-trt-a1000-fishwait6`
+  (`scripts/build_fishwait6.sh`); ROS 2 core sources as a host-side extra root
+  (`scripts/install_provenance_ros.sh`, `--prov-extra`). Header → TU mapping is
+  restricted to the same package.
 - Tracepoints: intra-process Waitable registration hook
   (`IntraProcessManager::add_subscription` → `fish_rclcpp_waitable_init` with
   node_handle=0x0) and ABI-safe intra-process publish attribution in

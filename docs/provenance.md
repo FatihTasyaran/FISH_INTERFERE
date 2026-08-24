@@ -41,6 +41,26 @@ Build: `scripts/build_fishwait6.sh` (fresh container from the unchanged
 `-fishwait5`, repo copied in, `install_fish.sh` refreshed, installer run,
 `docker commit` as a new tag; refuses to overwrite an existing tag).
 
+### ROS 2 core sources — an extra root on the host (no image change)
+
+Most registered callbacks in any session are not Autoware code but ROS core
+infrastructure (`rclcpp::ParameterService` ×6 per node, `rclcpp::TimeSource`,
+`rclcpp_components::ComponentManager`, `tf2_ros::TransformListener`,
+`diagnostic_updater::Updater`, `rosbag2_transport::Player`, `ros2cli` …), whose
+sources are not in `autoware.repos`. `scripts/install_provenance_ros.sh`
+clones those repos (rclcpp, rcl, rmw, geometry2, diagnostics, message_filters,
+rosbag2, ros2cli, rclpy, robot_state_publisher, topic_tools, pluginlib,
+class_loader, image_common) at the tag equal to the **installed
+`package.xml` version** (`/opt/ros/humble/share/<pkg>`), writes
+`versions.json` and a ctags index into `~/fish_provenance_ros` (40 MB). The
+run scripts mount it read-only at `/opt/fish_provenance_ros` and pass
+`--prov-extra /opt/fish_provenance_ros`. Version note: the apt binaries come
+from monorepos whose sub-packages are released at slightly different patch
+levels (e.g. `rclcpp_action` 16.0.18 while `rclcpp` is 16.0.19); the packages
+that actually emit callback symbols all match exactly, the mismatches are
+listed in `versions.json`. No `compile_commands.json` for this root — layer 4
+stays Autoware-only.
+
 ## Session side (`ros2 run fish provenance <session_dir>` / `python3 -m fish.provenance`)
 
 Runs inside a fishwait6-class container (or anywhere `/opt/fish_provenance`
@@ -49,20 +69,31 @@ is mounted) and writes `<session>/provenance/`:
 * `packages.json` — per process: exe, mapped libs, package per lib; per
   package: pids/libs/exes; the list of installed-but-never-mapped packages.
 * `symbols.json` — every registered callback: symbol, parsed kind, fired?,
-  owning package, ctags hits (file:line). Symbol kinds:
+  owning package (`exe_pkg` from the process, `src_pkg` from the resolved
+  source path), ctags hits (file:line). Symbol kinds:
   `function` (`ns::Class::method(...)`), `class` (`std::_Bind<void (ns::Class::*…` —
   the member-function pointer type carries the class, not the method: resolved
   to class level), `lambda_in` (`…::method(...)::{lambda…}` → the enclosing
   method), `python` (`module.qualname`), `opaque` (`std::function<…>`: the
   callback type only — not resolvable at the ROS layer), `unknown`.
-* `includes.json` — for the source files behind the FIRED callbacks: the TU,
-  its package, direct includes, total includes, max depth.
+* `includes.json` — for the source files behind the FIRED callbacks: the TU
+  actually preprocessed (a header is mapped to a TU **of the same package** —
+  same stem, else same directory, else the first TU of the package; never a
+  different package — recorded as `tu_how`), its package, direct includes,
+  total includes, max depth.
 * `report.md` — the numbers above as a readable summary.
 
-Options: `--no-includes`, `--max-tus N`, `--prov/--install/--ros` roots.
+Options: `--prov-extra DIR` (repeatable; extra tags roots), `--no-includes`,
+`--max-tus N`, `--prov/--install/--ros` roots.
 
 ## Limits (state them when you use the numbers)
 
+* Layer 1 needs a healthy launch: in r23 (fishwait6 validation, no DISPLAY)
+  rviz2 crash-looped 2488×, the executor count never settled, `system_stable`
+  fired at 445 s when the launch timeout had already torn everything down, so
+  `maps_libs_stable.json` held 2 processes. Run headless with `rviz:=false`
+  (the `_prov` run script does) — the daemon's stability rule is only as good
+  as the launch it watches.
 * Layer 1 is a snapshot in time: processes that exited before `system_stable`
   or `stop` (transient `ros2` CLI calls, the bag player, nsys-wrapped
   containers stopped by the graceful nsys shutdown) appear only in the trace,

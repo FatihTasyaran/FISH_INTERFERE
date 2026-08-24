@@ -341,9 +341,29 @@ def capture_mapped_libs(snapshot_dir: str, tag: str = "shutdown") -> str:
         out["processes"].append({"pid": pid, "comm": comm, "exe": exe, "cmdline": cmd[:4000], "libs": libs})
     path = os.path.join(snapshot_dir, f"maps_libs_{tag}.json")
     os.makedirs(snapshot_dir, exist_ok=True)
+    # the same tag may be captured more than once (system_stable fires from two
+    # sites): MERGE with what is on disk — union of processes, union of libs per
+    # pid — never overwrite, a process that exited in between must not vanish.
+    n_new = len(out["processes"])
+    try:
+        with open(path) as f:
+            prev = json.load(f)
+        by_pid = {p["pid"]: p for p in prev.get("processes", [])}
+        for p in out["processes"]:
+            q = by_pid.get(p["pid"])
+            if q is None:
+                by_pid[p["pid"]] = p
+            else:
+                q["libs"] = sorted(set(q.get("libs", [])) | set(p.get("libs", [])))
+        out["processes"] = sorted(by_pid.values(), key=lambda p: p["pid"])
+        out["captures"] = prev.get("captures", 1) + 1
+        out["ts_ns_first"] = prev.get("ts_ns_first", prev.get("ts_ns"))
+    except (FileNotFoundError, ValueError):
+        out["captures"] = 1
+        out["ts_ns_first"] = out["ts_ns"]
     with open(path, "w") as f:
         json.dump(out, f)
-    print(f"[FISH]   → {path} ({len(out['processes'])} ROS processes)")
+    print(f"[FISH]   → {path} ({n_new} ROS processes now, {len(out['processes'])} merged over {out['captures']} capture(s))")
     return path
 
 

@@ -196,12 +196,19 @@ def parse_symbol(sym: str) -> dict:
 
 class TagIndex:
     """universal-ctags file with --extras=+q: qualified name → [(file, line, kind)]."""
-    def __init__(self, tags_path: str, src_root: str):
+    def __init__(self, tags_path: str | None = None, src_root: str | None = None):
         self.by_qual: dict[str, list] = collections.defaultdict(list)
         self.by_tail: dict[str, list] = collections.defaultdict(list)
-        self.src_root = src_root
+        self.roots: list[str] = []
+        if tags_path:
+            self.add(tags_path)
+
+    def add(self, tags_path: str):
+        """add a tags file; file paths are stored ABSOLUTE (tag-relative → dir of the tags file)."""
         if not os.path.exists(tags_path):
             return
+        root = os.path.dirname(os.path.abspath(tags_path))
+        self.roots.append(root)
         for line in open(tags_path, errors="replace"):
             if line.startswith("!"):
                 continue
@@ -209,6 +216,8 @@ class TagIndex:
             if len(parts) < 3:
                 continue
             name, fpath = parts[0], parts[1]
+            if not os.path.isabs(fpath):
+                fpath = os.path.normpath(os.path.join(root, fpath))
             kind, lineno = "", None
             for ext in parts[3:]:
                 if ext.startswith("line:"):
@@ -228,12 +237,41 @@ class TagIndex:
         hits = self.by_tail.get(tail, [])
         return [("tail", f, l, k) for (_n, f, l, k) in hits][:5]
 
+_PKG_DIR_CACHE: dict[str, tuple] = {}
+
+
+def source_package(path: str):
+    """(package name, package dir) of a source file = nearest ancestor holding package.xml."""
+    d = os.path.dirname(os.path.abspath(path))
+    seen = []
+    while d and d != "/":
+        if d in _PKG_DIR_CACHE:
+            r = _PKG_DIR_CACHE[d]; break
+        seen.append(d)
+        px = os.path.join(d, "package.xml")
+        if os.path.exists(px):
+            try:
+                m = re.search(r"<name>\s*([^<\s]+)\s*</name>", open(px).read())
+                r = (m.group(1) if m else os.path.basename(d), d)
+            except Exception:
+                r = (os.path.basename(d), d)
+            break
+        d = os.path.dirname(d)
+    else:
+        r = (None, None)
+    for x in seen:
+        _PKG_DIR_CACHE[x] = r
+    return r
+
 # ---------------------------------------------------------------- layer 4
 
 class CompileDB:
-    def __init__(self, prov_root: str):
+    def __init__(self, prov_roots):
         self.entries: dict[str, dict] = {}
-        for f in glob.glob(os.path.join(prov_root, "build", "*", "compile_commands.json")):
+        if isinstance(prov_roots, str):
+            prov_roots = [prov_roots]
+        files = [f for r in prov_roots for f in glob.glob(os.path.join(r, "build", "*", "compile_commands.json"))]
+        for f in files:
             pkg = f.split(os.sep)[-2]
             try:
                 for e in json.load(open(f)):
@@ -246,17 +284,26 @@ class CompileDB:
                 pass
 
     def find(self, path: str):
+        """(entry, how) — exact TU, else a TU of the SAME PACKAGE (same stem preferred,
+        then a TU in the same directory, then any TU of the package); never another package."""
         p = os.path.normpath(path)
         if p in self.entries:
-            return self.entries[p]
-        base = os.path.basename(p)
-        cands = [e for fp, e in self.entries.items() if fp.endswith("/" + base)]
-        return cands[0] if len(cands) == 1 else None
-
-    def tus_including(self, header_basename: str, limit: int = 3):
-        """cheap fallback for headers: TUs in the same package tree whose name matches."""
-        stem = re.sub(r"\.(hpp|h)$", "", header_basename)
-        return [e for fp, e in self.entries.items() if os.path.basename(fp).startswith(stem + ".")][:limit]
+            return self.entries[p], "exact"
+        _pkg, pdir = source_package(p)
+        if not pdir:
+            return None, "no package.xml above the file"
+        pdir = pdir.rstrip("/") + "/"
+        in_pkg = [(fp, e) for fp, e in self.entries.items() if fp.startswith(pdir)]
+        if not in_pkg:
+            return None, "package not configured (no compile_commands.json)"
+        stem = re.sub(r"\.(hpp|h|hh|hxx)$", "", os.path.basename(p))
+        same_stem = [e for fp, e in in_pkg if re.sub(r"\.(cpp|cc|cxx|cu)$", "", os.path.basename(fp)) == stem]
+        if same_stem:
+            return same_stem[0], "same-package TU with the same stem"
+        same_dir = [e for fp, e in in_pkg if os.path.dirname(fp) == os.path.dirname(p)]
+        if same_dir:
+            return same_dir[0], "same-directory TU"
+        return in_pkg[0][1], "first TU of the package"
 
 
 def include_graph(entry: dict, timeout: int = 90) -> dict:
@@ -292,7 +339,9 @@ def include_graph(entry: dict, timeout: int = 90) -> dict:
 
 # ---------------------------------------------------------------- main
 
-def run(session_dir: str, prov: str, install: str, ros: str, do_includes: bool, max_tus: int) -> str:
+def run(session_dir: str, prov: str, install: str, ros: str, do_includes: bool, max_tus: int,
+        prov_extra: list | None = None) -> str:
+    prov_extra = [x for x in (prov_extra or []) if x]
     t0 = time.time()
     out_dir = os.path.join(session_dir, "provenance"); os.makedirs(out_dir, exist_ok=True)
     log = lambda *a: print("[provenance]", *a, flush=True)
@@ -325,7 +374,10 @@ def run(session_dir: str, prov: str, install: str, ros: str, do_includes: bool, 
     # layer 3
     registered, fired = extract_symbols(session_dir)
     log(f"layer 3: {len(registered)} registered callbacks, {len(fired & set(registered))} fired")
-    tags = TagIndex(os.path.join(prov, "tags"), os.path.join(prov, "src"))
+    tags = TagIndex()
+    for root in [prov] + prov_extra:
+        tags.add(os.path.join(root, "tags"))
+    log(f"layer 3: tags roots: {tags.roots or 'NONE'}")
     symbols = []
     files_fired: dict[str, dict] = {}
     resolved = 0
@@ -336,14 +388,19 @@ def run(session_dir: str, prov: str, install: str, ros: str, do_includes: bool, 
         pr = procs.get(vpid, {})
         rec = {"vpid": vpid, "cb": cb, "symbol": sym, "kind": info["kind"], "qual": info["qual"],
                "fired": is_fired, "exe_pkg": pr.get("exe_pkg"),
+               "src_pkg": source_package(hits[0][1])[0] if hits else None,
                "hits": [{"match": h[0], "file": h[1], "line": h[2], "tag_kind": h[3]} for h in hits]}
         symbols.append(rec)
         if hits:
             resolved += 1
             if is_fired:
                 f = hits[0][1]
-                d = files_fired.setdefault(f, {"symbols": set(), "pkg": None})
+                d = files_fired.setdefault(f, {"symbols": set(), "pkg": rec["src_pkg"]})
                 d["symbols"].add(info["qual"])
+    unres_fired = collections.Counter(
+        "::".join(s["qual"].split("::")[:2]) if s["kind"] != "python" else s["qual"].split(".")[0]
+        for s in symbols if s["fired"] and not s["hits"])
+    res_fired_pkg = collections.Counter(s["src_pkg"] for s in symbols if s["fired"] and s["hits"])
     log(f"layer 3: {resolved}/{len(registered)} symbols resolved to source; "
         f"{len(files_fired)} distinct source files behind the FIRED callbacks")
     json.dump({"symbols": symbols, "n_registered": len(registered), "n_fired": len(fired & set(registered)),
@@ -353,21 +410,19 @@ def run(session_dir: str, prov: str, install: str, ros: str, do_includes: bool, 
     # layer 4
     includes = {}
     if do_includes:
-        cdb = CompileDB(prov)
+        cdb = CompileDB([prov] + prov_extra)
         log(f"layer 4: compile database with {len(cdb.entries)} translation units")
         done = 0
         for f, d in sorted(files_fired.items()):
             if done >= max_tus:
                 break
             fabs = f if os.path.isabs(f) else os.path.normpath(os.path.join(prov, f))
-            entry = cdb.find(fabs)
-            tus = [entry] if entry else cdb.tus_including(os.path.basename(fabs))
-            if not tus:
-                includes[f] = {"error": "no compile entry (header without matching TU, or package not configured)"}
+            e, how = cdb.find(fabs)
+            if not e:
+                includes[f] = {"error": how, "pkg": d.get("pkg"), "symbols": sorted(d["symbols"])}
                 continue
-            e = tus[0]
             g = include_graph(e)
-            g["tu"] = e.get("file"); g["pkg"] = e.get("_pkg"); g["symbols"] = sorted(d["symbols"])
+            g["tu"] = e.get("file"); g["tu_how"] = how; g["pkg"] = e.get("_pkg"); g["symbols"] = sorted(d["symbols"])
             includes[f] = g; done += 1
             if "n_includes" in g:
                 log(f"   {os.path.basename(f)} ({e.get('_pkg')}): {g['n_includes']} includes, depth {g['max_depth']}")
@@ -390,18 +445,33 @@ def run(session_dir: str, prov: str, install: str, ros: str, do_includes: bool, 
               f"- distinct source files behind fired callbacks: **{len(files_fired)}**", ""]
     kinds = collections.Counter(s["kind"] for s in symbols)
     lines.append("symbol kinds: " + ", ".join(f"{k}={v}" for k, v in kinds.most_common()))
-    lines += ["", "| source file | fired symbols |", "|---|---|"]
+    def relp(f):
+        for r in tags.roots:
+            if f.startswith(r + "/"):
+                return f[len(r) + 1:]
+        return f
+    lines += ["", "resolved FIRED symbols by source package:", "", "| package | fired symbols |", "|---|---|"]
+    for pkg, n in res_fired_pkg.most_common(60):
+        lines.append(f"| {pkg} | {n} |")
+    lines += ["", "UNRESOLVED fired symbols by class (no source in any tags root — ROS core / python unless stated):", "",
+              "| class | fired symbols |", "|---|---|"]
+    for cls, n in unres_fired.most_common(40):
+        lines.append(f"| {cls} | {n} |")
+    lines += ["", "| source file | package | fired symbols |", "|---|---|---|"]
     for f, d in sorted(files_fired.items(), key=lambda kv: -len(kv[1]["symbols"]))[:80]:
-        lines.append(f"| {f} | {len(d['symbols'])} |")
+        lines.append(f"| {relp(f)} | {d.get('pkg')} | {len(d['symbols'])} |")
     if do_includes:
         ok = [g for g in includes.values() if "n_includes" in g]
         lines += ["", "## Layer 4: translation units → includes", "",
                   f"- TUs analysed: **{len(ok)}** (of {len(files_fired)} files; --max-tus {max_tus}); failures: {len(includes)-len(ok)}",
                   f"- total distinct headers pulled in: **{len({h for g in ok for h in g.get('all', [])})}**", "",
-                  "| TU | package | direct includes | total | max depth |", "|---|---|---|---|---|"]
-        for f, g in sorted(includes.items(), key=lambda kv: -(kv[1].get("n_includes") or 0))[:60]:
+                  "| source file | TU used (how) | package | direct | total | max depth |", "|---|---|---|---|---|---|"]
+        for f, g in sorted(includes.items(), key=lambda kv: -(kv[1].get("n_includes") or 0))[:80]:
             if "n_includes" in g:
-                lines.append(f"| {os.path.basename(f)} | {g.get('pkg')} | {len(g['direct'])} | {g['n_includes']} | {g['max_depth']} |")
+                lines.append(f"| {relp(f)} | {os.path.basename(g['tu'] or '')} ({g.get('tu_how')}) | {g.get('pkg')} | "
+                             f"{len(g['direct'])} | {g['n_includes']} | {g['max_depth']} |")
+            else:
+                lines.append(f"| {relp(f)} | — ({g.get('error')}) | {g.get('pkg')} | | | |")
     open(os.path.join(out_dir, "report.md"), "w").write("\n".join(lines) + "\n")
     log(f"done → {out_dir}/report.md")
     return out_dir
@@ -413,10 +483,12 @@ def main(argv=None) -> int:
     ap.add_argument("--prov", default=os.environ.get("FISH_PROV", "/opt/fish_provenance"))
     ap.add_argument("--install", default="/opt/autoware")
     ap.add_argument("--ros", default="/opt/ros/humble")
+    ap.add_argument("--prov-extra", action="append", default=[],
+                    help="additional provenance root(s) with a tags file (e.g. ROS core sources); repeatable")
     ap.add_argument("--no-includes", action="store_true")
     ap.add_argument("--max-tus", type=int, default=400)
     a = ap.parse_args(argv)
-    run(a.session_dir, a.prov, a.install, a.ros, not a.no_includes, a.max_tus)
+    run(a.session_dir, a.prov, a.install, a.ros, not a.no_includes, a.max_tus, a.prov_extra)
     return 0
 
 
