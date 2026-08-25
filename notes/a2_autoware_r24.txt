@@ -91,3 +91,29 @@ LTTNG_UST_REGISTER_TIMEOUT=-1) — sheet AUTOWARE-LOGSIM-R25-NODE-A2
   mismatch 12; expected E/F 2081/2081 vs counted 2378/2378 (ΔE == ΔF on every node).
   VCC_GS rule is now image-aware: F counted only for packages listed in the overlay's
   fish_rebuilt_packages.json (or a source-built stack); prebuilt → E only.
+
+2026-08-25 — exactness pass (Fatih: "ikisini de yap, run al"):
+ (1) the 0.9 % unattributed callback executions of r25 = executor Waitable-branch callback_start of
+     SubscriptionIntraProcess waitables (FISH tracepoints section 5): each wrapper dispatch is followed
+     3.7 us later by the registered inner callback (is_intra_process=1). scripts/aw_a2_waitables.py
+     checks per node: waitable_init(node_handle=0x0) + subscription_init + callback_added for every
+     ipc_waitable of the graph, and wrapper == inner dispatch parity. r25: 143 IPC waitables,
+     140 ok, 3 flagged = one waitable address reused by three successive
+     managed_tf_listener_impl nodes (address reuse, not a tracepoint gap); unregistered dispatch ids
+     64 = 62 known waitables + 2 unknown (1 exec each);
+     unregistered execs 9466 / 1398530. -> sheet tab waitables.
+ (2) exact counts instead of ranges (aw_a2_expected.py resolvers):
+     RES-loop   loop x N: literal list in sources (module_names=8, factor_topics=29), parameter yaml
+                (processing_time_topic_name_list=52), helper-function argument bound at the call site;
+     RES-name   deferred/if rows created|absent by matching the literal topic (after launch remaps)
+                against the counted E labels (absent only when the remap table is known);
+     RES-param  if(flag) rows from declare_parameter<bool> value (yaml, else code default) + else pairing;
+     RES-ctor   methods called from the constructor are static (Filter::subscribe());
+     RES-helper same-package helper classes constructed with the node (make_shared<X>(*this),
+                X m_{this}, opt_.emplace(this)) contribute their rows, inheriting the guard.
+     r25 result: 224 nodes -> OK 192 (exact), OK:range 12, ctx 10, plugins 3,
+     mismatch 7; resolved rows: loops 3, created 21, absent 60.
+     Remaining ranges: control/planning_evaluator (module list bound through a map -> unresolved loop),
+     velodyne wrappers (hw-monitor Updater under if(launch_hw_) with no literal name), ndt/pose_initializer
+     helper modules with client-only rows; remaining mismatches: pluginlib scene modules (3), evaluator
+     metric helpers, occlusion predictor synchronizer members.
