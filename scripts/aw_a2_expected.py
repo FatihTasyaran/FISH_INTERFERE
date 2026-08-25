@@ -96,7 +96,7 @@ TF_HELPER = (3, 3, 1)            # transform_listener_impl_*: /parameter_events 
 LIFECYCLE_EXTRA = (5, 5, 1)      # 5 lifecycle services + /transition_event pub
 CLOCK_SUB = (1, 1, 0)            # TimeSource::create_clock_sub when use_sim_time (time_source.cpp:260)
 
-CTRL_RE = re.compile(r"^\s*(if|for|while|else|switch|case)\b|\?\s*[^:]+:|\bfor_each\b|\[\s*[&=]?\s*\]\s*\(")
+CTRL_RE = re.compile(r"^\s*\}?\s*(if|for|while|else|switch|case)\b|\?\s*[^:]+:|\bfor_each\b|\[\s*[&=]?\s*\]\s*\(")
 
 # ------------------------------------------------------------------ ctags
 class Tags:
@@ -459,6 +459,29 @@ def resolve_if_rows_by_params(rows, files, launch_params, pkg, rt_params=None):
     for r in rows:
         ctx = r.get("ctx", "")
         if r.get("resolved") or r.get("deferred") or not (r["delta"][0] or r["delta"][1]):
+            continue
+        guards = [g for g in re.split(r"\s*&&\s*(?=if\b)", ctx.split(";")[0]) if g.strip().startswith("if")] if " && " in ctx.split(";")[0] else []
+        if len(guards) > 1:
+            vals = []
+            for g in guards:
+                gm = re.match(r"if\s*\(\s*(!?)\s*([A-Za-z_][\w.\->]*)\s*\)", g.strip())
+                if not gm:
+                    vals = None; break
+                gneg, gid = gm.group(1) == "!", gm.group(2).split(".")[-1].split("->")[-1]
+                gp = None
+                for f, t in texts.items():
+                    mm = re.search(r"\b" + re.escape(gid) + r"\s*=\s*[^;]*?declare_parameter\s*(?:<[^>]*>)?\s*\(\s*\"([\w.]+)\"", t)
+                    if mm:
+                        gp = mm.group(1); break
+                gv, _src = param_value(gp) if gp else (None, None)
+                if not isinstance(gv, bool):
+                    vals = None; break
+                vals.append((not gv) if gneg else gv)
+            if vals is not None:
+                taken = all(vals)
+                r["resolved"] = "created" if taken else "absent"
+                r["ctx"] += f"; resolved by nested guards {guards} = {vals}"
+                last_if[r.get("method")] = taken
             continue
         m = re.match(r"if\s*\(\s*(!?)\s*([A-Za-z_][\w.\->]*)\s*\)", ctx)
         if m:
@@ -973,13 +996,16 @@ def main(argv=None):
                 if cname in HELPER_SKIP or cname == short or cname.startswith("std"):
                     continue
                 hl = ln + text[:off].count("\n")
-                guard = ""
+                guards = []
                 lines_ = _lines(fabs)
-                for q in range(hl - 2, max(ln - 2, hl - 9), -1):
+                cur_indent = len(lines_[hl - 1]) - len(lines_[hl - 1].lstrip())
+                for q in range(hl - 2, max(ln - 2, hl - 40), -1):
                     if q < 0:
                         break
-                    if CTRL_RE.search(lines_[q]) and len(lines_[q]) - len(lines_[q].lstrip()) < len(lines_[hl - 1]) - len(lines_[hl - 1].lstrip()):
-                        guard = lines_[q].strip()[:200]; break
+                    ind = len(lines_[q]) - len(lines_[q].lstrip())
+                    if lines_[q].strip() and ind < cur_indent and CTRL_RE.search(lines_[q]):
+                        guards.append(lines_[q].strip()[:120]); cur_indent = ind
+                guard = " && ".join(reversed(guards))
                 helpers[(hq, os.path.basename(fabs), hl, guard)] += 1
         for (hq, hf, hl, guard), n_inst in helpers.items():
             hrq = tags.resolve_class(hq if "::" in hq else rq.rsplit("::", 1)[0] + "::" + hq) or tags.resolve_class(hq)
@@ -999,10 +1025,16 @@ def main(argv=None):
         # diagnostic_updater::Updater re-creates its timer when the `diagnostic_updater.period`
         # parameter is overridden (diagnostic_updater.hpp: update_timer_ reset in the parameter
         # callback) → a second timer E/F is possible; modelled as a deferred (runtime) row
-        for r in [r for r in rows if r["vcc"] == "VCCA3"]:
-            rows.append(dict(r, vcc="VCCA3p", delta=[1, 1, 0, 0], deferred=True,
-                             ctx="deferred: Updater timer re-created if diagnostic_updater.period is set by parameter",
-                             desc="diagnostic_updater::Updater period override → update_timer_ re-created (second rcl_timer_init)"))
+        set_period = any("setPeriod(" in l for l in _class_text(rq))
+        for r in [r for r in rows if r["vcc"] == "VCCA3" and not r.get("helper")]:
+            if set_period:
+                rows.append(dict(r, vcc="VCCA3p", delta=[1, 1, 0, 0], deferred=False, resolved="created",
+                                 ctx="Updater::setPeriod() called by the class → update timer re-created (second rcl_timer_init)",
+                                 desc="diagnostic_updater::Updater::setPeriod → timer re-created"))
+            else:
+                rows.append(dict(r, vcc="VCCA3p", delta=[1, 1, 0, 0], deferred=True,
+                                 ctx="deferred: Updater timer re-created if diagnostic_updater.period is set by parameter",
+                                 desc="diagnostic_updater::Updater period override → update_timer_ re-created (second rcl_timer_init)"))
         info["rows"] = rows
         for b in class_bases(tags, rq):
             bq = b.replace("::", "::")
@@ -1132,8 +1164,10 @@ def main(argv=None):
             # (3) pluginlib: parameters listing plugin names → the plugin classes' creation rows
             plug_names = []
             for pv in list(rt.values()) + ([] if rt else []):
-                if isinstance(pv, list) and pv and all(isinstance(x, str) and x in plug_idx for x in pv):
-                    plug_names += pv
+                if isinstance(pv, list):
+                    pv = [x for x in pv if isinstance(x, str) and x.strip()]
+                    if pv and all(x in plug_idx for x in pv):
+                        plug_names += pv
             if not plug_names and kind == "node" and rec.get("class_resolved"):
                 for y in _param_yaml_candidates(launch_params, source_package(cls_files[0])[0] if cls_files else launch_pkg):
                     try:
@@ -1158,9 +1192,15 @@ def main(argv=None):
                 mapped = any(os.path.basename(l).startswith(os.path.basename(plib).split(".")[0]) or plib.split("/")[-1] in l for l in pid_libs_here) if pid_libs_here else None
                 acc2 = []; flatten_rows(pinfo, acc2, set())
                 for r in acc2:
-                    if r.get("deferred") or r.get("helper"):
+                    if r.get("helper"):
                         continue
-                    rr = dict(r); rr["ctx"] = (r["ctx"] + "; " if r["ctx"] else "") + f"via plugin {pn.split('::')[-1]} (lib {'mapped ✔' if mapped else ('NOT mapped' if mapped is False else 'unknown')})"
+                    rr = dict(r)
+                    if r.get("deferred") and str(r.get("method", "")).lower().startswith("init"):
+                        rr["deferred"] = False                       # plugin managers are initialised on load: init*/initInterface run
+                        rr["ctx"] = re.sub(r";?\s*deferred: created in method \w+\(\) \(runs only if called at runtime\)", "", rr["ctx"]).strip("; ")
+                    elif r.get("deferred"):
+                        continue
+                    rr["ctx"] = (rr["ctx"] + "; " if rr["ctx"] else "") + f"via plugin {pn.split('::')[-1]} (lib {'mapped ✔' if mapped else ('NOT mapped' if mapped is False else 'unknown')})"
                     rr["plugin"] = pn; rec["rows"].append(rr)
             if plug_names:
                 rec["notes"].append(f"{len(dict.fromkeys(plug_names))} plugin(s) from parameters expanded")

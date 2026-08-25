@@ -117,3 +117,18 @@ LTTNG_UST_REGISTER_TIMEOUT=-1) — sheet AUTOWARE-LOGSIM-R25-NODE-A2
      velodyne wrappers (hw-monitor Updater under if(launch_hw_) with no literal name), ndt/pose_initializer
      helper modules with client-only rows; remaining mismatches: pluginlib scene modules (3), evaluator
      metric helpers, occlusion predictor synchronizer members.
+
+2026-08-25 — r29 = fish_20260825_110239 (fishwait7) with runtime parameter oracle (snapshot/params.json,
+one rclpy node calling list/get_parameters: 144/222 nodes; the rest have no parameter services —
+transform_listener_impl_*, containers) — sheet AUTOWARE-LOGSIM-R29-NODE-A2.
+  Steps 1-2-3 (Fatih): (1) runtime params → loop × N and if(flag) exact; (2) deferred rows → fired
+  callback / entity phase / existence oracles; ctor-called methods static; (3) pluginlib expansion
+  from the launch_modules parameter (behavior_path_planner: 8 plugins → OK; motion_velocity_planner
+  8 plugins → -1; behavior_velocity_planner plugin base rows not yet found).
+  Result: 224 nodes → OK 191, OK:range 5, ctx 8, plugins 2, mismatch 18;
+  resolved rows: loops 5, created 72, absent 96.
+  Lessons: ros2 param dump per node is unusable on a 220-node graph (r28: 96 nodes in 12 min);
+  Updater::setPeriod() re-creates the timer (topic_state_monitor: 2 timers) — static rule now;
+  nested guards on helper instantiation must all hold; `} else {` lines need the CTRL regex.
+  Open: velodyne wrappers (-1: hw-monitor Updater under launch_hw/use_udp_only), concatenate_data,
+  occlusion predictor synchronizer members, evaluator metric helpers, topic_tools relay lazy sub.
