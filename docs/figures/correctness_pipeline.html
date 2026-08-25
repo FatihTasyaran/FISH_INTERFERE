@@ -1,0 +1,136 @@
+<title>FISH Correctness Pipeline</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{--bg:#F2F6F6;--panel:#FFFFFF;--ink:#16252B;--muted:#5B6E75;--line:#C5D3D6;--accent:#177E86;--accent-ink:#0E5A60;--flag:#B8681A;--flag-bg:#FBF1E3;--ok:#2E7D4F;--ok-bg:#E6F3EA;--soft:#E8EFF0;--dim:#9AB0B6}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0E181C;--panel:#152329;--ink:#DCE7E9;--muted:#8FA5AC;--line:#2C4048;--accent:#5FD0C8;--accent-ink:#8FE3DC;--flag:#E4A25A;--flag-bg:#2B2116;--ok:#7CCB9A;--ok-bg:#15291C;--soft:#1C2D34;--dim:#4E656C}}
+:root[data-theme="dark"]{--bg:#0E181C;--panel:#152329;--ink:#DCE7E9;--muted:#8FA5AC;--line:#2C4048;--accent:#5FD0C8;--accent-ink:#8FE3DC;--flag:#E4A25A;--flag-bg:#2B2116;--ok:#7CCB9A;--ok-bg:#15291C;--soft:#1C2D34;--dim:#4E656C}
+body{background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:15px;line-height:1.5;margin:0;padding:40px 24px 64px}
+main{max-width:1100px;margin:0 auto;display:grid;gap:30px}
+h1{font-family:"Instrument Sans",sans-serif;font-weight:700;font-size:32px;line-height:1.1;margin:0 0 8px;text-wrap:balance}
+h2{font-family:"Instrument Sans",sans-serif;font-weight:600;font-size:19px;margin:0 0 6px}
+.eyebrow{font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-ink);margin:0 0 8px}
+p{max-width:72ch;margin:0}
+.lede{color:var(--muted)}
+code{font-family:"IBM Plex Mono",monospace;font-size:.92em;background:var(--soft);padding:1px 5px;border-radius:3px}
+figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:18px 20px 12px}
+figure .scroll{overflow-x:auto}
+svg{max-width:100%;height:auto;display:block;font-family:"IBM Plex Sans",system-ui,sans-serif;color:var(--ink)}
+figcaption{font-size:13px;color:var(--muted);margin-top:10px;max-width:80ch}
+</style>
+<main>
+<header>
+  <p class="eyebrow">FISH · correctness pipeline · Autoware r25</p>
+  <h1>Did the model see what the code declares?</h1>
+  <p class="lede">Two halves. Provenance walks a session back to the source files that actually ran. A2 counts what those sources declare and compares it with what the trace-built model contains — node by node, with every mismatch explained or resolved by an oracle.</p>
+</header>
+
+<figure>
+  <div class="scroll">
+  <svg viewBox="0 0 1000 300" role="img" aria-label="Provenance: a session's processes map to binaries, binaries to packages, the trace's callback symbols resolve through ctags to the source files that fired, and those files are preprocessed into include graphs">
+    <defs><marker id="p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker>
+          <marker id="pa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--accent)"/></marker></defs>
+    <text x="8" y="20" font-size="11" letter-spacing="1.5" fill="var(--muted)">PROVENANCE — WHICH CODE RAN?</text>
+
+    <!-- session -->
+    <rect x="8" y="112" width="112" height="60" rx="4" fill="var(--soft)"/>
+    <text x="64" y="134" text-anchor="middle" font-size="12" font-weight="600">session</text>
+    <text x="64" y="150" text-anchor="middle" font-size="10" fill="var(--muted)">trace · /proc maps</text>
+    <text x="64" y="164" text-anchor="middle" font-size="10" fill="var(--muted)">launch · params</text>
+
+    <!-- row 1: processes → binaries → packages -->
+    <line x1="120" y1="128" x2="170" y2="72" stroke="currentColor" marker-end="url(#p)"/>
+    <rect x="172" y="44" width="120" height="52" rx="4" fill="none" stroke="currentColor"/>
+    <text x="232" y="64" text-anchor="middle" font-size="12" font-weight="600">1 processes</text><text x="232" y="82" text-anchor="middle" font-size="10.5" fill="var(--accent-ink)">79</text>
+    <line x1="292" y1="70" x2="356" y2="70" stroke="currentColor" marker-end="url(#p)"/><text x="324" y="62" text-anchor="middle" font-size="9.5" fill="var(--muted)">/proc maps</text>
+    <rect x="358" y="44" width="120" height="52" rx="4" fill="none" stroke="currentColor"/>
+    <text x="418" y="64" text-anchor="middle" font-size="12" font-weight="600">2 binaries</text><text x="418" y="82" text-anchor="middle" font-size="10.5" fill="var(--muted)">exe + .so</text>
+    <line x1="478" y1="70" x2="542" y2="70" stroke="currentColor" marker-end="url(#p)"/><text x="510" y="62" text-anchor="middle" font-size="9.5" fill="var(--muted)">ament index</text>
+    <rect x="544" y="44" width="120" height="52" rx="4" fill="none" stroke="currentColor"/>
+    <text x="604" y="64" text-anchor="middle" font-size="12" font-weight="600">3 packages</text><text x="604" y="82" text-anchor="middle" font-size="10.5" fill="var(--accent-ink)">269 / 826</text>
+
+    <!-- row 2: callbacks → symbols → source files -->
+    <line x1="120" y1="156" x2="170" y2="196" stroke="currentColor" marker-end="url(#p)"/>
+    <rect x="172" y="172" width="120" height="52" rx="4" fill="none" stroke="currentColor"/>
+    <text x="232" y="192" text-anchor="middle" font-size="12" font-weight="600">4 callbacks</text><text x="232" y="210" text-anchor="middle" font-size="10.5" fill="var(--accent-ink)">2562 · 840 fired</text>
+    <line x1="292" y1="198" x2="356" y2="198" stroke="currentColor" marker-end="url(#p)"/><text x="324" y="190" text-anchor="middle" font-size="9.5" fill="var(--muted)">register + start</text>
+    <rect x="358" y="172" width="120" height="52" rx="4" fill="none" stroke="currentColor"/>
+    <text x="418" y="192" text-anchor="middle" font-size="12" font-weight="600">5 symbols</text><text x="418" y="210" text-anchor="middle" font-size="10.5" fill="var(--muted)">fn · lambda · bind</text>
+    <line x1="478" y1="198" x2="542" y2="198" stroke="var(--accent)" stroke-width="1.8" marker-end="url(#pa)"/><text x="510" y="190" text-anchor="middle" font-size="9.5" fill="var(--accent-ink)">ctags</text>
+    <rect x="544" y="172" width="120" height="52" rx="4" fill="none" stroke="var(--accent)" stroke-width="1.6"/>
+    <text x="604" y="192" text-anchor="middle" font-size="12" font-weight="600">6 source files</text><text x="604" y="210" text-anchor="middle" font-size="10.5" fill="var(--accent-ink)">114 fired</text>
+
+    <!-- packages → sources (image side) -->
+    <line x1="604" y1="96" x2="604" y2="170" stroke="currentColor" stroke-dasharray="3 3" marker-end="url(#p)"/>
+    <text x="612" y="120" font-size="9.5" fill="var(--muted)">sources at the</text><text x="612" y="133" font-size="9.5" fill="var(--muted)">image's revision</text><text x="612" y="146" font-size="9.5" fill="var(--muted)">(465/465 versions)</text>
+
+    <!-- source files → includes -->
+    <line x1="664" y1="198" x2="728" y2="198" stroke="currentColor" marker-end="url(#p)"/><text x="696" y="190" text-anchor="middle" font-size="9.5" fill="var(--muted)">cc -E -H</text>
+    <rect x="730" y="172" width="120" height="52" rx="4" fill="none" stroke="currentColor"/>
+    <text x="790" y="192" text-anchor="middle" font-size="12" font-weight="600">7 includes</text><text x="790" y="210" text-anchor="middle" font-size="10.5" fill="var(--accent-ink)">105 TU</text>
+    <text x="790" y="244" text-anchor="middle" font-size="9.5" fill="var(--muted)">configure-only compile db</text>
+
+    <!-- footer -->
+    <text x="8" y="286" font-size="10" fill="var(--muted)">each step narrows the previous one; step 6 is the answer to "which source files ran" — a callback fired ⇒ its file was executed</text>
+  </svg>
+  </div>
+  <figcaption>Provenance. Two independent chains meet at the packages: the process side (what was mapped in memory) and the callback side (what was registered and fired). The ctags index is built once, at image build time, from the sources the image was compiled from.</figcaption>
+</figure>
+
+<figure>
+  <div class="scroll">
+  <svg viewBox="0 0 1000 330" role="img" aria-label="A2: on the source side node classes are identified and their creation calls counted into expected E and F; on the trace side the FISH graph gives counted E and F; the comparison yields OK, OK range or mismatch; ranges and mismatches are resolved by oracles: literal lists and runtime parameters, parameter flags, fired callbacks, plugin lists">
+    <defs><marker id="q" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker>
+          <marker id="qf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--flag)"/></marker></defs>
+    <text x="8" y="20" font-size="11" letter-spacing="1.5" fill="var(--muted)">A2 — EXPECTED (SOURCE) VS COUNTED (TRACE)</text>
+
+    <!-- source side -->
+    <text x="8" y="50" font-size="10.5" font-weight="600" fill="var(--muted)">SOURCE SIDE</text>
+    <rect x="8" y="58" width="150" height="46" rx="4" fill="none" stroke="currentColor"/>
+    <text x="83" y="77" text-anchor="middle" font-size="12" font-weight="600">node → class</text><text x="83" y="93" text-anchor="middle" font-size="9.5" fill="var(--muted)">launch · CMake · symbols</text>
+    <line x1="83" y1="104" x2="83" y2="128" stroke="currentColor" marker-end="url(#q)"/>
+    <rect x="8" y="130" width="150" height="58" rx="4" fill="none" stroke="currentColor"/>
+    <text x="83" y="149" text-anchor="middle" font-size="12" font-weight="600">scan create_*</text><text x="83" y="164" text-anchor="middle" font-size="9.5" fill="var(--muted)">ctags method ranges</text><text x="83" y="177" text-anchor="middle" font-size="9.5" fill="var(--muted)">rclcpp + Autoware rules</text>
+    <line x1="83" y1="188" x2="83" y2="212" stroke="currentColor" marker-end="url(#q)"/>
+    <rect x="8" y="214" width="150" height="40" rx="4" fill="var(--soft)"/>
+    <text x="83" y="238" text-anchor="middle" font-size="12" font-weight="600">expected E / F</text>
+
+    <!-- trace side -->
+    <text x="842" y="50" font-size="10.5" font-weight="600" fill="var(--muted)" text-anchor="end">TRACE SIDE</text>
+    <rect x="692" y="58" width="150" height="46" rx="4" fill="none" stroke="currentColor"/>
+    <text x="767" y="77" text-anchor="middle" font-size="12" font-weight="600">FISH graph</text><text x="767" y="93" text-anchor="middle" font-family="IBM Plex Mono" font-size="10" fill="var(--muted)">N ⊒ E ⊒ F</text>
+    <line x1="767" y1="104" x2="767" y2="212" stroke="currentColor" marker-end="url(#q)"/>
+    <rect x="692" y="214" width="150" height="40" rx="4" fill="var(--soft)"/>
+    <text x="767" y="238" text-anchor="middle" font-size="12" font-weight="600">counted E / F</text>
+
+    <!-- compare -->
+    <line x1="158" y1="234" x2="360" y2="234" stroke="currentColor" marker-end="url(#q)"/>
+    <line x1="692" y1="234" x2="490" y2="234" stroke="currentColor" marker-end="url(#q)"/>
+    <rect x="362" y="210" width="126" height="48" rx="4" fill="none" stroke="var(--accent)" stroke-width="1.6"/>
+    <text x="425" y="230" text-anchor="middle" font-size="12" font-weight="600">compare</text><text x="425" y="246" text-anchor="middle" font-size="10" fill="var(--muted)">per node, ΔE = ΔF</text>
+
+    <!-- verdicts -->
+    <line x1="425" y1="258" x2="425" y2="280" stroke="currentColor"/>
+    <line x1="300" y1="280" x2="550" y2="280" stroke="currentColor"/>
+    <line x1="300" y1="280" x2="300" y2="292" stroke="currentColor" marker-end="url(#q)"/>
+    <line x1="425" y1="280" x2="425" y2="292" stroke="currentColor" marker-end="url(#q)"/>
+    <line x1="550" y1="280" x2="550" y2="292" stroke="currentColor" marker-end="url(#q)"/>
+    <rect x="252" y="294" width="96" height="26" rx="13" fill="var(--ok-bg)"/><text x="300" y="311" text-anchor="middle" font-size="11" font-weight="600" fill="var(--ok)">OK · 192</text>
+    <rect x="377" y="294" width="96" height="26" rx="13" fill="var(--soft)"/><text x="425" y="311" text-anchor="middle" font-size="11" font-weight="600">range · 12</text>
+    <rect x="502" y="294" width="96" height="26" rx="13" fill="var(--flag-bg)"/><text x="550" y="311" text-anchor="middle" font-size="11" font-weight="600" fill="var(--flag)">explained · 20</text>
+
+    <!-- oracles -->
+    <rect x="252" y="58" width="372" height="118" rx="4" fill="none" stroke="var(--flag)" stroke-dasharray="4 3"/>
+    <text x="264" y="76" font-size="10.5" font-weight="600" fill="var(--flag)">ORACLES — resolve a range or a mismatch</text>
+    <g font-size="10.5">
+      <text x="264" y="98">loop × N</text><text x="360" y="98" fill="var(--muted)">← literal list · runtime parameter</text>
+      <text x="264" y="116">if (flag)</text><text x="360" y="116" fill="var(--muted)">← parameter value</text>
+      <text x="264" y="134">deferred</text><text x="360" y="134" fill="var(--muted)">← did the callback fire? (trace)</text>
+      <text x="264" y="152">plugins</text><text x="360" y="152" fill="var(--muted)">← plugin-list parameter · plugin sources</text>
+      <text x="264" y="168" font-size="9.5" fill="var(--muted)">trace says which code ran · source says what to count</text>
+    </g>
+    <line x1="425" y1="176" x2="425" y2="208" stroke="var(--flag)" marker-end="url(#qf)"/>
+  </svg>
+  </div>
+  <figcaption>A2. The expected side never looks at the trace to count; the counted side never looks at the source. They meet only in the comparison. Rows under loops, guards, deferred methods or plugins are flagged, and an oracle — a literal list, a runtime parameter, a fired callback, a plugin list — turns the flag into an exact number. r25: 224 nodes.</figcaption>
+</figure>
+</main>
