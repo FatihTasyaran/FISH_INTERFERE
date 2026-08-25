@@ -71,7 +71,8 @@ const svg = d3.select('#svg');
 const root = svg.append('g');
 const zoom = d3.zoom().scaleExtent([0.3, 12]).on('zoom', ev => root.attr('transform', ev.transform));
 svg.call(zoom);
-function fit() { const W = svg.node().clientWidth, H = svg.node().clientHeight; const R = Math.min(W,H)/2 - 150;
+const dims = () => { const b = svg.node().getBoundingClientRect(); return [b.width || window.innerWidth, b.height || (window.innerHeight - 46)]; };
+function fit() { const [W, H] = dims(); const R = Math.min(W,H)/2 - 150;
   svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity.translate(W/2, H/2)); return R; }
 document.getElementById('fit').addEventListener('click', fit);
 
@@ -109,7 +110,7 @@ function draw() {
   const lvl = +document.getElementById('rosLvl').value;
   const cc = document.getElementById('crossc').checked;
   const withCpuOnly = document.getElementById('cpuOnly').checked;
-  const W = svg.node().clientWidth, H = svg.node().clientHeight; const R = Math.min(W,H)/2 - 150;
+  const [W, H] = dims(); const R = Math.min(W,H)/2 - 150;
   const axes = AXES.filter(a => sel.has(a));
   if (!axes.length) { root.append('circle').attr('r', R).attr('fill','none').attr('stroke','#ddd').attr('stroke-dasharray','6 6');
     root.append('text').attr('text-anchor','middle').attr('fill','#999').attr('font-size',15).text('no axis selected');
