@@ -103,7 +103,8 @@ methods are flagged, never multiplied; verdicts: `OK`, `OK:range`,
 `mismatch:ctx`, `mismatch:plugins`, `mismatch`. `scripts/aw_a2_sheet.py`
 writes the Google Sheet (REFERENCE · bench_node · expected_vertex ·
 actual_vertex · node_reviews · class_map · mismatch_detail · ros2cli_helpers).
-r24: 198 nodes, 140 exact + 32 in range (87 %); `notes/a2_autoware_r24.txt`.
+r25: 224 nodes, 163 exact + 34 in range (88 %); `notes/a2_autoware_r24.txt`.
+Pipeline figure: `docs/figures/provenance_pipeline.html` (four layers + A2 branch).
 
 ## Limits (state them when you use the numbers)
 
