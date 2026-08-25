@@ -16,7 +16,7 @@ DEST=$HOME/fish_traces
 mkdir -p "$DEST"
 IMG=${IMG:-autoware-dev-trt-a1000-fishwait7:latest}
 FISH_SRC=/home/tue037807/fish_interfere
-NAME=${NAME:-autoware-fishwait7-run-r25}
+NAME=${NAME:-autoware-fishwait7-run-r27}
 docker image inspect $IMG >/dev/null 2>&1 || { echo "[run] $IMG not built"; exit 2; }
 docker rm -f $NAME 2>/dev/null || true
 

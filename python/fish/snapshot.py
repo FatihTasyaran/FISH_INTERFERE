@@ -129,6 +129,69 @@ def capture_component_list(snapshot_dir: str) -> str:
     return output_path
 
 
+def _parse_param_dump(text: str) -> dict:
+    """`ros2 param dump` yaml → flat {"a.b": value} (nested ros__parameters dicts dotted)."""
+    try:
+        import yaml
+        doc = yaml.safe_load(text) or {}
+    except Exception:
+        return {}
+    flat = {}
+    def walk(obj, prefix=""):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                walk(v, f"{prefix}{k}." if prefix or True else k)
+        else:
+            flat[prefix.rstrip(".")] = obj
+    for _node, body in doc.items():
+        if isinstance(body, dict) and "ros__parameters" in body:
+            walk(body["ros__parameters"])
+    return flat
+
+
+def capture_params(snapshot_dir: str, nodes, num_workers: int = 4, tag: str = "") -> str:
+    """`ros2 param dump <node>` for every node → snapshot/params.json {node: {param: value}}.
+    The runtime parameter VALUES are the oracle the A2 expected model needs for
+    parameter-driven loops (`for (topic : topic_list)`) and guards (`if (use_x)`): package
+    yaml defaults and launch overrides differ, only the node knows what it got.
+    Merges with an existing params.json (captured earlier in the session)."""
+    path = os.path.join(snapshot_dir, "params.json")
+    try:
+        with open(path) as f:
+            allp = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        allp = {}
+    work = queue.Queue()
+    for n in nodes:
+        if n not in allp and "_ros2cli" not in n:
+            work.put(n)
+    if work.empty():
+        return path
+    lock = threading.Lock(); n_new = [0]
+
+    def worker():
+        while True:
+            try:
+                node = work.get_nowait()
+            except queue.Empty:
+                break
+            out = _ros2_cmd(f"ros2 param dump --print {node}", timeout=30)   # Humble: default writes a file; --print → stdout
+            if out:
+                flat = _parse_param_dump(out)
+                with lock:
+                    allp[node] = flat; n_new[0] += 1
+            work.task_done()
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(num_workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=600)
+    with open(path, "w") as f:
+        json.dump(allp, f, indent=1, default=str)
+    print(f"[FISH]   → {path} ({n_new[0]} new, {len(allp)} nodes with parameters{(' @' + tag) if tag else ''})")
+    return path
+
+
 def _refresh_node_info(snapshot_dir: str) -> None:
     """
     Re-capture node_list and node_info at shutdown, merge with Phase 1 data.
@@ -190,6 +253,10 @@ def _refresh_node_info(snapshot_dir: str) -> None:
             json.dump(all_info, f, indent=2)
 
     print(f"[FISH]   Node list: {len(all_nodes)} total ({len(phase1_nodes)} phase1 + {len(shutdown_nodes)} shutdown, {new_count} new)")
+    try:
+        capture_params(snapshot_dir, shutdown_nodes, tag="shutdown")
+    except Exception as e:
+        print(f"[FISH]   params capture failed: {e}")
 
 
 # Environment variables that decide *how* ROS 2 / DDS behaved in this session.
@@ -524,6 +591,7 @@ class LiveCollector:
                 self._log_warning(f"node_info incomplete: {sorted(real_missing)}")
 
         print(f"[FISH]   Node info final: {len(all_info)}/{len(all_nodes)} nodes")
+        # (runtime parameter values are captured per batch inside _collect_all_node_info)
 
     def _collect_all_node_info(self, all_nodes, all_info, info_lock,
                                node_dir, json_path, num_workers=4):
@@ -533,6 +601,11 @@ class LiveCollector:
             work = [n for n in all_nodes if n not in all_info]
         if not work:
             return
+        # runtime parameter values (A2 oracle) for this batch — the nodes are alive now
+        try:
+            capture_params(self.snapshot_dir, work, num_workers=num_workers, tag="live")
+        except Exception as e:
+            print(f"[FISH]   params capture failed: {e}")
 
         work_queue = queue.Queue()
         for node in work:

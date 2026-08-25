@@ -342,7 +342,7 @@ def _param_yaml_candidates(launch_params, pkg, install="/opt/autoware"):
     return out
 
 
-def resolve_loop_multiplicity(row, files, launch_params, pkg):
+def resolve_loop_multiplicity(row, files, launch_params, pkg, rt_params=None):
     """N for a creation call inside a loop: the loop header names a container X; X is resolved to
     (a) a literal initialiser list in the class files, (b) a declare_parameter/get_parameter binding
     whose value is read from the node's parameter yaml, (c) a helper-function parameter bound at the
@@ -366,6 +366,12 @@ def resolve_loop_multiplicity(row, files, launch_params, pkg):
                  re.search(r"get_parameter\s*\(\s*\"([\w.]+)\"\s*,\s*" + re.escape(x) + r"\b", t)
             if mm:
                 pname = mm.group(1)
+                rt = (rt_params or {})
+                rv = rt.get(pname, rt.get(pname.split(".")[-1]))
+                if rv is None:
+                    rv = next((v for k, v in rt.items() if k.endswith("." + pname.split(".")[-1])), None)
+                if isinstance(rv, list):
+                    return len(rv), f"parameter `{pname}` = {len(rv)} items (runtime: snapshot/params.json)"
                 for y in _param_yaml_candidates(launch_params, pkg):
                     try:
                         import yaml
@@ -413,7 +419,7 @@ def literal_name(code: str):
     return None
 
 
-def resolve_if_rows_by_params(rows, files, launch_params, pkg):
+def resolve_if_rows_by_params(rows, files, launch_params, pkg, rt_params=None):
     """`if (flag)` / `if (!flag)` / `if (param_.x)` rows still unresolved: bind the condition
     identifier to a declare_parameter<bool>("name") in the class files and read the value from the
     node's parameter yaml; an `else` row in the same method takes the opposite decision."""
@@ -421,6 +427,12 @@ def resolve_if_rows_by_params(rows, files, launch_params, pkg):
     ylist = None
     def param_value(pname):
         nonlocal ylist
+        rt = (rt_params or {})
+        rv = rt.get(pname, rt.get(pname.split(".")[-1]))
+        if rv is None:
+            rv = next((v for k, v in rt.items() if k.endswith("." + pname.split(".")[-1])), None)
+        if rv is not None:
+            return rv, "runtime params.json"
         if ylist is None:
             ylist = _param_yaml_candidates(launch_params, pkg)
         for y in ylist:
@@ -433,6 +445,17 @@ def resolve_if_rows_by_params(rows, files, launch_params, pkg):
                 return v, y
         return None, None
     last_if = {}
+    for r in rows:
+        if r.get("vcc") == "VCCA3p" and not r.get("resolved"):
+            val, src = param_value("diagnostic_updater.period")
+            if val is not None:
+                try:
+                    recreated = float(val) != 1.0
+                except (TypeError, ValueError):
+                    recreated = False
+                r["resolved"] = "created" if recreated else "absent"
+                r["ctx"] += f"; resolved by parameter diagnostic_updater.period={val} ({os.path.basename(str(src))})"
+            continue
     for r in rows:
         ctx = r.get("ctx", "")
         if r.get("resolved") or r.get("deferred") or not (r["delta"][0] or r["delta"][1]):
@@ -448,9 +471,35 @@ def resolve_if_rows_by_params(rows, files, launch_params, pkg):
                      re.search(r"\b" + re.escape(ident) + r"\s*=\s*[^;]*get_parameter\s*\(\s*\"([\w.]+)\"()", t)
                 if mm:
                     pname = mm.group(1); default = mm.group(2) if mm.lastindex and mm.lastindex >= 2 else None; break
+            val = src = None
             if not pname:
-                continue
-            val, src = param_value(pname)
+                # derived flag: ident = (P == "lit" || P == "lit2") with P a string parameter
+                for f, t in texts.items():
+                    dm = re.search(r"\b" + re.escape(ident) + r"\s*=\s*\(?([^;]*?==[^;]*)\)?\s*;", t)
+                    if not dm:
+                        continue
+                    expr = dm.group(1)
+                    terms = re.findall(r"([A-Za-z_][\w.\->]*)\s*(==|!=)\s*\"([^\"]*)\"", expr)
+                    if not terms:
+                        continue
+                    vals = []
+                    for pid_, op, lit in terms:
+                        pi = pid_.split(".")[-1].split("->")[-1]
+                        pm = re.search(r"\b" + re.escape(pi) + r"\s*=\s*[^;]*?declare_parameter\s*(?:<[^>]*>)?\s*\(\s*\"([\w.]+)\"", t)
+                        if not pm:
+                            vals = None; break
+                        pv, psrc = param_value(pm.group(1))
+                        if pv is None:
+                            vals = None; break
+                        vals.append((str(pv) == lit) if op == "==" else (str(pv) != lit)); src = psrc
+                    if vals is None:
+                        continue
+                    val = any(vals) if "||" in expr else all(vals)
+                    pname = f"derived({expr.strip()[:60]})"; break
+                if val is None:
+                    continue
+            else:
+                val, src = param_value(pname)
             if val is None and default in ("true", "false"):
                 val, src = (default == "true"), "code default"
             if isinstance(val, bool):
@@ -462,6 +511,90 @@ def resolve_if_rows_by_params(rows, files, launch_params, pkg):
             taken = not last_if[r["method"]]
             r["resolved"] = "created" if taken else "absent"
             r["ctx"] += "; resolved as the else-branch of the parameter-resolved if"
+
+
+def resolve_deferred_by_fired(rows, fphase, files, ephase=None, remaps=None):
+    """deferred rows (created in method M): M itself is a registered callback of the node → created
+    iff it fired (phase != zero_exec); else, one hop: a caller of M in the class files that is a
+    fired callback → created. Uses the trace only to learn WHICH code ran, never to count."""
+    if not fphase:
+        return
+    fired = {}
+    for sym, ph in fphase.items():
+        mm = re.search(r"::([A-Za-z_]\w*)\s*\(", sym.replace("std::_Bind<void (", ""))
+        if mm:
+            fired[mm.group(1)] = (ph != "zero_exec") or fired.get(mm.group(1), False)
+    texts = {f: "\n".join(_lines(f)) for f in files}
+    for r in rows:
+        if not r.get("deferred") or r.get("resolved") or not (r["delta"][0] or r["delta"][1]):
+            continue
+        M = r.get("method", "")
+        if M in fired:
+            r["resolved"] = "created" if fired[M] else "absent"
+            r["ctx"] += f"; resolved by trace: callback {M}() {'fired' if fired[M] else 'never fired (zero_exec)'}"
+            continue
+        # std::bind callbacks carry no method name in their symbol → find the creation statement that
+        # binds M as a callback (`create_*("topic", …, &Class::M)` / lambda calling M) and use the
+        # phase of THAT entity's callback
+        if ephase:
+            for f, t in texts.items():
+                for cm in re.finditer(r"create_\w+[^;]{0,400}?\"((?:~/|/)?[A-Za-z0-9_][\w/.\-]*)\"[^;]{0,400}?(?:::" + re.escape(M) + r"\b|\b" + re.escape(M) + r"\s*\()", t):
+                    nm = cm.group(1); key = nm[2:] if nm.startswith("~/") else nm
+                    tgt = (remaps or {}).get(key) or (remaps or {}).get(nm) or nm
+                    b = tgt.rstrip("/").rsplit("/", 1)[-1]
+                    if b in ephase:
+                        ok = ephase[b] != "zero_exec"
+                        r["resolved"] = "created" if ok else "absent"
+                        r["ctx"] += f"; resolved by trace: {M}() is the callback of `{b}` which {'fired' if ok else 'never fired (zero_exec)'}"
+                        break
+                if r.get("resolved"):
+                    break
+            if r.get("resolved"):
+                continue
+        callers = set()
+        for f, t in texts.items():
+            for cm in re.finditer(r"\b" + re.escape(M) + r"\s*\(", t):
+                # enclosing function name: nearest preceding "Class::name(" definition head
+                head = t[:cm.start()]
+                dm = list(re.finditer(r"::([A-Za-z_]\w*)\s*\([^;{]*\)\s*(?:const\s*)?(?:override\s*)?\{", head))
+                if dm:
+                    callers.add(dm[-1].group(1))
+        hits = [c for c in callers if c in fired]
+        if hits:
+            ok = any(fired[c] for c in hits)
+            r["resolved"] = "created" if ok else "absent"
+            r["ctx"] += f"; resolved by trace: caller {'/'.join(hits)} {'fired' if ok else 'never fired'}"
+
+
+_ETYPE_OF_VCC = {"VCC2": "sub", "VCC_GS": "sub", "VCCA1": "sub", "VCCA5": None, "VCCA6": "sub", "VCCA7": "sub", "VCC4": "serv",
+                 "VCC6": "tmr", "VCCA3": "tmr", "VCCA3p": "tmr", "VCCA11": "tmr", "VCCA10": "sub"}
+
+
+def resolve_deferred_by_existence(rows, act):
+    """last resort for deferred rows with no literal name and no callback binding: the node has a
+    counted E of the same kind that no other expected row explains → created; none → absent.
+    (the trace decides existence; the source still decides what is being looked for)"""
+    remaining = collections.Counter({"sub": len(act["sub"]) - 2 if "/clock" in act["sub"] else len(act["sub"]) - 1,
+                                     "serv": len(act["serv"]) - 6, "tmr": len(act["tmr"])})
+    for r in rows:
+        if not (r["delta"][0] or r["delta"][1]) or r.get("resolved") == "absent":
+            continue
+        et = _ETYPE_OF_VCC.get(r["vcc"])
+        if et and not r.get("deferred"):
+            remaining[et] -= r["delta"][0] * (r.get("mult") or 1)
+        elif et and r.get("resolved") == "created":
+            remaining[et] -= r["delta"][0]
+    for r in rows:
+        if not r.get("deferred") or r.get("resolved") or not (r["delta"][0] or r["delta"][1]):
+            continue
+        et = _ETYPE_OF_VCC.get(r["vcc"])
+        if not et or r["vcc"] == "VCCA3p":          # the Updater re-creation is decided by its parameter only
+            continue
+        if remaining[et] >= r["delta"][0]:
+            remaining[et] -= r["delta"][0]; r["resolved"] = "created"
+            r["ctx"] += f"; resolved by existence: an unexplained counted {et} remains for this node"
+        else:
+            r["resolved"] = "absent"; r["ctx"] += f"; resolved by existence: no unexplained counted {et} left"
 
 
 def resolve_rows_by_names(rows, counted_labels, remaps=None, remaps_known=False):
@@ -490,6 +623,27 @@ def resolve_rows_by_names(rows, counted_labels, remaps=None, remaps_known=False)
             if res:
                 r["resolved"] = res
                 r["ctx"] = r["ctx"] + f"; resolved by counted names: {res}"
+
+def pluginlib_index(roots=("/opt/autoware", "/opt/ros/humble")):
+    """plugin name/type → (class type, library path) from every *__pluginlib__plugin resource."""
+    idx = {}
+    for root in roots:
+        for f in glob.glob(os.path.join(root, "share", "ament_index", "resource_index", "*__pluginlib__plugin", "*")):
+            for line in open(f, errors="replace"):
+                xml = os.path.join(root, line.strip())
+                if not os.path.isfile(xml):
+                    continue
+                try:
+                    txt = open(xml, errors="replace").read()
+                except Exception:
+                    continue
+                for lib in re.finditer(r'<library\s+path="([^"]+)"\s*>(.*?)</library>', txt, re.S):
+                    for c in re.finditer(r'<class\s+([^>]*)>', lib.group(2)):
+                        attrs = dict(re.findall(r'(\w+)="([^"]*)"', c.group(1)))
+                        t = attrs.get("type"); n = attrs.get("name") or t
+                        if t:
+                            idx[t] = (t, lib.group(1)); idx[n] = (t, lib.group(1))
+    return idx
 
 # ------------------------------------------------------------------ node → class
 def load_launch_components(session_dir):
@@ -612,6 +766,8 @@ def summarize_graph(path):
                         e.setdefault("split_F", 0); e["split_F"] = e.get("split_F", 0) + 1
                         continue                       # `::continuation` F added by split_callbacks (client-bearing callbacks) — not a registered callback
                     e["F"] += 1; e["symbols"].append(f.get("label", ""))
+                    e.setdefault("fphase", {})[f.get("label", "")] = f.get("phase")
+                    e.setdefault("ephase", {})[lab.rsplit("/", 1)[-1]] = f.get("phase")
                     for a in f.get("aspects") or []:
                         if a.get("aspect") == "pub":
                             e["pub"].add(a.get("topic") or "?")
@@ -651,6 +807,14 @@ def main(argv=None):
     except Exception:
         pass
     log(f"packages rebuilt against the overlay (header-level tracepoints reach them): {sorted(rebuilt) or 'none'}")
+    runtime_params = {}
+    try:
+        runtime_params = json.load(open(os.path.join(a.session_dir, "snapshot", "params.json")))
+        log(f"runtime parameters: {len(runtime_params)} nodes (snapshot/params.json)")
+    except Exception:
+        log("runtime parameters: none (snapshot/params.json missing) — falling back to yaml search")
+    plug_idx = pluginlib_index()
+    log(f"pluginlib index: {len(plug_idx)} plugin names")
     comp, exe_nodes = load_launch_components(a.session_dir)
     pid_exe = {}; pid_libs = {}
     try:
@@ -964,17 +1128,55 @@ def main(argv=None):
             if rec.get("class_resolved"):
                 info = class_cache.get((rec["class"], launch_pkg)) or {}
                 cls_files = sorted({f for f, _l, _e, _n in tags.methods.get(rec["class_resolved"], [])} | set(info.get("files", [])))
+            rt = runtime_params.get(full, {})
+            # (3) pluginlib: parameters listing plugin names → the plugin classes' creation rows
+            plug_names = []
+            for pv in list(rt.values()) + ([] if rt else []):
+                if isinstance(pv, list) and pv and all(isinstance(x, str) and x in plug_idx for x in pv):
+                    plug_names += pv
+            if not plug_names and kind == "node" and rec.get("class_resolved"):
+                for y in _param_yaml_candidates(launch_params, source_package(cls_files[0])[0] if cls_files else launch_pkg):
+                    try:
+                        import yaml
+                        doc = yaml.safe_load(open(y))
+                    except Exception:
+                        continue
+                    def _walk(o):
+                        if isinstance(o, dict):
+                            for v in o.values():
+                                yield from _walk(v)
+                        elif isinstance(o, list) and o and all(isinstance(x, str) and x in plug_idx for x in o):
+                            yield o
+                    for lst in _walk(doc):
+                        plug_names += lst
+                    if plug_names:
+                        break
+            pid_libs_here = pid_libs.get(act.get("pid"), set())
+            for pn in dict.fromkeys(plug_names):
+                pcls, plib = plug_idx[pn]
+                pinfo = class_review(pcls, None)
+                mapped = any(os.path.basename(l).startswith(os.path.basename(plib).split(".")[0]) or plib.split("/")[-1] in l for l in pid_libs_here) if pid_libs_here else None
+                acc2 = []; flatten_rows(pinfo, acc2, set())
+                for r in acc2:
+                    if r.get("deferred") or r.get("helper"):
+                        continue
+                    rr = dict(r); rr["ctx"] = (r["ctx"] + "; " if r["ctx"] else "") + f"via plugin {pn.split('::')[-1]} (lib {'mapped ✔' if mapped else ('NOT mapped' if mapped is False else 'unknown')})"
+                    rr["plugin"] = pn; rec["rows"].append(rr)
+            if plug_names:
+                rec["notes"].append(f"{len(dict.fromkeys(plug_names))} plugin(s) from parameters expanded")
             for r in rec["rows"]:
                 if re.match(r"(for|while)", r.get("ctx", "")) and (r["delta"][0] or r["delta"][1]) and not r.get("deferred"):
                     src_pkg = source_package(cls_files[0])[0] if cls_files else None
-                    n, how = resolve_loop_multiplicity(r, cls_files, launch_params if kind == "node" else [], src_pkg or launch_pkg)
+                    n, how = resolve_loop_multiplicity(r, cls_files, launch_params if kind == "node" else [], src_pkg or launch_pkg, rt)
                     if n:
                         r["mult"] = n; r["ctx"] = r["ctx"] + f"; loop × {n}: {how}"
                     else:
                         r["ctx"] = r["ctx"] + f"; loop multiplicity unresolved: {how}"
             resolve_rows_by_names(rec["rows"], counted_labels, launch_remaps, remaps_known)
             resolve_if_rows_by_params(rec["rows"], cls_files, launch_params if kind == "node" else [],
-                                      (source_package(cls_files[0])[0] if cls_files else None) or launch_pkg)
+                                      (source_package(cls_files[0])[0] if cls_files else None) or launch_pkg, rt)
+            resolve_deferred_by_fired(rec["rows"], act.get("fphase", {}), cls_files, act.get("ephase", {}), launch_remaps)
+            resolve_deferred_by_existence(rec["rows"], act)
             # ---- sums: static (resolved) part + unresolved range part
             C = 0; dfE = dfF = 0; ifE = ifF = 0; loop_open = False
             for r in rec["rows"]:
@@ -1019,7 +1221,7 @@ def main(argv=None):
                 if dfE and aE > E: why.append("unresolved deferred row(s) created at runtime")
                 if loop_open and aE > E: why.append(f"unresolved loop row(s) (+{aE - E})")
                 rec["verdict"] = "OK:range"; rec["notes"].append("within static range: " + "; ".join(why))
-            elif rtc and not any(r["vcc"] == "VCCA4" for r in rec["rows"]):
+            elif rtc and not any(r["vcc"] == "VCCA4" for r in rec["rows"]) and not plug_names:
                 rec["verdict"] = "mismatch:plugins"; rec["notes"].append("RTC/auto_mode services come from scene-module plugins (pluginlib) — not in this class's sources")
             else:
                 ctx_rows = [r for r in rec["rows"] if r.get("ctx") and not r.get("mult") and not r.get("resolved") and (r["delta"][0] or r["delta"][1])]
