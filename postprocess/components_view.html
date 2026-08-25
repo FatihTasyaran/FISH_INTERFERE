@@ -18,6 +18,7 @@
   <b>FISH — Components (Layer B)</b>
   <div style="margin-top:6px">Session: <input type="text" id="sessionId"> <button id="loadBtn" class="small-btn">Load</button></div>
   <div style="margin-top:4px">
+    axis <select id="axis" title="Which abstraction axis forms the components (Layer B quotient key)"><option value="ros">ROS — namespaces</option><option value="os">OS — executors (processes)</option><option value="gpu">GPU — streams</option></select>
     grouping <select id="depth" title="How many namespace levels form one component"><option value="1">top-level namespaces (/sensing, /localization, /perception, …)</option><option value="2">sub-namespaces (/sensing/lidar, /perception/object_recognition, …)</option></select>
     <label><input type="checkbox" id="showInfra"> show infra links</label>
     <label title="/system, /adapi, /viz, root-namespace nodes, /pointcloud_container"><input type="checkbox" id="showCrosscut"> cross-cutting</label>
@@ -54,11 +55,11 @@ function fit(){ const svg = inner.querySelector('svg'); if (!svg) return;
 function fmt(ns){ if (ns==null) return '–'; return ns < 1e6 ? (ns/1e3).toFixed(0)+' µs' : ns < 1e9 ? (ns/1e6).toFixed(1)+' ms' : (ns/1e9).toFixed(1)+' s'; }
 async function load(){
   const sid = document.getElementById('sessionId').value.trim(); if (!sid) return;
-  const depth = document.getElementById('depth').value; const infra = document.getElementById('showInfra').checked ? 'show' : 'hide';
+  const depth = document.getElementById('depth').value; const axis = document.getElementById('axis').value; const infra = document.getElementById('showInfra').checked ? 'show' : 'hide';
   const crosscut = document.getElementById('showCrosscut').checked ? 'show' : 'hide'; const ext = document.getElementById('mergeExt').checked ? 'merge' : 'split';
   document.getElementById('summary').textContent = 'loading…';
   document.getElementById('tableLink').href = `/component-links?session_id=${encodeURIComponent(sid)}&scope=__main__`;
-  const r = await fetch(`/api/components-svg?session=${encodeURIComponent(sid)}&depth=${depth}&infra=${infra}&crosscut=${crosscut}&ext=${ext}`);
+  const r = await fetch(`/api/components-svg?session=${encodeURIComponent(sid)}&depth=${depth}&axis=${axis}&infra=${infra}&crosscut=${crosscut}&ext=${ext}`);
   if (!r.ok){ document.getElementById('summary').textContent = 'error ' + r.status; return; }
   const d = await r.json();
   inner.innerHTML = (d.svg || '').replace(/<\?xml[^?]*\?>/, '').replace(/<!DOCTYPE[^>]*>/, '');
@@ -69,7 +70,8 @@ async function load(){
 }
 document.getElementById('loadBtn').addEventListener('click', load);
 document.getElementById('sessionId').addEventListener('keydown', e => { if (e.key==='Enter') load(); });
-['depth','showInfra','showCrosscut','mergeExt'].forEach(id => document.getElementById(id).addEventListener('change', load));
+['depth','axis','showInfra','showCrosscut','mergeExt'].forEach(id => document.getElementById(id).addEventListener('change', load));
+if (params.get('axis')) document.getElementById('axis').value = params.get('axis');
 document.getElementById('fitBtn').addEventListener('click', fit);
 if (sid0) load();
 </script></body></html>

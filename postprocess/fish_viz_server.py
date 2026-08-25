@@ -634,18 +634,25 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
     cur.execute("""
       WITH e_to_n AS (
         SELECT e.session_id, e.scope, e.node_id AS e_id, n.label AS node_name,
-               COALESCE(n.full_name, n.label) AS node_full
+               COALESCE(n.full_name, n.label) AS node_full,
+               ex.node_id AS ex_id, ex.label AS ex_label, ex.pid AS ex_pid,
+               ex.attrs->>'executor_type' AS ex_type, ex.attrs->>'num_threads' AS ex_threads
         FROM graph_nodes e
         JOIN graph_edges ge ON ge.session_id=e.session_id AND ge.scope=e.scope
                            AND ge.target=e.node_id AND ge.rel='contains'
         JOIN graph_nodes n  ON n.session_id=ge.session_id AND n.scope=ge.scope
                            AND n.node_id=ge.source AND n.type='N'
+        LEFT JOIN graph_edges ge3 ON ge3.session_id=n.session_id AND ge3.scope=n.scope
+                           AND ge3.target=n.node_id AND ge3.rel='contains'
+        LEFT JOIN graph_nodes ex ON ex.session_id=ge3.session_id AND ex.scope=ge3.scope
+                           AND ex.node_id=ge3.source AND ex.type='EX'
         WHERE e.session_id=%s AND e.scope=%s AND e.type='E'
       )
       SELECT f.node_id, f.cb_addr, f.label AS symbol, f.attrs, f.ptype,
              e.etype, e.label AS entity_label,
              COALESCE(en.node_name, '') AS node_name,
-             COALESCE(en.node_full, '') AS node_full
+             COALESCE(en.node_full, '') AS node_full,
+             en.ex_id, en.ex_label, en.ex_pid, en.ex_type, en.ex_threads
       FROM graph_nodes f
       JOIN graph_edges ge_fe ON ge_fe.session_id=f.session_id AND ge_fe.scope=f.scope
                             AND ge_fe.target=f.node_id AND ge_fe.rel='contains'
@@ -655,7 +662,7 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
       WHERE f.session_id=%s AND f.scope=%s AND f.type='F'
     """, (sid, scope, sid, scope))
     fnodes = {}
-    for f_id, cb, sym, attrs, ptype_col, etype, ent_label, node_name, node_full in cur.fetchall():
+    for f_id, cb, sym, attrs, ptype_col, etype, ent_label, node_name, node_full, ex_id, ex_label, ex_pid, ex_type, ex_threads in cur.fetchall():
         attrs = attrs or {}
         # graph_store_pg lifts ptype into a column; older rows may still
         # carry it in attrs.
@@ -685,6 +692,8 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
             'ent_label': ent_label or '',
             'node': node_name or '',
             'node_full': node_full or '',
+            # OS axis: the process-primary executor (EX vertex) that hosts the node
+            'ex_id': ex_id, 'ex_label': ex_label or '', 'pid': ex_pid, 'ex_type': ex_type or '', 'ex_threads': ex_threads or '',
             'phase': phase,
             'gpu_node': bool(attrs.get('gpu_node')),
             'ptype': ptype,
@@ -893,7 +902,38 @@ def _namespace_views(fnodes, edges, min_f=2, neighbors='show', isolated='hide', 
     return views
 
 
-def _component_graph(fnodes, edges, depth=1):
+def _gpu_stream_of_cb(sid, scope):
+    """cb_addr → (stream_id, kernel_ns) of the stream the callback submits most kernel time to
+    (GPU axis quotient key; the tri-sector query, aggregated per callback)."""
+    import psycopg2, psycopg2.extras
+    dsn = os.environ.get('FISH_PG_DSN', 'host=localhost port=5432 dbname=fish user=fish password=fish')
+    out = {}
+    try:
+        conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor); conn.autocommit = True
+        cur = conn.cursor()
+        _ensure_gantt_spans(cur, sid, scope)          # needs dict rows
+        cur.execute("""
+            SELECT sp.cb_addr, k.stream_id AS stream, sum(k.duration_ns) AS gpu_ns, count(*) AS n
+            FROM gpu_kernels k
+            JOIN cuda_runtime r ON r.session_id=k.session_id AND r.correlation_id=k.correlation_id AND r.source=k.source
+            JOIN gantt_spans sp ON sp.session_id=k.session_id AND sp.scope=%s
+                 AND sp.vtid=r.tid AND r.ts_ns BETWEEN sp.t0_ns AND sp.t1_ns
+            WHERE k.session_id=%s GROUP BY 1,2
+        """, (scope, sid))
+        best = {}
+        for row in cur.fetchall():
+            cb, stream, gpu_ns, n = row['cb_addr'], row['stream'], row['gpu_ns'], row['n']
+            cur_ = best.get(cb)
+            if cur_ is None or gpu_ns > cur_[1]:
+                best[cb] = (stream, int(gpu_ns), int(n))
+        conn.close()
+        out = best
+    except Exception:
+        pass
+    return out
+
+
+def _component_graph(fnodes, edges, depth=1, axis='ros', stream_of=None):
     """Layer B — the architecture view. Components = ROS namespaces (top-level,
     or the first `depth` segments); each component aggregates its F's and the
     FTs they belong to; component→component links aggregate every crossing L3
@@ -902,9 +942,29 @@ def _component_graph(fnodes, edges, depth=1):
     edges are counted but not drawn. ext boundary nodes form pseudo-components
     'ext:in' / 'ext:out'. See notes/design_task_model_from_ft.txt (Layer B)."""
     VIEWERS = ('rviz', 'rqt', 'ros2cli', 'launch_ros', 'transform_listener_impl', 'managed_tf_listener_impl')
+    stream_of = stream_of or {}
+    comp_meta = {}          # component key → extra label info (OS / GPU axes)
     def comp_of(n):
         if n.get('ptype') == 'ext':
             return None
+        if axis == 'os':
+            # OS axis: the EX vertex (process-primary executor) — every node of the
+            # process, viewers included, belongs to it; unbound callbacks → their pid
+            if n.get('ex_id') is not None:
+                k = f"EX {n.get('pid')}"
+                comp_meta.setdefault(k, {'ex_label': n.get('ex_label'), 'ex_type': n.get('ex_type'), 'ex_threads': n.get('ex_threads'), 'pid': n.get('pid')})
+                return k
+            return 'EX ?'
+        if axis == 'gpu':
+            # GPU axis: the stream the callback's kernels run on; CPU-only callbacks
+            # form one pseudo-component (they are the CPU side of the same session)
+            st = stream_of.get(n.get('cb_addr'))
+            if st:
+                k = f"stream {st[0]}"
+                m = comp_meta.setdefault(k, {'gpu_ns': 0, 'n_kernels': 0})
+                m['gpu_ns'] += st[1]; m['n_kernels'] += st[2]
+                return k
+            return 'cpu-only'
         full = n.get('node_full') or ''
         base = full.rsplit('/', 1)[-1]
         if any(base.startswith(v) for v in VIEWERS):
@@ -936,6 +996,7 @@ def _component_graph(fnodes, edges, depth=1):
         if n.get('etype') == 'sub': d['n_sub'] += 1
     for d in comps.values():
         d['n_nodes'] = len(d['nodes']); d['nodes'] = sorted(x for x in d['nodes'] if x)
+        d.update(comp_meta.get(d['name'], {}))
     links = {}
     def _add(a, b, kind, e):
         k = (a, b, kind)
@@ -977,7 +1038,7 @@ def _component_graph(fnodes, edges, depth=1):
             'lat_ns_p50': med(L['lat_p50']), 'lat_ns_p90': med(L['lat_p90']),
             'age_ns_p50': med(L['age_p50']), 'age_ns_p90': med(L['age_p90']),
         })
-    return {'components': sorted(comps.values(), key=lambda d: d['name']), 'links': out_links, 'depth': depth}
+    return {'components': sorted(comps.values(), key=lambda d: d['name']), 'links': out_links, 'depth': depth, 'axis': axis}
 
 
 # Architecture order for the component graph (left→right); components not
@@ -990,6 +1051,11 @@ _CROSSCUT = {'/system', '/adapi', '/default_adapi', '/viz', '/', '/pointcloud_co
 
 def _components_to_dot(cg, show_infra=False, show_crosscut=False, compact=True, rankdir='TB', splines='spline', ext_split=True, pin_rows=None):
     def esc(x): return _dot_escape(str(x))
+    axis = cg.get('axis', 'ros')
+    if axis != 'ros':
+        show_crosscut = True                      # cross-cutting is a namespace notion
+        if pin_rows is None:
+            pin_rows = False                      # architecture rows are namespaces too
     comps = [c for c in cg['components'] if show_crosscut or c['name'] not in _CROSSCUT]
     names = {c['name'] for c in comps}
     links = [l for l in cg['links'] if (show_infra or l['kind'] != 'infra')]
@@ -1008,7 +1074,12 @@ def _components_to_dot(cg, show_infra=False, show_crosscut=False, compact=True, 
         if c.get('n_gpu'): extra.append(f"GPU {c['n_gpu']}")
         if c.get('n_internal_edges'): extra.append(f"{c['n_internal_edges']} hops")
         if c.get('n_internal_state'): extra.append(f"{c['n_internal_state']} state reads")
-        lines = [esc(c['name']), esc(f"{c['n_nodes']} nodes · {c['n_f']} F")]
+        head = c['name']
+        if axis == 'os' and c.get('ex_label'):
+            head = f"{c['ex_label']}" + (f" · {c['ex_type']}" if c.get('ex_type') else '') + (f"({c['ex_threads']})" if c.get('ex_threads') and str(c['ex_threads']) not in ('1', '') else '')
+        if axis == 'gpu' and c.get('n_kernels'):
+            extra.insert(0, f"{c['n_kernels']} kernels · {c['gpu_ns']/1e6:.0f} ms GPU")
+        lines = [esc(head), esc(f"{c['n_nodes']} nodes · {c['n_f']} F")]
         if extra: lines.append(esc(" · ".join(extra)))
         return "\\n".join(lines)          # escape parts first, then DOT newlines
     for i, c in enumerate(comps):
@@ -1094,6 +1165,9 @@ def _serve_components(handler, qs, svg=False):
     if not sid:
         handler.send_error(400, 'session_id required'); return
     depth = int((qs.get('depth') or ['1'])[0])
+    axis = (qs.get('axis') or ['ros'])[0]
+    if axis not in ('ros', 'os', 'gpu'):
+        axis = 'ros'
     show_infra = (qs.get('infra', ['hide'])[0] == 'show')
     show_crosscut = (qs.get('crosscut', ['hide'])[0] == 'show')
     ext_split = (qs.get('ext', ['split'])[0] != 'merge')
@@ -1101,7 +1175,8 @@ def _serve_components(handler, qs, svg=False):
     if (qs.get('include_init', ['0'])[0] != '0'): allowed.add('init')
     try:
         fnodes, edges, _wccs, _n = _fetch_wcc_payload(sid, scope, allowed, 'exclude', '', '', 'show')
-        cg = _component_graph(fnodes, edges, depth=depth)
+        stream_of = _gpu_stream_of_cb(sid, scope) if axis == 'gpu' else None
+        cg = _component_graph(fnodes, edges, depth=depth, axis=axis, stream_of=stream_of)
         body = {'session_id': sid, 'scope': scope, **cg}
         if svg:
             try:
@@ -1957,6 +2032,8 @@ class H(BaseHTTPRequestHandler):
             _serve_file(self, os.path.join(HERE, 'axes_diagram.html'), 'text/html; charset=utf-8')
         elif path in ('/chord', '/chord.html', '/chord_view.html'):
             _serve_file(self, os.path.join(HERE, 'chord_view.html'), 'text/html; charset=utf-8')
+        elif path in ('/chord-axes', '/chord_axes', '/chord_axes.html'):
+            _serve_file(self, os.path.join(HERE, 'chord_axes.html'), 'text/html; charset=utf-8')
         elif path in ('/wcc', '/wcc.html', '/wcc-view', '/wcc_view.html',
                       '/ft', '/ft.html', '/ft-view', '/ft_view.html'):
             # FT = Fish Task — user-facing renaming of WCC view. Both URLs

@@ -39,6 +39,7 @@
   <label><input type="checkbox" id="ksamp" checked> sampled</label>
   <label><input type="checkbox" id="crossc"> cross-cutting</label>
   <span id="stat" class="note"></span>
+  <a id="axesLink" href="#" style="margin-left:auto;font-size:12px" title="full-page zoomable chord with OS / ROS / GPU toggles">axes chord ↗</a>
 </header>
 <div id="tip"></div>
 
@@ -326,6 +327,7 @@ function drawTri() {
     `${sectors.OS.classes.length} processes · ${sectors.ROS.classes.length} ROS classes · ${sectors.GPU.classes.length} streams · ribbons: ${osros.length}+${rosgpu.length}+${osgpu.length}`;
 }
 
+document.getElementById('axesLink').href = `/chord-axes?session_id=${encodeURIComponent(sid0)}&scope=${encodeURIComponent(scope)}`;
 document.getElementById('load').addEventListener('click', load);
 document.getElementById('sid').addEventListener('keydown', e => { if (e.key==='Enter') load(); });
 if (sid0) load();
