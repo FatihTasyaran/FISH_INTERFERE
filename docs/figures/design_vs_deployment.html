@@ -5,7 +5,7 @@
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0E181C;--panel:#152329;--ink:#DCE7E9;--muted:#8FA5AC;--line:#2C4048;--accent:#5FD0C8;--accent-ink:#8FE3DC;--flag:#E4A25A;--flag-bg:#2B2116;--soft:#1C2D34;--dim:#4E656C}}
 :root[data-theme="dark"]{--bg:#0E181C;--panel:#152329;--ink:#DCE7E9;--muted:#8FA5AC;--line:#2C4048;--accent:#5FD0C8;--accent-ink:#8FE3DC;--flag:#E4A25A;--flag-bg:#2B2116;--soft:#1C2D34;--dim:#4E656C}
 body{background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:15px;line-height:1.5;margin:0;padding:40px 24px 64px}
-main{max-width:1180px;margin:0 auto;display:grid;gap:34px}
+main{max-width:1200px;margin:0 auto;display:grid;gap:34px}
 h1{font-family:"Instrument Sans",sans-serif;font-weight:700;font-size:32px;line-height:1.1;margin:0 0 8px;text-wrap:balance}
 h2{font-family:"Instrument Sans",sans-serif;font-weight:600;font-size:19px;margin:0 0 4px}
 .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-ink);margin:0 0 8px}
@@ -14,7 +14,7 @@ p{max-width:72ch;margin:0}
 code{font-family:"IBM Plex Mono",monospace;font-size:.92em;background:var(--soft);padding:1px 5px;border-radius:3px}
 section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:18px 20px 14px}
 .cols{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:10px}
-@media (max-width:900px){.cols{grid-template-columns:1fr}}
+@media (max-width:960px){.cols{grid-template-columns:1fr}}
 .col{border:1px solid var(--line);border-radius:4px;padding:10px 12px 8px;min-width:0}
 .col.fish{border-color:var(--accent)}
 .col h3{font-family:"IBM Plex Mono",monospace;font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 8px;font-weight:500}
@@ -23,275 +23,272 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:6px;p
 svg{max-width:100%;height:auto;display:block;font-family:"IBM Plex Sans",system-ui,sans-serif;color:var(--ink)}
 .col p{font-size:12.5px;color:var(--muted);margin-top:8px}
 .num{color:var(--accent-ink);font-weight:600}
+ul.attrs{margin:6px 0 0;padding-left:0;list-style:none;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--accent-ink);display:grid;gap:2px}
 </style>
 <main>
 <header>
-  <p class="eyebrow">FISH · design vs deployment · r25 (fish_20260824_154257) ve r11 sayıları</p>
-  <h1>Beş davranış: kaynak kod ne der, çalışırken ne olur, FISH nasıl modeller</h1>
-  <p class="lede">FISH modeli her zaman deployment'ı esas alır: kurulan model, tasarımı gerçekte olana çevirir. Her satırda soldan sağa aynı mekanizma — kaynak kodun ima ettiği yapı, trace'in gösterdiği yapı ve FISH'in bunu tutan vertex/edge/attribute'ları.</p>
+  <p class="eyebrow">FISH · design vs deployment · numbers from r25 (fish_20260824_154257) and r11</p>
+  <h1>Five behaviours: what the source says, what happens at deployment, how FISH models it</h1>
+  <p class="lede">The FISH model always favours deployment: the constructed model translates the design into what actually happened. Each row reads left to right — the structure the source code implies, the structure the trace shows, and the vertices, edges and attributes FISH keeps for it.</p>
 </header>
 
 <!-- ============ 1. JOIN ============ -->
 <section>
-  <h2>1 · Join — <code>concatenate_data</code>: simetrik üç callback, tek tamamlayıcı</h2>
+  <h2>1 · Join — <code>concatenate_data</code>: three symmetric callbacks, one completer</h2>
   <div class="cols">
-    <div class="col"><h3>Design (kaynak)</h3><div class="scroll">
-      <svg viewBox="0 0 340 170" role="img" aria-label="Three identical cloud callbacks feed one all-arrived check that publishes">
+    <div class="col"><h3>Design (source)</h3><div class="scroll">
+      <svg viewBox="0 0 380 170" role="img" aria-label="Three identical cloud callbacks feed one all-arrived check that publishes">
         <defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker></defs>
         <g font-size="11.5">
           <text x="8" y="36">top</text><rect x="44" y="24" width="80" height="20" rx="3" fill="none" stroke="currentColor"/><text x="84" y="38" text-anchor="middle">cloud_cb</text>
           <text x="8" y="86">left</text><rect x="44" y="74" width="80" height="20" rx="3" fill="none" stroke="currentColor"/><text x="84" y="88" text-anchor="middle">cloud_cb</text>
           <text x="8" y="136">right</text><rect x="44" y="124" width="80" height="20" rx="3" fill="none" stroke="currentColor"/><text x="84" y="138" text-anchor="middle">cloud_cb</text>
-          <line x1="124" y1="34" x2="180" y2="76" stroke="currentColor" marker-end="url(#a1)"/>
-          <line x1="124" y1="84" x2="180" y2="84" stroke="currentColor" marker-end="url(#a1)"/>
-          <line x1="124" y1="134" x2="180" y2="92" stroke="currentColor" marker-end="url(#a1)"/>
-          <rect x="182" y="64" width="86" height="40" rx="3" fill="var(--soft)"/><text x="225" y="81" text-anchor="middle">hepsi geldi</text><text x="225" y="96" text-anchor="middle">mi?</text>
-          <line x1="268" y1="84" x2="300" y2="84" stroke="currentColor" marker-end="url(#a1)"/><text x="304" y="88" font-weight="600">publish</text>
+          <line x1="124" y1="34" x2="178" y2="76" stroke="currentColor" marker-end="url(#a1)"/>
+          <line x1="124" y1="84" x2="178" y2="84" stroke="currentColor" marker-end="url(#a1)"/>
+          <line x1="124" y1="134" x2="178" y2="92" stroke="currentColor" marker-end="url(#a1)"/>
+          <rect x="180" y="64" width="96" height="40" rx="3" fill="var(--soft)"/><text x="228" y="81" text-anchor="middle">all three</text><text x="228" y="96" text-anchor="middle">arrived?</text>
+          <line x1="276" y1="84" x2="306" y2="84" stroke="currentColor" marker-end="url(#a1)"/><text x="310" y="88" font-weight="600">publish</text>
         </g>
       </svg></div>
-      <p>Her lidar callback'i aynı gövdeyi taşır: "üçü de geldiyse birleştir ve yayınla". Tasarım simetrik, hangisinin tamamlayacağı belirsiz.</p>
+      <p>Every lidar callback carries the same body: "if all three are here, concatenate and publish". The design is symmetric; which one completes is undecided.</p>
     </div>
     <div class="col"><h3>Deployment (trace)</h3><div class="scroll">
-      <svg viewBox="0 0 340 170" role="img" aria-label="Top callback completes almost always, left rarely, right never; timeout timers publish partial clouds">
+      <svg viewBox="0 0 380 170" role="img" aria-label="Top callback completes almost always, left rarely, right never; timeout timers publish partial clouds">
         <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker><marker id="a2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--accent)"/></marker></defs>
         <g font-size="11.5">
           <text x="8" y="30">top</text><rect x="44" y="18" width="80" height="20" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.6"/><text x="84" y="32" text-anchor="middle">cloud_cb</text>
-          <line x1="124" y1="28" x2="210" y2="28" stroke="var(--accent)" stroke-width="2.2" marker-end="url(#a2a)"/><text x="214" y="32" font-weight="600" fill="var(--accent-ink)">publish · 8832</text>
+          <line x1="124" y1="28" x2="206" y2="28" stroke="var(--accent)" stroke-width="2.2" marker-end="url(#a2a)"/><text x="210" y="32" font-weight="600" fill="var(--accent-ink)">publish · 8832</text>
           <text x="8" y="70">left</text><rect x="44" y="58" width="80" height="20" rx="3" fill="none" stroke="currentColor"/><text x="84" y="72" text-anchor="middle">cloud_cb</text>
-          <line x1="124" y1="68" x2="210" y2="68" stroke="currentColor" stroke-dasharray="3 3" marker-end="url(#a2)"/><text x="214" y="72" fill="var(--muted)">nadir · 179</text>
+          <line x1="124" y1="68" x2="206" y2="68" stroke="currentColor" stroke-dasharray="3 3" marker-end="url(#a2)"/><text x="210" y="72" fill="var(--muted)">rarely · 179</text>
           <text x="8" y="110">right</text><rect x="44" y="98" width="80" height="20" rx="3" fill="none" stroke="currentColor"/><text x="84" y="112" text-anchor="middle">cloud_cb</text>
-          <line x1="124" y1="108" x2="160" y2="108" stroke="currentColor" marker-end="url(#a2)"/><rect x="162" y="98" width="52" height="20" rx="3" fill="var(--soft)"/><text x="188" y="112" text-anchor="middle">buffer</text><text x="220" y="112" fill="var(--muted)">· 0</text>
+          <line x1="124" y1="108" x2="160" y2="108" stroke="currentColor" marker-end="url(#a2)"/><rect x="162" y="98" width="52" height="20" rx="3" fill="var(--soft)"/><text x="188" y="112" text-anchor="middle">buffer</text><text x="220" y="112" fill="var(--muted)">never · 0</text>
           <text x="8" y="150">timer ×3</text><rect x="62" y="138" width="62" height="20" rx="3" fill="var(--flag-bg)" stroke="var(--flag)"/><text x="93" y="152" text-anchor="middle" fill="var(--flag)">200 ms</text>
-          <line x1="124" y1="148" x2="210" y2="148" stroke="var(--flag)" marker-end="url(#a2)"/><text x="214" y="152" fill="var(--flag)">partial · 2780</text>
+          <line x1="124" y1="148" x2="206" y2="148" stroke="var(--flag)" marker-end="url(#a2)"/><text x="210" y="152" fill="var(--flag)">partial · 2780</text>
         </g>
       </svg></div>
-      <p>Son gelen top olduğu için tamamlayıcı hep top; right yalnızca buffer'a yazar. Bir lidar eksik kalınca 200 ms'lik timeout timer'ı kısmi bulutu yayınlar.</p>
+      <p>Top arrives last, so top completes; right only fills the buffer. When a lidar is missing, the 200 ms timeout timer publishes the partial cloud.</p>
     </div>
-    <div class="col fish"><h3>FISH modeli</h3><div class="scroll">
-      <svg viewBox="0 0 360 190" role="img" aria-label="N contains E subscriptions and a timer, each with an F; the F vertices are joined by join edges into one join group with roles completer, member, timeout">
+    <div class="col fish"><h3>FISH model</h3><div class="scroll">
+      <svg viewBox="0 0 380 150" role="img" aria-label="N contains E subscriptions and a timer, each with an F; the F vertices are linked by join edges into one join group with roles completer, member, timeout">
         <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--accent)"/></marker></defs>
         <g font-size="11">
-          <rect x="6" y="6" width="130" height="22" rx="3" fill="var(--soft)"/><text x="12" y="21" font-weight="600">N concatenate_data</text>
+          <rect x="6" y="6" width="150" height="22" rx="3" fill="var(--soft)"/><text x="12" y="21" font-weight="600">N concatenate_data</text>
           <g font-family="IBM Plex Mono" font-size="10.5">
-            <text x="14" y="52">E sub top</text><text x="96" y="52">▶ F cb_top</text>
-            <text x="14" y="76">E sub left</text><text x="96" y="76">▶ F cb_left</text>
-            <text x="14" y="100">E sub right</text><text x="96" y="100">▶ F cb_right</text>
-            <text x="14" y="124">E tmr 200ms</text><text x="96" y="124">▶ F timeout</text>
+            <text x="14" y="52">E sub top    ▶ F cb_top</text>
+            <text x="14" y="76">E sub left   ▶ F cb_left</text>
+            <text x="14" y="100">E sub right  ▶ F cb_right</text>
+            <text x="14" y="124">E tmr 200ms  ▶ F timeout</text>
           </g>
-          <line x1="170" y1="48" x2="250" y2="86" stroke="var(--accent)" stroke-width="2" marker-end="url(#a3)"/>
-          <line x1="170" y1="72" x2="250" y2="88" stroke="var(--accent)" marker-end="url(#a3)"/>
-          <line x1="170" y1="96" x2="250" y2="90" stroke="var(--accent)" stroke-dasharray="3 3" marker-end="url(#a3)"/>
-          <line x1="170" y1="120" x2="250" y2="92" stroke="var(--flag)" marker-end="url(#a3)"/>
-          <rect x="252" y="70" width="102" height="38" rx="3" fill="none" stroke="var(--accent)"/><text x="303" y="86" text-anchor="middle" font-size="10.5">join_group</text><text x="303" y="100" text-anchor="middle" font-family="IBM Plex Mono" font-size="9.5">concatenated/pointcloud</text>
-          <text x="174" y="42" font-size="9.5" fill="var(--accent-ink)">completer</text>
-          <text x="174" y="112" font-size="9.5" fill="var(--muted)">member</text>
-          <text x="174" y="134" font-size="9.5" fill="var(--flag)">timeout timer</text>
-          <text x="6" y="160" font-size="10.5" fill="var(--muted)">edge: nature=join · flow_n · hop_ns_p50 · tau</text>
-          <text x="6" y="176" font-size="10.5" fill="var(--muted)">detect_joins: aynı çıkışa publish eden F'ler tek grup</text>
+          <line x1="176" y1="48" x2="262" y2="82" stroke="var(--accent)" stroke-width="2" marker-end="url(#a3)"/>
+          <line x1="176" y1="72" x2="262" y2="86" stroke="var(--accent)" marker-end="url(#a3)"/>
+          <line x1="176" y1="96" x2="262" y2="90" stroke="var(--accent)" stroke-dasharray="3 3" marker-end="url(#a3)"/>
+          <line x1="176" y1="120" x2="262" y2="94" stroke="var(--flag)" marker-end="url(#a3)"/>
+          <rect x="264" y="66" width="108" height="44" rx="3" fill="none" stroke="var(--accent)"/><text x="318" y="84" text-anchor="middle" font-size="10.5">join group</text><text x="318" y="100" text-anchor="middle" font-family="IBM Plex Mono" font-size="9">concatenated/pc</text>
+          <text x="184" y="42" font-size="9.5" fill="var(--accent-ink)">completer</text>
+          <text x="184" y="112" font-size="9.5" fill="var(--muted)">member</text>
+          <text x="184" y="134" font-size="9.5" fill="var(--flag)">timeout timer</text>
         </g>
       </svg></div>
-      <p><code>detect_joins</code> aynı çıkış topic'ine yayın yapan F'leri bir join grubunda toplar; rol trace'ten gelir: <span class="num">completer</span> {top, left}, <span class="num">member</span> {right}, <span class="num">3 timeout timer</span>. Akış sayıları kenar üzerinde.</p>
+      <p><code>detect_joins</code> groups the F vertices that publish the same output topic; the role comes from the trace: <span class="num">completer</span> {top, left}, <span class="num">member</span> {right}, <span class="num">3 timeout timers</span>.</p>
+      <ul class="attrs"><li>edge: nature=join · flow_n · hop_ns_p50 · tau</li></ul>
     </div>
   </div>
 </section>
 
 <!-- ============ 2. POLLED ============ -->
 <section>
-  <h2>2 · Polled subscription / <code>take()</code>: callback tasarımı, okuma gerçekliği</h2>
+  <h2>2 · Polled subscription / <code>take()</code>: designed as callbacks, executed as reads</h2>
   <div class="cols">
-    <div class="col"><h3>Design (kaynak)</h3><div class="scroll">
-      <svg viewBox="0 0 340 150" role="img" aria-label="Two subscriptions each with a callback and a timer callback, drawn as if every subscription triggers work">
+    <div class="col"><h3>Design (source)</h3><div class="scroll">
+      <svg viewBox="0 0 380 150" role="img" aria-label="Two subscriptions each with a callback and a timer callback, drawn as if every subscription triggers work">
         <defs><marker id="b1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker></defs>
         <g font-size="11.5">
-          <text x="8" y="34">topic A</text><line x1="62" y1="30" x2="96" y2="30" stroke="currentColor" marker-end="url(#b1)"/><rect x="98" y="18" width="52" height="22" rx="3" fill="none" stroke="currentColor"/><text x="124" y="33" text-anchor="middle">sub_A</text><line x1="150" y1="30" x2="184" y2="30" stroke="currentColor" marker-end="url(#b1)"/><rect x="186" y="18" width="90" height="22" rx="3" fill="none" stroke="currentColor"/><text x="231" y="33" text-anchor="middle">cb_A(msg){}</text>
-          <text x="8" y="74">topic B</text><line x1="62" y1="70" x2="96" y2="70" stroke="currentColor" marker-end="url(#b1)"/><rect x="98" y="58" width="52" height="22" rx="3" fill="none" stroke="currentColor"/><text x="124" y="73" text-anchor="middle">sub_B</text><line x1="150" y1="70" x2="184" y2="70" stroke="currentColor" marker-end="url(#b1)"/><rect x="186" y="58" width="90" height="22" rx="3" fill="none" stroke="currentColor"/><text x="231" y="73" text-anchor="middle">cb_B(msg){}</text>
-          <text x="8" y="118">timer</text><line x1="62" y1="114" x2="184" y2="114" stroke="currentColor" marker-end="url(#b1)"/><rect x="186" y="102" width="90" height="22" rx="3" fill="none" stroke="currentColor"/><text x="231" y="117" text-anchor="middle">on_timer()</text>
-          <text x="290" y="34" fill="var(--muted)">?</text><text x="290" y="74" fill="var(--muted)">?</text>
+          <text x="8" y="34">topic A</text><line x1="62" y1="30" x2="96" y2="30" stroke="currentColor" marker-end="url(#b1)"/><rect x="98" y="18" width="52" height="22" rx="3" fill="none" stroke="currentColor"/><text x="124" y="33" text-anchor="middle">sub_A</text><line x1="150" y1="30" x2="184" y2="30" stroke="currentColor" marker-end="url(#b1)"/><rect x="186" y="18" width="96" height="22" rx="3" fill="none" stroke="currentColor"/><text x="234" y="33" text-anchor="middle">cb_A(msg) { }</text>
+          <text x="8" y="74">topic B</text><line x1="62" y1="70" x2="96" y2="70" stroke="currentColor" marker-end="url(#b1)"/><rect x="98" y="58" width="52" height="22" rx="3" fill="none" stroke="currentColor"/><text x="124" y="73" text-anchor="middle">sub_B</text><line x1="150" y1="70" x2="184" y2="70" stroke="currentColor" marker-end="url(#b1)"/><rect x="186" y="58" width="96" height="22" rx="3" fill="none" stroke="currentColor"/><text x="234" y="73" text-anchor="middle">cb_B(msg) { }</text>
+          <text x="8" y="118">timer</text><line x1="62" y1="114" x2="184" y2="114" stroke="currentColor" marker-end="url(#b1)"/><rect x="186" y="102" width="96" height="22" rx="3" fill="none" stroke="currentColor"/><text x="234" y="117" text-anchor="middle">on_timer()</text>
+          <text x="296" y="34" fill="var(--muted)">?</text><text x="296" y="74" fill="var(--muted)">?</text>
         </g>
       </svg></div>
-      <p><code>InterProcessPollingSubscriber</code>: kaynakta her giriş için bir subscription ve (boş) bir callback var. Okuyan kodu görmezsen "her mesaj bir callback tetikler" sanırsın. Autoware'de 249 kullanım.</p>
+      <p><code>InterProcessPollingSubscriber</code>: the source has a subscription and an (empty) callback per input. Without the reading code you would assume "every message triggers a callback". 249 uses in Autoware.</p>
     </div>
     <div class="col"><h3>Deployment (trace)</h3><div class="scroll">
-      <svg viewBox="0 0 340 150" role="img" aria-label="Messages land in buffers; the timer callback takes the latest samples; the subscription callbacks never do work">
+      <svg viewBox="0 0 380 150" role="img" aria-label="Messages land in buffers; the timer callback takes the latest samples; the subscription callbacks never do work">
         <defs><marker id="b2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker><marker id="b2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--accent)"/></marker></defs>
         <g font-size="11.5">
           <text x="8" y="34">topic A</text><line x1="62" y1="30" x2="96" y2="30" stroke="currentColor" marker-end="url(#b2)"/><rect x="98" y="18" width="60" height="22" rx="3" fill="var(--soft)"/><text x="128" y="33" text-anchor="middle">buffer A</text>
           <text x="8" y="74">topic B</text><line x1="62" y1="70" x2="96" y2="70" stroke="currentColor" marker-end="url(#b2)"/><rect x="98" y="58" width="60" height="22" rx="3" fill="var(--soft)"/><text x="128" y="73" text-anchor="middle">buffer B</text>
-          <text x="8" y="118">timer</text><line x1="62" y1="114" x2="184" y2="114" stroke="var(--accent)" stroke-width="1.8" marker-end="url(#b2a)"/><rect x="186" y="102" width="90" height="22" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.6"/><text x="231" y="117" text-anchor="middle">on_timer()</text>
-          <path d="M231,102 C231,60 200,34 160,30" fill="none" stroke="var(--accent)" stroke-dasharray="4 3" marker-end="url(#b2a)"/>
-          <path d="M240,102 C240,80 210,72 160,70" fill="none" stroke="var(--accent)" stroke-dasharray="4 3" marker-end="url(#b2a)"/>
-          <text x="248" y="62" font-size="10.5" fill="var(--accent-ink)">take()</text>
-          <text x="180" y="34" font-size="10.5" fill="var(--muted)">cb_A: hiç iş yok</text>
-          <text x="180" y="74" font-size="10.5" fill="var(--muted)">cb_B: hiç iş yok</text>
-          <text x="8" y="142" font-size="10.5" fill="var(--muted)">örnekleme yaşı p50 5–47 ms (mrm_handler)</text>
+          <text x="8" y="118">timer</text><line x1="62" y1="114" x2="184" y2="114" stroke="var(--accent)" stroke-width="1.8" marker-end="url(#b2a)"/><rect x="186" y="102" width="96" height="22" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.6"/><text x="234" y="117" text-anchor="middle">on_timer()</text>
+          <path d="M234,102 C234,60 200,34 160,30" fill="none" stroke="var(--accent)" stroke-dasharray="4 3" marker-end="url(#b2a)"/>
+          <path d="M244,102 C244,80 210,72 160,70" fill="none" stroke="var(--accent)" stroke-dasharray="4 3" marker-end="url(#b2a)"/>
+          <text x="252" y="62" font-size="10.5" fill="var(--accent-ink)">take()</text>
+          <text x="180" y="34" font-size="10.5" fill="var(--muted)">cb_A: no work</text>
+          <text x="180" y="74" font-size="10.5" fill="var(--muted)">cb_B: no work</text>
+          <text x="8" y="142" font-size="10.5" fill="var(--muted)">sample age p50 5–47 ms (mrm_handler)</text>
         </g>
       </svg></div>
-      <p>Tek tetikleyici timer; girişler başka bir callback'in penceresinde <code>rmw_take</code> ile okunur (sample-and-hold). Design'daki "subscription tetikler" zinciri gerçekte yok.</p>
+      <p>One trigger, the timer; the inputs are read with <code>rmw_take</code> inside another callback's window (sample-and-hold). The "subscription triggers" chain of the design does not exist.</p>
     </div>
-    <div class="col fish"><h3>FISH modeli</h3><div class="scroll">
-      <svg viewBox="0 0 360 170" role="img" aria-label="Subscription F vertices connect to the reading F with state edges flagged polled, carrying age; the timer F is the trigger">
-        <defs><marker id="b3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--flag)"/></marker><marker id="b3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--accent)"/></marker></defs>
-        <g font-size="11" font-family="IBM Plex Mono">
-          <text x="8" y="30" font-size="10.5">E sub_A ▶ F cb_A</text><text x="130" y="30" font-size="9.5" fill="var(--muted)">phase=zero_exec</text>
-          <text x="8" y="66" font-size="10.5">E sub_B ▶ F cb_B</text><text x="130" y="66" font-size="9.5" fill="var(--muted)">phase=zero_exec</text>
-          <text x="8" y="126" font-size="10.5">E tmr   ▶ F on_timer</text><text x="150" y="126" font-size="9.5" fill="var(--accent-ink)">trigger</text>
-          <path d="M112,34 C160,60 220,90 250,120" fill="none" stroke="var(--flag)" stroke-width="1.8" marker-end="url(#b3)"/>
-          <path d="M112,70 C160,90 220,105 250,122" fill="none" stroke="var(--flag)" stroke-width="1.8" marker-end="url(#b3)"/>
-          <rect x="196" y="40" width="160" height="56" rx="3" fill="var(--flag-bg)"/>
-          <g font-size="9.5" fill="var(--flag)"><text x="202" y="54">nature=state · polled=True</text><text x="202" y="67">flow_method=polled_take</text><text x="202" y="80">inferred=False · age_ns_p50</text><text x="202" y="92">(rmw_take yoksa: inferred=True)</text></g>
-          <text x="8" y="156" font-size="10" fill="var(--muted)" font-family="IBM Plex Sans">FT view: gri ▹deliver hop (deposit) · siyah = trigger · r25: 71 polled_take + 60 inferred</text>
+    <div class="col fish"><h3>FISH model</h3><div class="scroll">
+      <svg viewBox="0 0 380 140" role="img" aria-label="Subscription F vertices connect to the reading F with state edges flagged polled, carrying age; the timer F is the trigger">
+        <defs><marker id="b3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--flag)"/></marker></defs>
+        <g font-family="IBM Plex Mono" font-size="10.5">
+          <text x="8" y="30">E sub_A ▶ F cb_A</text><text x="140" y="30" font-size="9.5" fill="var(--muted)">phase=zero_exec</text>
+          <text x="8" y="66">E sub_B ▶ F cb_B</text><text x="140" y="66" font-size="9.5" fill="var(--muted)">phase=zero_exec</text>
+          <text x="8" y="126">E tmr   ▶ F on_timer</text><text x="160" y="126" font-size="9.5" fill="var(--accent-ink)">trigger</text>
+          <path d="M112,34 C170,60 230,95 262,118" fill="none" stroke="var(--flag)" stroke-width="1.8" marker-end="url(#b3)"/>
+          <path d="M112,70 C170,90 230,108 262,122" fill="none" stroke="var(--flag)" stroke-width="1.8" marker-end="url(#b3)"/>
+          <rect x="224" y="36" width="152" height="52" rx="3" fill="var(--flag-bg)"/>
+          <g font-size="9.5" fill="var(--flag)"><text x="230" y="50">nature=state</text><text x="230" y="63">polled=True</text><text x="230" y="76">flow_method=polled_take</text></g>
         </g>
       </svg></div>
-      <p><code>detect_polled_subs</code>: başka bir callback'in penceresindeki <code>rmw_take(taken=1)</code> → kaynağın F'inden okuyan F'e <span class="num">polled state edge</span>; yaş = take − source_ts. Tetik zinciri timer'dan gider, girişler "deposit" hop'u olarak gri çizilir.</p>
+      <p><code>detect_polled_subs</code>: an <code>rmw_take(taken=1)</code> inside another callback's window becomes a <span class="num">polled state edge</span> from the source F to the reading F; age = take − source timestamp. The trigger chain runs through the timer; the inputs are drawn as grey "deliver" hops in the FT view.</p>
+      <ul class="attrs"><li>edge: nature=state · polled=True · inferred=False · age_ns_p50</li><li>no rmw_take seen → inferred=True state link</li><li>r25: 71 polled_take edges, 60 inferred</li></ul>
     </div>
   </div>
 </section>
 
 <!-- ============ 3. WAITABLE ============ -->
 <section>
-  <h2>3 · Waitable — bir subscription, iki dispatch</h2>
+  <h2>3 · Waitable — one subscription, two dispatches</h2>
   <div class="cols">
-    <div class="col"><h3>Design (kaynak)</h3><div class="scroll">
-      <svg viewBox="0 0 340 120" role="img" aria-label="create_subscription yields one entity and one callback">
+    <div class="col"><h3>Design (source)</h3><div class="scroll">
+      <svg viewBox="0 0 380 110" role="img" aria-label="create_subscription yields one entity and one callback">
         <defs><marker id="c1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker></defs>
         <g font-size="11.5">
-          <rect x="8" y="40" width="150" height="26" rx="3" fill="none" stroke="currentColor"/><text x="83" y="57" text-anchor="middle" font-family="IBM Plex Mono" font-size="10.5">create_subscription(T, cb)</text>
-          <line x1="158" y1="53" x2="200" y2="53" stroke="currentColor" marker-end="url(#c1)"/>
-          <rect x="202" y="40" width="70" height="26" rx="3" fill="none" stroke="currentColor"/><text x="237" y="57" text-anchor="middle">cb(msg)</text>
-          <text x="8" y="100" font-size="10.5" fill="var(--muted)">1 entity · 1 callback · mesaj başına 1 çağrı</text>
+          <rect x="8" y="36" width="176" height="26" rx="3" fill="none" stroke="currentColor"/><text x="96" y="53" text-anchor="middle" font-family="IBM Plex Mono" font-size="10.5">create_subscription(T, cb)</text>
+          <line x1="184" y1="49" x2="222" y2="49" stroke="currentColor" marker-end="url(#c1)"/>
+          <rect x="224" y="36" width="76" height="26" rx="3" fill="none" stroke="currentColor"/><text x="262" y="53" text-anchor="middle">cb(msg)</text>
+          <text x="8" y="94" font-size="10.5" fill="var(--muted)">1 entity · 1 callback · 1 call per message</text>
         </g>
       </svg></div>
-      <p>Kod tek bir şey söyler: bu topic'e abone ol, mesaj gelince <code>cb</code>'yi çağır.</p>
+      <p>The code says one thing: subscribe to this topic, call <code>cb</code> when a message arrives.</p>
     </div>
     <div class="col"><h3>Deployment (trace)</h3><div class="scroll">
-      <svg viewBox="0 0 340 160" role="img" aria-label="rclcpp creates a DDS subscription and an intra-process Waitable; the executor dispatches the Waitable wrapper then the inner callback 3.7 microseconds later">
+      <svg viewBox="0 0 380 160" role="img" aria-label="rclcpp creates a DDS subscription and an intra-process Waitable; the executor dispatches the Waitable wrapper then the inner callback 3.7 microseconds later">
         <defs><marker id="c2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker></defs>
         <g font-size="11">
           <rect x="8" y="10" width="86" height="24" rx="3" fill="none" stroke="currentColor"/><text x="51" y="26" text-anchor="middle">Subscription</text>
           <line x1="94" y1="18" x2="130" y2="18" stroke="currentColor" marker-end="url(#c2)"/><rect x="132" y="6" width="96" height="22" rx="3" fill="var(--soft)"/><text x="180" y="21" text-anchor="middle" font-size="10.5">rcl sub (DDS)</text>
-          <line x1="94" y1="28" x2="130" y2="44" stroke="currentColor" marker-end="url(#c2)"/><rect x="132" y="34" width="150" height="22" rx="3" fill="var(--flag-bg)" stroke="var(--flag)"/><text x="207" y="49" text-anchor="middle" font-size="10.5" fill="var(--flag)">SubscriptionIntraProcess (Waitable)</text>
-          <text x="8" y="84" font-size="10.5" fill="var(--muted)">executor, mesaj başına:</text>
-          <rect x="8" y="92" width="200" height="20" rx="3" fill="var(--flag-bg)"/><text x="14" y="106" font-family="IBM Plex Mono" font-size="10" fill="var(--flag)">callback_start(waitable, ipc=0)</text>
-          <text x="214" y="106" font-size="10" fill="var(--muted)">kayıtsız id</text>
+          <line x1="94" y1="28" x2="130" y2="44" stroke="currentColor" marker-end="url(#c2)"/><rect x="132" y="34" width="214" height="22" rx="3" fill="var(--flag-bg)" stroke="var(--flag)"/><text x="239" y="49" text-anchor="middle" font-size="10.5" fill="var(--flag)">SubscriptionIntraProcess (Waitable)</text>
+          <text x="8" y="84" font-size="10.5" fill="var(--muted)">executor, per message:</text>
+          <rect x="8" y="92" width="210" height="20" rx="3" fill="var(--flag-bg)"/><text x="14" y="106" font-family="IBM Plex Mono" font-size="10" fill="var(--flag)">callback_start(waitable, ipc=0)</text>
+          <text x="224" y="106" font-size="10" fill="var(--muted)">unregistered id</text>
           <line x1="40" y1="112" x2="40" y2="124" stroke="currentColor" marker-end="url(#c2)"/><text x="46" y="122" font-size="9.5" fill="var(--muted)">3.7 µs</text>
-          <rect x="8" y="126" width="200" height="20" rx="3" fill="var(--soft)"/><text x="14" y="140" font-family="IBM Plex Mono" font-size="10">callback_start(cb, ipc=1)</text>
-          <text x="214" y="140" font-size="10" fill="var(--muted)">iç callback</text>
+          <rect x="8" y="126" width="210" height="20" rx="3" fill="var(--soft)"/><text x="14" y="140" font-family="IBM Plex Mono" font-size="10">callback_start(cb, ipc=1)</text>
+          <text x="224" y="140" font-size="10" fill="var(--muted)">inner callback</text>
         </g>
       </svg></div>
-      <p>Intra-process açıkken rclcpp ikinci bir entity yaratır; executor her mesajı önce Waitable sarmalayıcısı, sonra iç callback olarak işler. r25: <span class="num">143</span> waitable, <span class="num">9464 = 9464</span> dispatch.</p>
+      <p>With intra-process communication on, rclcpp creates a second entity; the executor handles every message first as the Waitable wrapper, then as the inner callback. r25: <span class="num">143</span> waitables, <span class="num">9464 = 9464</span> dispatches.</p>
     </div>
-    <div class="col fish"><h3>FISH modeli</h3><div class="scroll">
-      <svg viewBox="0 0 360 160" role="img" aria-label="One E subscription carrying ipc_waitable and delivery attributes with a single F; the wrapper dispatch is folded into the same F; other waitables become their own E and F">
+    <div class="col fish"><h3>FISH model</h3><div class="scroll">
+      <svg viewBox="0 0 380 110" role="img" aria-label="One E subscription carrying ipc_waitable and delivery attributes with a single F; the wrapper dispatch is folded into the same F">
         <defs><marker id="c3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--accent)"/></marker></defs>
         <g font-size="11">
-          <rect x="8" y="14" width="150" height="56" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.4"/>
-          <text x="16" y="31" font-family="IBM Plex Mono" font-size="10.5" font-weight="600">E sub  etype=sub</text>
-          <g font-family="IBM Plex Mono" font-size="9.5" fill="var(--accent-ink)"><text x="16" y="46">ipc_waitable=0x79D5…</text><text x="16" y="60">delivery=ipc|dds|both</text></g>
-          <line x1="158" y1="42" x2="200" y2="42" stroke="var(--accent)" marker-end="url(#c3)"/>
-          <rect x="202" y="28" width="150" height="28" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.4"/><text x="277" y="46" text-anchor="middle" font-family="IBM Plex Mono" font-size="10.5">F cb (tek F)</text>
-          <text x="202" y="72" font-size="9.5" fill="var(--muted)">sarmalayıcı dispatch = aynı yürütmenin kabuğu</text>
-          <text x="8" y="100" font-size="10" fill="var(--muted)">kaynak eventler → E'ye bağlanır:</text>
-          <g font-family="IBM Plex Mono" font-size="9.5" fill="var(--muted)"><text x="8" y="114">fish_rclcpp_waitable_init(node_handle=0x0)</text><text x="8" y="127">rclcpp_subscription_init ×2 (waitable, this)</text><text x="8" y="140">rclcpp_subscription_callback_added → cb</text></g>
-          <text x="8" y="156" font-size="9.5" fill="var(--accent-ink)">action srv/cli, QoS event, rosbag2 player → etype=waitable, kendi E+F</text>
+          <rect x="8" y="14" width="170" height="60" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.4"/>
+          <text x="16" y="32" font-family="IBM Plex Mono" font-size="10.5" font-weight="600">E sub  etype=sub</text>
+          <g font-family="IBM Plex Mono" font-size="9.5" fill="var(--accent-ink)"><text x="16" y="48">ipc_waitable=0x79D5…</text><text x="16" y="63">delivery=ipc|dds|both</text></g>
+          <line x1="178" y1="44" x2="222" y2="44" stroke="var(--accent)" marker-end="url(#c3)"/>
+          <rect x="224" y="30" width="146" height="28" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.4"/><text x="297" y="48" text-anchor="middle" font-family="IBM Plex Mono" font-size="10.5">F cb (single F)</text>
+          <text x="8" y="96" font-size="9.5" fill="var(--muted)">wrapper dispatch = shell of the same run, not a second F</text>
         </g>
       </svg></div>
-      <p>E sayısı şişmez: sub E'ye <code>ipc_waitable</code> ve <code>delivery</code> yazılır, sarmalayıcı dispatch iç F'e katlanır. Diğer Waitable türleri (action, QoS event) 5. entity tipi olarak kendi E/F'sini alır.</p>
+      <p>The E count is not inflated: the sub E gets <code>ipc_waitable</code> and <code>delivery</code>, the wrapper dispatch folds into the inner F. Other Waitable kinds (action server/client, QoS events, rosbag2 player) become the fifth entity type with their own E and F.</p>
+      <ul class="attrs"><li>from: fish_rclcpp_waitable_init(node_handle=0x0)</li><li>rclcpp_subscription_init ×2 (waitable, this)</li><li>rclcpp_subscription_callback_added → cb</li></ul>
     </div>
   </div>
 </section>
 
 <!-- ============ 4. TIMEOUT ============ -->
 <section>
-  <h2>4 · Timeout timer — "bekle" tasarımı, "vazgeç" gerçekliği</h2>
+  <h2>4 · Timeout timer — designed to wait, deployed to give up</h2>
   <div class="cols">
-    <div class="col"><h3>Design (kaynak)</h3><div class="scroll">
-      <svg viewBox="0 0 340 100" role="img" aria-label="wait for all three lidars then publish full cloud">
+    <div class="col"><h3>Design (source)</h3><div class="scroll">
+      <svg viewBox="0 0 380 100" role="img" aria-label="wait for all three lidars then publish full cloud">
         <defs><marker id="d1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker></defs>
         <g font-size="11.5">
-          <rect x="8" y="30" width="176" height="26" rx="3" fill="none" stroke="currentColor"/><text x="96" y="47" text-anchor="middle" font-family="IBM Plex Mono" font-size="10.5">wait_for_all(top,left,right)</text>
-          <line x1="184" y1="43" x2="226" y2="43" stroke="currentColor" marker-end="url(#d1)"/>
-          <rect x="228" y="30" width="100" height="26" rx="3" fill="none" stroke="currentColor"/><text x="278" y="47" text-anchor="middle">publish(full)</text>
-          <text x="8" y="84" font-size="10.5" fill="var(--muted)">timeout dalı kodda var ama "istisna" gibi durur</text>
+          <rect x="8" y="30" width="196" height="26" rx="3" fill="none" stroke="currentColor"/><text x="106" y="47" text-anchor="middle" font-family="IBM Plex Mono" font-size="10.5">wait_for_all(top,left,right)</text>
+          <line x1="204" y1="43" x2="244" y2="43" stroke="currentColor" marker-end="url(#d1)"/>
+          <rect x="246" y="30" width="104" height="26" rx="3" fill="none" stroke="currentColor"/><text x="298" y="47" text-anchor="middle">publish(full)</text>
+          <text x="8" y="84" font-size="10.5" fill="var(--muted)">the timeout branch exists but reads as an exception</text>
         </g>
       </svg></div>
-      <p>Niyet: üç bulut tamam olunca birleşik bulut. Timeout, kaynakta bir yan dal.</p>
+      <p>The intent: one merged cloud once all three arrive. The timeout is a side branch in the source.</p>
     </div>
     <div class="col"><h3>Deployment (trace)</h3><div class="scroll">
-      <svg viewBox="0 0 340 150" role="img" aria-label="Timeline of two periods: in one all arrive and top publishes; in the other top is missing and the 200 ms timer publishes a partial cloud">
-        <defs><marker id="d2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker></defs>
+      <svg viewBox="0 0 380 150" role="img" aria-label="Timeline of two periods: in one all arrive and top publishes; in the other top is missing and the 200 ms timer publishes a partial cloud">
         <g font-size="10.5">
-          <line x1="20" y1="40" x2="330" y2="40" stroke="var(--dim)"/><line x1="20" y1="100" x2="330" y2="100" stroke="var(--dim)"/>
-          <g fill="var(--muted)"><text x="20" y="28">t0</text><text x="120" y="28">+50</text><text x="190" y="28">+120</text><text x="290" y="28">+200 ms</text></g>
+          <line x1="20" y1="40" x2="350" y2="40" stroke="var(--dim)"/><line x1="20" y1="100" x2="350" y2="100" stroke="var(--dim)"/>
+          <g fill="var(--muted)"><text x="20" y="28">t0</text><text x="120" y="28">+50</text><text x="190" y="28">+120</text><text x="286" y="28">+200 ms</text></g>
           <circle cx="60" cy="40" r="4" fill="currentColor"/><text x="48" y="56">right</text>
           <circle cx="130" cy="40" r="4" fill="currentColor"/><text x="120" y="56">left</text>
           <circle cx="200" cy="40" r="4" fill="var(--accent)"/><text x="190" y="56" fill="var(--accent-ink)" font-weight="600">top → full</text>
           <circle cx="60" cy="100" r="4" fill="currentColor"/><text x="48" y="116">right</text>
           <circle cx="130" cy="100" r="4" fill="currentColor"/><text x="120" y="116">left</text>
-          <text x="190" y="96" fill="var(--muted)">(top yok)</text>
-          <rect x="284" y="92" width="16" height="16" fill="var(--flag)"/><text x="230" y="134" fill="var(--flag)" font-weight="600">timer → partial (right+left)</text>
-          <text x="20" y="146" fill="var(--muted)">3 timer × 200 ms · 2780 akış</text>
+          <text x="190" y="96" fill="var(--muted)">(no top)</text>
+          <rect x="296" y="92" width="16" height="16" fill="var(--flag)"/><text x="196" y="134" fill="var(--flag)" font-weight="600">timer → partial (right+left)</text>
+          <text x="20" y="146" fill="var(--muted)">3 timers × 200 ms · 2780 flows</text>
         </g>
       </svg></div>
-      <p>Bir lidar gecikince sistem beklemez: 200 ms sonra timer kısmi bulutu yayınlar. r25'te bu yol <span class="num">2780</span> kez downstream akış üretti.</p>
+      <p>When a lidar is late the system does not wait: after 200 ms the timer publishes the partial cloud. In r25 this path produced <span class="num">2780</span> downstream flows.</p>
     </div>
-    <div class="col fish"><h3>FISH modeli</h3><div class="scroll">
-      <svg viewBox="0 0 360 150" role="img" aria-label="A timer E with its F participates in the join group as timeout role; join edge carries tau and flow counts; phase data">
+    <div class="col fish"><h3>FISH model</h3><div class="scroll">
+      <svg viewBox="0 0 380 120" role="img" aria-label="A timer E with its F participates in the join group in the timeout role; the join edge carries tau and flow counts">
         <defs><marker id="d3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--flag)"/></marker></defs>
         <g font-size="11">
-          <text x="8" y="30" font-family="IBM Plex Mono" font-size="10.5">E tmr 200ms ▶ F timeout_cb</text><text x="220" y="30" font-size="9.5" fill="var(--muted)">phase=data</text>
-          <line x1="150" y1="40" x2="150" y2="72" stroke="var(--flag)" stroke-width="1.8" marker-end="url(#d3)"/>
-          <rect x="60" y="74" width="190" height="40" rx="3" fill="none" stroke="var(--accent)"/><text x="155" y="90" text-anchor="middle" font-size="10.5">join_group concatenated/pointcloud</text><text x="155" y="105" text-anchor="middle" font-size="9.5" fill="var(--flag)">rol: timeout timer (completer değil, yayınlar)</text>
-          <text x="8" y="134" font-size="10" fill="var(--muted)">edge: nature=join · tau=200 ms · flow_n=2780 · gantt-cb: timer ile top cb aynı satırda → periyot başına kim tamamladı</text>
+          <text x="8" y="30" font-family="IBM Plex Mono" font-size="10.5">E tmr 200ms ▶ F timeout_cb</text><text x="236" y="30" font-size="9.5" fill="var(--muted)">phase=data</text>
+          <line x1="150" y1="40" x2="150" y2="68" stroke="var(--flag)" stroke-width="1.8" marker-end="url(#d3)"/>
+          <rect x="24" y="70" width="272" height="40" rx="3" fill="none" stroke="var(--accent)"/><text x="160" y="86" text-anchor="middle" font-size="10.5">join group concatenated/pointcloud</text><text x="160" y="101" text-anchor="middle" font-size="9.5" fill="var(--flag)">role: timeout timer — publishes, not a completer</text>
         </g>
       </svg></div>
-      <p>Timeout, join grubunun üçüncü rolü: completer olmadan yayınlayan F. <code>tau</code> kenarda, hangi periyotta kimin tamamladığı gantt-cb'de görünür.</p>
+      <p>The timeout is the third role of a join group: an F that publishes without completing. <code>tau</code> sits on the edge; which callback completed each period is visible in gantt-cb, where the timer and the top callback share a row.</p>
+      <ul class="attrs"><li>edge: nature=join · tau=200 ms · flow_n=2780</li></ul>
     </div>
   </div>
 </section>
 
 <!-- ============ 5. EXECUTOR ============ -->
 <section>
-  <h2>5 · Executor — node başına sıralı tasarım, container'da iç içe gerçeklik</h2>
+  <h2>5 · Executor — sequential per node in the design, interleaved in a container at deployment</h2>
   <div class="cols">
-    <div class="col"><h3>Design (namespace ağacı)</h3><div class="scroll">
-      <svg viewBox="0 0 340 150" role="img" aria-label="Namespace tree: sensing, perception, localization each own their nodes; callbacks per node run sequentially">
+    <div class="col"><h3>Design (namespace tree)</h3><div class="scroll">
+      <svg viewBox="0 0 380 150" role="img" aria-label="Namespace tree: sensing, perception, localization each own their nodes; callbacks per node run sequentially">
         <g font-size="11">
-          <text x="8" y="26" font-weight="600">/sensing</text><text x="90" y="26">crop_box · ring_filter · …</text>
-          <text x="8" y="56" font-weight="600">/perception</text><text x="90" y="56">ground_filter · cluster · …</text>
-          <text x="8" y="86" font-weight="600">/localization</text><text x="90" y="86">ndt · ekf · …</text>
-          <rect x="8" y="104" width="320" height="34" rx="3" fill="var(--soft)"/><text x="16" y="118" font-size="10.5" fill="var(--muted)">varsayım: her node kendi executor'unda,</text><text x="16" y="131" font-size="10.5" fill="var(--muted)">callback'leri sırayla; kaynaklar namespace'e ait</text>
+          <text x="8" y="26" font-weight="600">/sensing</text><text x="100" y="26">crop_box · ring_filter · …</text>
+          <text x="8" y="56" font-weight="600">/perception</text><text x="100" y="56">ground_filter · cluster · …</text>
+          <text x="8" y="86" font-weight="600">/localization</text><text x="100" y="86">ndt · ekf · …</text>
+          <rect x="8" y="104" width="360" height="36" rx="3" fill="var(--soft)"/><text x="16" y="119" font-size="10.5" fill="var(--muted)">assumption: each node in its own executor,</text><text x="16" y="133" font-size="10.5" fill="var(--muted)">callbacks sequential; resources belong to a namespace</text>
         </g>
       </svg></div>
-      <p>Mimari çizimler namespace ağacıdır; bir node'un callback'lerinin nerede ve kimle birlikte koştuğu tasarımda yoktur.</p>
+      <p>Architecture drawings are namespace trees; where a node's callbacks run, and with whom, is not part of the design.</p>
     </div>
     <div class="col"><h3>Deployment (r11, ps + trace)</h3><div class="scroll">
-      <svg viewBox="0 0 340 160" role="img" aria-label="One process pointcloud_container with a 20-thread multithreaded executor hosts 21 nodes spanning four namespaces">
+      <svg viewBox="0 0 380 160" role="img" aria-label="One process pointcloud_container with a 20-thread multithreaded executor hosts 21 nodes spanning four namespaces">
         <g font-size="11">
-          <rect x="8" y="8" width="324" height="140" rx="4" fill="none" stroke="currentColor" stroke-width="1.4"/>
-          <text x="16" y="26" font-weight="600">pointcloud_container</text><text x="150" y="26" font-family="IBM Plex Mono" font-size="10" fill="var(--muted)">PID 1799 · MT-20 · 21 node</text>
-          <rect x="16" y="36" width="230" height="16" rx="2" fill="var(--soft)"/><text x="20" y="48" font-size="10">/perception/*</text><text x="250" y="48" font-size="10" fill="var(--accent-ink)">86.7 s · 77 %</text>
-          <rect x="16" y="58" width="42" height="16" rx="2" fill="var(--soft)"/><text x="20" y="70" font-size="10">/pointcloud_container</text><text x="250" y="70" font-size="10" fill="var(--muted)">12.2 s</text>
-          <rect x="16" y="80" width="26" height="16" rx="2" fill="var(--soft)"/><text x="20" y="92" font-size="10">/sensing/*</text><text x="250" y="92" font-size="10" fill="var(--muted)">7.5 s</text>
-          <rect x="16" y="102" width="22" height="16" rx="2" fill="var(--soft)"/><text x="20" y="114" font-size="10">/localization/*</text><text x="250" y="114" font-size="10" fill="var(--muted)">6.4 s</text>
-          <text x="16" y="140" font-size="10" fill="var(--flag)">20 thread; farklı namespace'lerin callback'leri aynı anda, iç içe</text>
+          <rect x="8" y="8" width="364" height="140" rx="4" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <text x="16" y="26" font-weight="600">pointcloud_container</text><text x="166" y="26" font-family="IBM Plex Mono" font-size="10" fill="var(--muted)">PID 1799 · MT-20 · 21 nodes</text>
+          <rect x="16" y="36" width="230" height="16" rx="2" fill="var(--soft)"/><text x="20" y="48" font-size="10">/perception/*</text><text x="270" y="48" font-size="10" fill="var(--accent-ink)">86.7 s · 77 %</text>
+          <rect x="16" y="58" width="42" height="16" rx="2" fill="var(--soft)"/><text x="64" y="70" font-size="10">/pointcloud_container</text><text x="270" y="70" font-size="10" fill="var(--muted)">12.2 s</text>
+          <rect x="16" y="80" width="26" height="16" rx="2" fill="var(--soft)"/><text x="48" y="92" font-size="10">/sensing/*</text><text x="270" y="92" font-size="10" fill="var(--muted)">7.5 s</text>
+          <rect x="16" y="102" width="22" height="16" rx="2" fill="var(--soft)"/><text x="44" y="114" font-size="10">/localization/*</text><text x="270" y="114" font-size="10" fill="var(--muted)">6.4 s</text>
+          <text x="16" y="140" font-size="10" fill="var(--flag)">20 threads; callbacks of four namespaces interleave</text>
         </g>
       </svg></div>
-      <p>Tek process, tek MultiThreadedExecutor, dört namespace. Callback'ler paylaşılan 20 thread'de iç içe koşar; "namespace = kaynak sahibi" varsayımı bozulur (ε = 26 s, %6.11).</p>
+      <p>One process, one MultiThreadedExecutor, four namespaces. Callbacks interleave on 20 shared threads; "namespace = resource owner" breaks (ε = 26 s, 6.11 %).</p>
     </div>
-    <div class="col fish"><h3>FISH modeli</h3><div class="scroll">
-      <svg viewBox="0 0 360 170" role="img" aria-label="Containment chain CN, EX, N, E, F with EX attributes; Layer B namespaces are orthogonal to EX; epsilon measures EX time belonging to no namespace">
+    <div class="col fish"><h3>FISH model</h3><div class="scroll">
+      <svg viewBox="0 0 380 130" role="img" aria-label="Containment chain CN, EX, N, E, F with EX attributes; Layer B namespaces are orthogonal to EX; epsilon measures EX time belonging to no namespace">
         <g font-size="11">
-          <text x="8" y="22" font-family="IBM Plex Mono" font-size="11" font-weight="600">CN ⊒ EX ⊒ N ⊒ E ⊒ F</text><text x="180" y="22" font-size="10" fill="var(--muted)">containment (trunk)</text>
-          <rect x="8" y="34" width="200" height="50" rx="3" fill="none" stroke="var(--accent)"/><text x="14" y="49" font-family="IBM Plex Mono" font-size="10" fill="var(--accent-ink)">EX {pid, executor_type=MT,</text><text x="14" y="62" font-family="IBM Plex Mono" font-size="10" fill="var(--accent-ink)">    num_threads=20, cb_groups[]}</text><text x="14" y="77" font-family="IBM Plex Mono" font-size="10" fill="var(--muted)">  ├ N crop_box ▶ E ▶ F{callback_group, vtid}</text>
-          <text x="14" y="98" font-family="IBM Plex Mono" font-size="10" fill="var(--muted)">  ├ N ground_filter … (21 N)  · oore E: CUDA thread'leri</text>
-          <line x1="230" y1="34" x2="230" y2="100" stroke="var(--dim)" stroke-dasharray="3 3"/>
-          <text x="240" y="49" font-size="10" font-weight="600">Layer B (ns)</text><text x="240" y="63" font-size="10" fill="var(--muted)">EX'e dik: aynı EX</text><text x="240" y="76" font-size="10" fill="var(--muted)">4 namespace'e yayılır</text><text x="240" y="92" font-size="10" fill="var(--flag)">ε = 26 s = %6.11</text>
-          <text x="8" y="126" font-size="10" fill="var(--muted)">gantt-tid: thread bazlı · gantt-cb: callback bazlı · cb-stats</text>
-          <text x="8" y="141" font-size="10" fill="var(--muted)">F.callback_group → MutuallyExclusive | Reentrant</text>
-          <text x="8" y="156" font-size="10" fill="var(--muted)">F6: EX→ns kopyasız çözüm için ε vs ⧉ (design_abstraction_axes.txt)</text>
+          <text x="8" y="22" font-family="IBM Plex Mono" font-size="11" font-weight="600">CN ⊒ EX ⊒ N ⊒ E ⊒ F</text><text x="200" y="22" font-size="10" fill="var(--muted)">containment (trunk)</text>
+          <rect x="8" y="34" width="238" height="60" rx="3" fill="none" stroke="var(--accent)"/>
+          <g font-family="IBM Plex Mono" font-size="9.5" fill="var(--accent-ink)"><text x="14" y="49">EX {pid, executor_type=MT,</text><text x="14" y="62">    num_threads=20, cb_groups[]}</text></g>
+          <g font-family="IBM Plex Mono" font-size="9.5" fill="var(--muted)"><text x="14" y="77">  ├ N crop_box ▶ E ▶ F {vtid}</text><text x="14" y="90">  ├ N ground_filter … (21 N)</text></g>
+          <line x1="256" y1="34" x2="256" y2="94" stroke="var(--dim)" stroke-dasharray="3 3"/>
+          <text x="264" y="49" font-size="10" font-weight="600">Layer B (ns)</text><text x="264" y="63" font-size="10" fill="var(--muted)">orthogonal to EX:</text><text x="264" y="76" font-size="10" fill="var(--muted)">one EX, 4 namespaces</text><text x="264" y="91" font-size="10" fill="var(--flag)">ε = 26 s = 6.11 %</text>
+          <text x="8" y="118" font-size="10" fill="var(--muted)">oore E: CUDA threads without callbacks, same EX</text>
         </g>
       </svg></div>
-      <p>EX ayrı bir vertex: process + executor tipi + thread sayısı + callback group'lar. Namespace katmanı EX'e dik durur; ε, hiçbir namespace'e atanamayan EX süresi. Thread ve callback gantt'ları iç içe koşmayı gösterir.</p>
+      <p>EX is its own vertex: process, executor type, thread count, callback groups. The namespace layer is orthogonal to EX; ε is the EX time that belongs to no namespace. The thread and callback gantts show the interleaving.</p>
+      <ul class="attrs"><li>gantt-tid: by thread · gantt-cb: by callback · cb-stats</li><li>F.callback_group → MutuallyExclusive | Reentrant</li><li>F6: EX→ns without copies — ε vs ⧉ (design_abstraction_axes.txt)</li></ul>
     </div>
   </div>
 </section>
