@@ -1,0 +1,5 @@
+.git
+**/*.jsonl
+**/__pycache__
+docker/fishiris/data/T0_dashboard_raw.json
+notes/archive
