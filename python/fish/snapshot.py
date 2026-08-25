@@ -149,46 +149,84 @@ def _parse_param_dump(text: str) -> dict:
     return flat
 
 
-def capture_params(snapshot_dir: str, nodes, num_workers: int = 4, tag: str = "") -> str:
-    """`ros2 param dump <node>` for every node → snapshot/params.json {node: {param: value}}.
-    The runtime parameter VALUES are the oracle the A2 expected model needs for
-    parameter-driven loops (`for (topic : topic_list)`) and guards (`if (use_x)`): package
-    yaml defaults and launch overrides differ, only the node knows what it got.
-    Merges with an existing params.json (captured earlier in the session)."""
-    path = os.path.join(snapshot_dir, "params.json")
-    try:
-        with open(path) as f:
-            allp = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        allp = {}
-    work = queue.Queue()
-    for n in nodes:
-        if n not in allp and "_ros2cli" not in n:
-            work.put(n)
-    if work.empty():
-        return path
-    lock = threading.Lock(); n_new = [0]
+def capture_params(snapshot_dir: str, nodes, num_workers: int = 4, tag: str = "", per_node_timeout: float = 6.0) -> str:
+    """Runtime parameter VALUES of every node → snapshot/params.json {node: {param: value}}.
+    The A2 expected model needs them for parameter-driven loops and guards: package yaml
+    defaults and launch overrides differ, only the node knows what it got.
 
-    def worker():
-        while True:
+    One long-lived rclpy node calls each target's list_parameters/get_parameters services
+    directly (one discovery for the whole graph). `ros2 param dump` per node was tried first
+    (r28): a fresh CLI node + discovery per call, 30 s timeouts on a 220-node graph, 96 nodes
+    in 12 minutes. Merges with an existing params.json; writes atomically; never clobbers a
+    file it could not read."""
+    path = os.path.join(snapshot_dir, "params.json")
+    allp = {}
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                allp = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"[FISH]   params.json unreadable ({e}) — leaving it untouched")
+            return path
+    todo = [n for n in nodes if n not in allp and "_ros2cli" not in n and not n.rsplit("/", 1)[-1].startswith("_fish")]
+    if not todo:
+        return path
+    try:
+        import rclpy
+        from rclpy.parameter import parameter_value_to_python
+        from rcl_interfaces.srv import ListParameters, GetParameters
+    except Exception as e:
+        print(f"[FISH]   params capture: rclpy unavailable ({e})")
+        return path
+    n_new = 0
+    ctx = rclpy.Context(); ctx.init()
+    try:
+        node = rclpy.create_node(f"_fish_params_{os.getpid()}", context=ctx, use_global_arguments=False)
+        exe = rclpy.executors.SingleThreadedExecutor(context=ctx); exe.add_node(node)
+        for target in todo:
             try:
-                node = work.get_nowait()
-            except queue.Empty:
-                break
-            out = _ros2_cmd(f"ros2 param dump --print {node}", timeout=30)   # Humble: default writes a file; --print → stdout
-            if out:
-                flat = _parse_param_dump(out)
-                with lock:
-                    allp[node] = flat; n_new[0] += 1
-            work.task_done()
-    threads = [threading.Thread(target=worker, daemon=True) for _ in range(num_workers)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=600)
-    with open(path, "w") as f:
-        json.dump(allp, f, indent=1, default=str)
-    print(f"[FISH]   → {path} ({n_new[0]} new, {len(allp)} nodes with parameters{(' @' + tag) if tag else ''})")
+                lc = node.create_client(ListParameters, f"{target}/list_parameters")
+                gc = node.create_client(GetParameters, f"{target}/get_parameters")
+                if not lc.wait_for_service(timeout_sec=per_node_timeout / 2):
+                    continue
+                fut = lc.call_async(ListParameters.Request(depth=0))
+                exe.spin_until_future_complete(fut, timeout_sec=per_node_timeout)
+                if not fut.done() or fut.result() is None:
+                    continue
+                names = list(fut.result().result.names)
+                flat = {}
+                for i in range(0, len(names), 64):
+                    chunk = names[i:i + 64]
+                    fut2 = gc.call_async(GetParameters.Request(names=chunk))
+                    exe.spin_until_future_complete(fut2, timeout_sec=per_node_timeout)
+                    if not fut2.done() or fut2.result() is None:
+                        break
+                    for nm, pv in zip(chunk, fut2.result().values):
+                        try:
+                            flat[nm] = parameter_value_to_python(pv)
+                        except Exception:
+                            flat[nm] = str(pv)
+                if flat:
+                    allp[target] = flat; n_new += 1
+            except Exception:
+                pass
+            finally:
+                try:
+                    node.destroy_client(lc); node.destroy_client(gc)
+                except Exception:
+                    pass
+        exe.remove_node(node); node.destroy_node()
+    finally:
+        try:
+            ctx.shutdown()
+        except Exception:
+            pass
+    if n_new:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(allp, f, indent=1, default=str)
+        os.replace(tmp, path)
+    print(f"[FISH]   → {path} ({n_new} new, {len(allp)} nodes with parameters{(' @' + tag) if tag else ''}; {len(todo) - n_new} not reachable)")
     return path
 
 
@@ -564,6 +602,17 @@ class LiveCollector:
 
             poll_count += 1
 
+            # runtime parameters for nodes that still lack them (A2 oracle; retried each poll
+            # because nodes come up over minutes and `ros2 launch` may be gone at shutdown)
+            if poll_count >= 2 and not self._stop_event.is_set():
+                pt = getattr(self, "_params_thread", None)
+                if pt is None or not pt.is_alive():
+                    snap = sorted(all_nodes); tagp = f"poll#{poll_count}"
+                    self._params_thread = threading.Thread(
+                        target=lambda: capture_params(self.snapshot_dir, snap, tag=tagp),
+                        name="fish-params", daemon=True)
+                    self._params_thread.start()
+
             # After 2nd poll, start collecting node info
             if poll_count == 2:
                 self._collect_all_node_info(all_nodes, all_info, info_lock,
@@ -601,11 +650,7 @@ class LiveCollector:
             work = [n for n in all_nodes if n not in all_info]
         if not work:
             return
-        # runtime parameter values (A2 oracle) for this batch — the nodes are alive now
-        try:
-            capture_params(self.snapshot_dir, work, num_workers=num_workers, tag="live")
-        except Exception as e:
-            print(f"[FISH]   params capture failed: {e}")
+
 
         work_queue = queue.Queue()
         for node in work:

@@ -854,8 +854,8 @@ def main(argv=None):
 
     def node_kind(full):
         b = full.rsplit("/", 1)[-1]
-        if full.startswith("/_ros2cli") or b.startswith("_ros2cli"):
-            return "ros2cli"
+        if full.startswith("/_ros2cli") or b.startswith("_ros2cli") or b.startswith("_fish_params"):
+            return "ros2cli"                                   # FISH's own parameter-capture node is runtime tooling too
         if b.startswith("transform_listener_impl"):
             return "tf_helper"
         if b.startswith("managed_tf_listener_impl"):
