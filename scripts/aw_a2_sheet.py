@@ -50,7 +50,13 @@ REFERENCE = [
      "transform_listener.cpp:52-56 NodeOptions start_parameter_services(false), start_parameter_event_publisher(false)"],
     ["VCCA8m", "managed_transform_buffer provider", "ManagedTransformBuffer", "per process one helper N managed_tf_listener_impl_*: 3 E/F [+ /clock]", "+1 pub", "managed_transform_buffer_provider.cpp:101-133"],
     ["VCCA9", "rclcpp::(A)SyncParametersClient", "", "—", "+6 cli", ""],
-    ["ctx", "review flag", "row found under if/for/while/lambda within the method", "counted ONCE; may be 0 or N at runtime — check mismatch_detail", "", "static count, no TBD: the flagged rows are the only source of Δ that is not a model gap"],
+    ["ctx", "review flag", "row found under if/for/while/lambda within the method", "counted ONCE unless resolved (below); otherwise a range bound", "", "static count, no TBD"],
+    ["RES-loop", "resolution", "row inside `for (… : X)` / `i < X.size()`", "× N where N = length of the literal list `X` in the sources, of the parameter bound to X (node yaml / package config), or of the helper-function argument bound at the call site", "", "aw_a2_expected.resolve_loop_multiplicity"],
+    ["RES-name", "resolution", "deferred / if-guarded row with a literal topic or service name", "created|absent by matching the literal (after the node's launch remappings) against the counted E labels; `absent` only when the remap table is known", "", "aw_a2_expected.resolve_rows_by_names"],
+    ["RES-param", "resolution", "`if (flag)` row where flag = declare_parameter<bool>(\"name\"[, default])", "created|absent from the node's parameter yaml, else the code default; the `else` row of the same method takes the opposite", "", "aw_a2_expected.resolve_if_rows_by_params"],
+    ["RES-ctor", "resolution", "row in a method that the constructor calls directly", "static (not deferred): the method runs at construction", "", "e.g. autoware::pointcloud_preprocessor::Filter::subscribe()"],
+    ["RES-helper", "resolution", "helper class of the same package constructed with the node (make_shared<X>(*this), X m_{this}, opt_.emplace(this,…))", "X's own creation rows count for the node (flagged `via helper class X`), inheriting the guard of the instantiation line", "", "VCCA-listed helpers are skipped (they have exact rules)"],
+    ["WAIT-ipc", "tracepoint check", "intra-process SubscriptionIntraProcess Waitable", "no extra E: the sub E carries `ipc_waitable`; trace must show waitable_init(node_handle=0x0) + subscription_init + callback_added for it, and #wrapper dispatches == #inner dispatches", "", "scripts/aw_a2_waitables.py — the executor Waitable-branch callback_start wrap (§5) is the 'unregistered' 0.9 % of r25"],
 ]
 
 
@@ -79,17 +85,19 @@ def bench_node_tab(d, a):
 
 
 def expected_tab(d):
-    rows = [["Node full_name", "kind", "class", "class how", "exp E", "exp F", "exp pub", "exp cli", "act E", "act F", "act pub", "act waitable", "Δ E", "Δ F", "verdict", "notes"]]
+    rows = [["Node full_name", "kind", "class", "class how", "exp E", "exp F", "exp pub", "exp cli", "act E", "act F", "act pub", "act waitable", "Δ E", "Δ F", "verdict", "range", "resolved (loops/created/absent)", "notes"]]
     tE = tF = aE = aF = 0
     for full, r in sorted(d["nodes"].items()):
         if not r.get("expected"):
             continue
         e, ac = r["expected"], r["actual"]
         tE += e["E"]; tF += e["F"]; aE += ac["E"]; aF += ac["F"]
+        res = e.get("resolved", {})
         rows.append([full, r["kind"], r.get("class") or "", r.get("class_how") or "", e["E"], e["F"], e["pub"], e["cli"],
                      ac["E"], ac["F"], ac["pub"], len(ac.get("waitable", [])), r["delta"]["E"], r["delta"]["F"], r["verdict"],
+                     str(e.get("range", "")), f"{res.get('loops', 0)}/{res.get('created', 0)}/{res.get('absent', 0)}",
                      "; ".join(r.get("notes", []))])
-    rows += [[], ["TOTAL (modelled)", "", "", "", tE, tF, "", "", aE, aF, "", "", aE - tE, aF - tF, "OK" if (aE == tE and aF == tF) else "mismatch", ""]]
+    rows += [[], ["TOTAL (modelled)", "", "", "", tE, tF, "", "", aE, aF, "", "", aE - tE, aF - tF, "OK" if (aE == tE and aF == tF) else "mismatch", "", "", ""]]
     cli = [r for r in d["nodes"].values() if r["kind"] == "ros2cli"]
     rows += [[], [f"+ ros2cli helpers ({len(cli)})", "", "", "", "", "", "", "", sum(r["actual"]["E"] for r in cli), sum(r["actual"]["F"] for r in cli), "", "", "", "", "", "runtime/CLI noise — not in static model"]]
     return rows
@@ -143,6 +151,25 @@ def mismatch_tab(d):
     return rows
 
 
+def waitables_tab(w):
+    s = w["summary"]
+    rows = [["IPC Waitable tracepoint check — fish_rclcpp_waitable_init(node_handle=0x0) + executor Waitable-branch callback_start (scripts/aw_a2_waitables.py)"], [],
+            ["summary", f"ipc waitables {s['ipc_waitables']} (ok {s['ipc_waitables_ok']}, bad {s['ipc_waitables_bad']})",
+             f"unregistered dispatch ids {s['unregistered_dispatch_ids']} of which known waitables {s['unregistered_known_waitables']}, unknown {s['unregistered_unknown_ids']}",
+             f"unregistered execs {s['unregistered_execs']} / {s['total_execs']} = {100.0*s['unregistered_execs']/max(1,s['total_execs']):.2f} %"], [],
+            ["Node full_name", "pid", "subs", "ipc waitables", "ok", "wrapper dispatches", "inner dispatches", "verdict", "topics (ipc)"]]
+    for full, n in sorted(w["nodes"].items()):
+        if not n["n_ipc_waitables"]:
+            continue
+        rows.append([full, n["pid"], n["n_sub"], n["n_ipc_waitables"], n["n_ok"], n["wrapper_dispatches"], n["inner_dispatches"], n["verdict"],
+                     ", ".join(str(c.get("topic")) for c in n["checks"])[:800]])
+    rows += [[], ["=== processes: unexplained dispatch ids (not registered, not a known waitable) ==="], ["pid", "unregistered ids", "known waitables", "unknown ids", "unreg execs", "total execs"]]
+    for pid, p in sorted(w["processes"].items(), key=lambda kv: -kv[1]["unreg_execs"]):
+        if p["unregistered_ids"]:
+            rows.append([pid, p["unregistered_ids"], p["unregistered_known_waitable"], ", ".join(p["unregistered_unknown"])[:300], p["unreg_execs"], p["total_execs"]])
+    return rows
+
+
 def ros2cli_tab(d):
     rows = [["ros2cli runtime helpers — excluded from the static model (transient CLI nodes spawned by the FISH snapshot and by launch)"], [],
             ["Node full_name", "E", "F", "subs", "srvs", "timers"]]
@@ -167,6 +194,7 @@ def main(argv=None):
     ap.add_argument("--title", required=True)
     ap.add_argument("--image", default="autoware-dev-trt-a1000-fishwait6:latest")
     ap.add_argument("--scenario", default="logging_simulator.launch.xml + sample rosbag (rviz:=false), scripts/autoware_runs/run_logging_sim_bag_prov.sh")
+    ap.add_argument("--waitables", default=None, help="JSON from scripts/aw_a2_waitables.py → extra `waitables` tab")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
     d = load(a.expected_json)
@@ -180,6 +208,8 @@ def main(argv=None):
         {"name": "mismatch_detail", "rows": sanitize(mismatch_tab(d))},
         {"name": "ros2cli_helpers", "rows": sanitize(ros2cli_tab(d))},
     ]}
+    if a.waitables:
+        payload["tabs"].insert(7, {"name": "waitables", "rows": sanitize(waitables_tab(load(a.waitables)))})
     for t in payload["tabs"]:
         print(f"  tab {t['name']}: {len(t['rows'])} rows")
     if a.dry_run:

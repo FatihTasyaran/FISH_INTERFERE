@@ -51,6 +51,8 @@ VCC = [
                   "autoware InterProcessPollingSubscriber ctor → 1 sub with no-op callback"),
     ("VCCA1",     r"InterProcessPollingSubscriber\s*<[^;{}]*>\s*[A-Za-z_]\w*\s*\{\s*this", (1, 1, 0, 0),
                   "autoware InterProcessPollingSubscriber member init {this, ...} → 1 sub"),
+    ("VCCA1",     r"InterProcessPollingSubscriber\s*<[^;{}]*>\s*\(\s*this\b", (1, 1, 0, 0),
+                  "autoware InterProcessPollingSubscriber<T>(this, topic) direct construction → 1 sub"),
     ("VCCA2",     r"make_(shared|unique)\s*<\s*(autoware_utils(_logging)?::|autoware::universe_utils::)?LoggerLevelConfigure\s*>", (1, 1, 0, 0),
                   "LoggerLevelConfigure → create_service ~/config_logger (logger_level_configure.cpp:27)"),
     ("VCCA3",     r"\b(diagnostic_updater::)?Updater\s+\w+\s*(\{[^;]*\})?\s*;|make_(shared|unique)\s*<\s*diagnostic_updater::Updater\s*>|std::(unique|shared)_ptr<\s*diagnostic_updater::Updater\s*>\s+\w+\s*;", (1, 1, 1, 0),
@@ -62,7 +64,9 @@ VCC = [
     ("VCCA5",     r"\binit_pub\s*\(",                          (0, 0, 1, 0), "component_interface_utils init_pub → create_publisher_impl (:74)"),
     ("VCCA5",     r"\binit_cli\s*\(|\binit_client\s*\(",        (0, 0, 0, 1), "component_interface_utils init_cli → create_client_impl (:58)"),
     ("VCCA6",     r"\.subscribe\s*\(\s*(this|node)",            (1, 1, 0, 0), "message_filters::Subscriber::subscribe → create_subscription (subscriber.h:286)"),
-    ("VCCA6",     r"message_filters::Subscriber\s*<[^;]*>\s*\(\s*(this|node)", (1, 1, 0, 0), "message_filters::Subscriber(node, topic) → subscribe"),
+    ("VCCA6",     r"\b(?:message_filters|mf)::Subscriber\s*<[^;]*>\s*\(\s*(this|node|\*?parent_node)\b", (1, 1, 0, 0), "message_filters::Subscriber(node, topic) → subscribe"),
+    ("VCCA6",     r"\b(?:message_filters|mf)::Subscriber\s*<[^;{}]*>\s*\w+\s*\{\s*this\b", (1, 1, 0, 0), "message_filters::Subscriber member init {this, topic} → subscribe"),
+    ("VCCA6",     r"\b(?:image_transport::)?SubscriberFilter\s*<?[^;{}]*>?\s*\w+\s*\{\s*this\b", (1, 1, 0, 0), "image_transport::SubscriberFilter member init {this, topic} → 1 sub"),
     ("VCCA7",     r"image_transport::create_subscription\s*\(", (1, 1, 0, 0), "image_transport subscription (raw transport) → 1 sub"),
     ("VCCA7",     r"image_transport::create_publisher\s*\(|image_transport::create_camera_publisher\s*\(", (0, 0, 1, 0), "image_transport publisher → pub aspect (raw)"),
     ("VCCA8",     r"TransformListener\s*>\s*\([^)]*,\s*(this|\*this|node|\w+_node_?)\s*,\s*false\s*\)", (2, 2, 0, 0),
@@ -265,9 +269,9 @@ def scan_ranges(ranges, tags_roots, skip=None):
                         if q < 0:
                             break
                         if CTRL_RE.search(lines[q]) and len(lines[q]) - len(lines[q].lstrip()) < len(raw) - len(raw.lstrip()):
-                            ctx = lines[q].strip()[:60]; break
+                            ctx = lines[q].strip()[:200]; break
                     if CTRL_RE.search(raw):
-                        ctx = "same line: " + code[:60]
+                        ctx = "same line: " + code[:200]
                     rel = fabs
                     for r in tags_roots:
                         if fabs.startswith(r + "/"):
@@ -281,6 +285,211 @@ def scan_ranges(ranges, tags_roots, skip=None):
                 continue
             i += 1
     return rows
+
+# ------------------------------------------------------------------ resolvers (task: exact counts)
+def _literal_list_len(text: str, start: int):
+    """text[start] == '{' : number of top-level comma-separated items inside the braces."""
+    depth = 0; items = 0; seen_item = False; i = start; in_str = False
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            if ch == '\\':
+                i += 1
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True; seen_item = True
+        elif ch in "{([":
+            depth += 1
+            if depth >= 2:
+                seen_item = True
+        elif ch in "})]":
+            depth -= 1
+            if depth == 0:
+                return items + (1 if seen_item else 0)
+        elif ch == "," and depth == 1:
+            items += 1; seen_item = False
+        elif not ch.isspace() and depth == 1:
+            seen_item = True
+        i += 1
+    return None
+
+
+def _yaml_find(obj, key):
+    """first value of `key` anywhere under obj (ros__parameters trees are nested)."""
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            r = _yaml_find(v, key)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _yaml_find(v, key)
+            if r is not None:
+                return r
+    return None
+
+
+def _param_yaml_candidates(launch_params, pkg, install="/opt/autoware"):
+    out = [x for x in launch_params if os.path.exists(x)]
+    short = (pkg or "").replace("autoware_", "")
+    for root in (os.path.join(install, "share", "autoware_launch", "config"), os.path.join(install, "share", pkg or "-", "config")):
+        for f in glob.glob(os.path.join(root, "**", "*.yaml"), recursive=True):
+            if short and short in os.path.basename(f) and f not in out:
+                out.append(f)
+    return out
+
+
+def resolve_loop_multiplicity(row, files, launch_params, pkg):
+    """N for a creation call inside a loop: the loop header names a container X; X is resolved to
+    (a) a literal initialiser list in the class files, (b) a declare_parameter/get_parameter binding
+    whose value is read from the node's parameter yaml, (c) a helper-function parameter bound at the
+    call site (one hop). Returns (N, how) or (None, why)."""
+    m = re.search(r"for\s*\(.*?:\s*([A-Za-z_][\w.\->]*)\s*\)", row.get("ctx", "")) or \
+        re.search(r"<\s*([A-Za-z_][\w.\->]*)\.size\(\)", row.get("ctx", ""))
+    if not m:
+        return None, "loop container not recognised in header"
+    x = m.group(1).split(".")[-1].split("->")[-1]
+    texts = {f: "\n".join(_lines(f)) for f in files}
+    tried = [x]
+    for hop in range(2):
+        for f, t in texts.items():
+            mm = re.search(r"\b" + re.escape(x) + r"\s*(?:=\s*)?\{", t)             # literal list
+            if mm and "declare_parameter" not in t[max(0, mm.start() - 80):mm.start()]:
+                n = _literal_list_len(t, t.index("{", mm.start()))
+                if n:
+                    return n, f"literal list `{x}` ({os.path.basename(f)}:{t[:mm.start()].count(chr(10)) + 1}) = {n} items"
+            mm = re.search(r"\b" + re.escape(x) + r"\s*=\s*(?:this->)?declare_parameter\s*<[^;]*?>\s*\(\s*\"([\w.]+)\"", t) or \
+                 re.search(r"declare_parameter\s*(?:<[^>]*>)?\s*\(\s*\"([\w.]+)\"\s*,\s*" + re.escape(x) + r"\b", t) or \
+                 re.search(r"get_parameter\s*\(\s*\"([\w.]+)\"\s*,\s*" + re.escape(x) + r"\b", t)
+            if mm:
+                pname = mm.group(1)
+                for y in _param_yaml_candidates(launch_params, pkg):
+                    try:
+                        import yaml
+                        val = _yaml_find(yaml.safe_load(open(y)), pname.split(".")[-1])
+                    except Exception:
+                        val = None
+                    if isinstance(val, list):
+                        return len(val), f"parameter `{pname}` = {len(val)} items ({y})"
+                return None, f"parameter `{pname}` bound to `{x}` but no yaml value found ({len(_param_yaml_candidates(launch_params, pkg))} files tried)"
+        # helper-function parameter → call-site argument (one hop)
+        fn = row.get("method", "")
+        bound = None
+        for f, t in texts.items():
+            sig = re.search(r"\b" + re.escape(fn.split("::")[-1]) + r"\s*\(([^)]*)\)\s*\{", t)
+            if not sig:
+                continue
+            params = [pp.strip().split()[-1].lstrip("&*") for pp in sig.group(1).split(",") if pp.strip()]
+            if x in params:
+                idx = params.index(x)
+                for f2, t2 in texts.items():
+                    for call in re.finditer(r"\b" + re.escape(fn.split("::")[-1]) + r"\s*(?:<[^>]*>)?\s*\(([^;]*)\)\s*;", t2):
+                        args = [aa.strip() for aa in call.group(1).split(",")]
+                        if idx < len(args) and re.match(r"^[A-Za-z_]\w*$", args[idx]):
+                            bound = args[idx]; break
+                    if bound:
+                        break
+            if bound:
+                break
+        if not bound:
+            return None, f"`{x}` not resolvable (tried {', '.join(tried)})"
+        tried.append(bound); x = bound
+    return None, f"`{x}` not resolvable after 2 hops ({', '.join(tried)})"
+
+
+_NAME_RE = re.compile(r'"((?:~/|/)?[A-Za-z0-9_][\w/.\-]*)"')
+
+
+def literal_name(code: str):
+    """first quoted topic/service-like literal in a creation call ("~/input/x", "/tf", "input/engage")."""
+    for m in _NAME_RE.finditer(code):
+        v = m.group(1)
+        if v.count("/") == 0 and (v[:1].isupper() or "::" in v or v.endswith((".yaml", ".param"))):
+            continue
+        return v
+    return None
+
+
+def resolve_if_rows_by_params(rows, files, launch_params, pkg):
+    """`if (flag)` / `if (!flag)` / `if (param_.x)` rows still unresolved: bind the condition
+    identifier to a declare_parameter<bool>("name") in the class files and read the value from the
+    node's parameter yaml; an `else` row in the same method takes the opposite decision."""
+    texts = {f: "\n".join(_lines(f)) for f in files}
+    ylist = None
+    def param_value(pname):
+        nonlocal ylist
+        if ylist is None:
+            ylist = _param_yaml_candidates(launch_params, pkg)
+        for y in ylist:
+            try:
+                import yaml
+                v = _yaml_find(yaml.safe_load(open(y)), pname.split(".")[-1])
+            except Exception:
+                v = None
+            if v is not None:
+                return v, y
+        return None, None
+    last_if = {}
+    for r in rows:
+        ctx = r.get("ctx", "")
+        if r.get("resolved") or r.get("deferred") or not (r["delta"][0] or r["delta"][1]):
+            continue
+        m = re.match(r"if\s*\(\s*(!?)\s*([A-Za-z_][\w.\->]*)\s*\)", ctx)
+        if m:
+            neg, ident = m.group(1) == "!", m.group(2).split(".")[-1].split("->")[-1]
+            pname = None; default = None
+            for f, t in texts.items():
+                mm = re.search(r"\b" + re.escape(ident) + r"\s*=\s*[^;]*?declare_parameter\s*(?:<[^>]*>)?\s*\(\s*\"([\w.]+)\"(?:\s*,\s*(true|false))?", t) or \
+                     re.search(r"declare_parameter\s*(?:<[^>]*>)?\s*\(\s*\"([\w.]+)\"\s*,\s*" + re.escape(ident) + r"\b()", t) or \
+                     re.search(r"get_parameter\s*\(\s*\"([\w.]+)\"\s*,\s*" + re.escape(ident) + r"\b()", t) or \
+                     re.search(r"\b" + re.escape(ident) + r"\s*=\s*[^;]*get_parameter\s*\(\s*\"([\w.]+)\"()", t)
+                if mm:
+                    pname = mm.group(1); default = mm.group(2) if mm.lastindex and mm.lastindex >= 2 else None; break
+            if not pname:
+                continue
+            val, src = param_value(pname)
+            if val is None and default in ("true", "false"):
+                val, src = (default == "true"), "code default"
+            if isinstance(val, bool):
+                taken = (not val) if neg else val
+                r["resolved"] = "created" if taken else "absent"
+                r["ctx"] += f"; resolved by parameter `{pname}`={val} ({os.path.basename(src) if src else '?'})"
+                last_if[r.get("method")] = taken
+        elif re.match(r"(\}\s*)?else\b", ctx) and r.get("method") in last_if:
+            taken = not last_if[r["method"]]
+            r["resolved"] = "created" if taken else "absent"
+            r["ctx"] += "; resolved as the else-branch of the parameter-resolved if"
+
+
+def resolve_rows_by_names(rows, counted_labels, remaps=None, remaps_known=False):
+    """deferred / if-guarded rows: decide created|absent by matching the row's literal name (after the
+    launch remappings) against the counted E labels of the node (static rows claim first).
+    'absent' is only concluded when the node's remap table is known (composable nodes from
+    launch_components); for executables an unmatched literal stays unresolved (range logic)."""
+    counted = collections.Counter(l.rsplit("/", 1)[-1] for l in counted_labels)
+    remaps = remaps or {}
+    def claim(r):
+        nm = literal_name(r["code"])
+        if not nm:
+            return None
+        key = nm[2:] if nm.startswith("~/") else nm
+        tgt = remaps.get(key) or remaps.get(nm) or remaps.get("/" + key) or nm
+        b = tgt.rstrip("/").rsplit("/", 1)[-1]
+        if counted.get(b, 0) > 0:
+            counted[b] -= 1; return "created"
+        return "absent" if remaps_known else None
+    for r in rows:
+        if not r.get("deferred") and not re.match(r"(if|else|switch|case|\?|same line)", r.get("ctx", "")) and (r["delta"][0]):
+            claim(r)                                                # static rows consume their names silently
+    for r in rows:
+        if (r.get("deferred") or re.match(r"(if|else|switch|case|\?|same line)", r.get("ctx", ""))) and (r["delta"][0] or r["delta"][1]):
+            res = claim(r)
+            if res:
+                r["resolved"] = res
+                r["ctx"] = r["ctx"] + f"; resolved by counted names: {res}"
 
 # ------------------------------------------------------------------ node → class
 def load_launch_components(session_dir):
@@ -298,12 +507,14 @@ def load_launch_components(session_dir):
             if isinstance(nm, list):               # unresolved launch substitution: keep the literal prefix
                 nm = "".join(x for x in nm if isinstance(x, str))
                 if nm and "plugin" in c:
-                    comp["~prefix:" + nm].add((cont, c.get("namespace"), c["plugin"], c.get("package")))
+                    comp["~prefix:" + nm].add((cont, c.get("namespace"), c["plugin"], c.get("package"), tuple(x for x in (c.get("parameters") or []) if isinstance(x, str)),
+                                               tuple((str(a_), str(b_)) for a_, b_ in (c.get("remappings") or []) if isinstance(a_, str) and isinstance(b_, str))))
                 continue
             if not isinstance(nm, str):
                 continue
             if "plugin" in c:
-                comp[nm].add((cont, c.get("namespace"), c["plugin"], c.get("package")))
+                comp[nm].add((cont, c.get("namespace"), c["plugin"], c.get("package"), tuple(x for x in (c.get("parameters") or []) if isinstance(x, str)),
+                              tuple((str(a_), str(b_)) for a_, b_ in (c.get("remappings") or []) if isinstance(a_, str) and isinstance(b_, str))))
             else:
                 exe[nm] = (c.get("package"), c.get("executable"))
     return comp, exe
@@ -537,9 +748,21 @@ def main(argv=None):
         # 1. the class's own method bodies (ctor + others) — first, so that inline methods inside the
         #    class body are attributed to their method (skip set prevents the body pass re-matching them)
         short = rq.split("::")[-1]
+        INIT_NAMES = {short, "init", "initialize", "onInit", "on_init", "initializeNode", "init_node", "setup"}
+        # methods invoked (directly) from the constructor / init-like methods run at construction → static
+        ctor_calls = set()
+        for fabs, ln, end, mname in ranges:
+            if mname in INIT_NAMES:
+                body = "\n".join(_lines(fabs)[ln - 1:end])
+                ctor_calls |= set(re.findall(r"(?<![\w.>])([A-Za-z_]\w*)\s*\(", body))
+        ctor_calls -= {"if", "for", "while", "switch", "return", "sizeof", "static_cast", "dynamic_cast"}
         for r in scan_ranges(ranges, tags.roots, skip):
             m = r["method"]
-            if not (m == short or m in ("init", "initialize", "onInit", "on_init", "initializeNode", "init_node", "setup")):
+            if m in INIT_NAMES:
+                pass
+            elif m in ctor_calls:
+                r["ctx"] = (r["ctx"] + "; " if r["ctx"] else "") + f"in method {m}() called from the constructor"
+            else:
                 r["ctx"] = (r["ctx"] + "; " if r["ctx"] else "") + f"deferred: created in method {m}() (runs only if called at runtime)"
                 r["deferred"] = True
             rows.append(r)
@@ -558,6 +781,57 @@ def main(argv=None):
                     r["ctx"] = (r["ctx"] + "; " if r["ctx"] else "") + f"outside class: in {fn}() of the same file"
                     r["helper"] = True
                     rows.append(r)
+        # 4. helper classes constructed WITH the node (`make_shared<X>(*this, …)`, `X(this)`, member
+        #    `X m_{this}`) whose sources are in the provenance tree and which are not already covered
+        #    by a VCCA rule: their creation rows count for this node (flagged "via helper class X").
+        HELPER_SKIP = ("LoggerLevelConfigure", "Updater", "RTCInterface", "VehicleStopChecker", "VehicleArrivalChecker",
+                       "WatchdogTimer", "InterProcessPollingSubscriber", "TransformListener", "NodeAdaptor",
+                       "DiagnosticsInterface", "PublishedTimePublisher", "DebugPublisher", "ProcessingTimePublisher",
+                       "TimeKeeper", "StopWatch", "Buffer", "TransformBroadcaster", "StaticTransformBroadcaster",
+                       "ParametersClient", "AsyncParametersClient", "SyncParametersClient", "ManagedTransformBuffer",
+                       "PlanningFactorInterface", "LoggingNode")
+        inst_re = re.compile(r"(?:make_shared|make_unique|emplace)\s*<?\s*([A-Za-z_][\w:]*)\s*>?\s*\(\s*(?:&?\*?this\b|\*?parent_node\b|node\b|get_node_base|shared_from_this)")
+        inst_re2 = re.compile(r"\b([A-Z]\w+)\s+\w+\s*[\{(]\s*(?:\*?this\b|node\b)")
+        helpers = collections.Counter()
+        body_text = "\n".join(l for f, l0, e0, _b in cls_defs for l in _lines(f)[l0 - 1:e0])
+        emplace_re = re.compile(r"\b(\w+)\.emplace\s*\(\s*(?:\*?this\b|node\b)")
+        for fabs, ln, end, _n in ranges + [(f, l, e, "(class body)") for f, l, e, _b in cls_defs]:
+            text = "\n".join(_lines(fabs)[ln - 1:end])
+            found = []
+            for mm in list(inst_re.finditer(text)) + list(inst_re2.finditer(text)):
+                found.append((mm.group(1), mm.start()))
+            for mm in emplace_re.finditer(text):                              # std::optional<X> m_; m_.emplace(this, …)
+                md = re.search(r"(?:std::)?(?:optional|unique_ptr|shared_ptr)\s*<\s*([\w:]+)\s*>\s+" + re.escape(mm.group(1)) + r"\b", body_text)
+                if md:
+                    found.append((md.group(1), mm.start()))
+            for hq, off in found:
+                cname = hq.split("::")[-1]
+                if cname in HELPER_SKIP or cname == short or cname.startswith("std"):
+                    continue
+                hl = ln + text[:off].count("\n")
+                guard = ""
+                lines_ = _lines(fabs)
+                for q in range(hl - 2, max(ln - 2, hl - 9), -1):
+                    if q < 0:
+                        break
+                    if CTRL_RE.search(lines_[q]) and len(lines_[q]) - len(lines_[q].lstrip()) < len(lines_[hl - 1]) - len(lines_[hl - 1].lstrip()):
+                        guard = lines_[q].strip()[:200]; break
+                helpers[(hq, os.path.basename(fabs), hl, guard)] += 1
+        for (hq, hf, hl, guard), n_inst in helpers.items():
+            hrq = tags.resolve_class(hq if "::" in hq else rq.rsplit("::", 1)[0] + "::" + hq) or tags.resolve_class(hq)
+            if not hrq or hrq == rq:
+                continue
+            if source_package(tags.classes[hrq][0][0])[0] != source_package(cls_defs[0][0])[0] if cls_defs and tags.classes.get(hrq) else True:
+                continue                                   # only same-package helpers (external ones need an explicit VCCA rule)
+            sub = class_review(hrq, prefer_pkg)
+            for r in sub["rows"]:
+                if r.get("deferred") or r.get("helper"):
+                    continue
+                rr = dict(r); rr["ctx"] = (guard + "; " if guard else "") + (r["ctx"] + "; " if r["ctx"] else "") + f"via helper class {hq} ({hf}:{hl}, {n_inst}×)"
+                rr["helper"] = True; rr["delta"] = [x * n_inst for x in r["delta"]]
+                rows.append(rr)
+            for b in sub["bases"]:
+                pass
         # diagnostic_updater::Updater re-creates its timer when the `diagnostic_updater.period`
         # parameter is overridden (diagnostic_updater.hpp: update_timer_ reset in the parameter
         # callback) → a second timer E/F is possible; modelled as a deferred (runtime) row
@@ -598,6 +872,7 @@ def main(argv=None):
                                                           "other": act["other"], "pub_topics": act["pub"], "cli_names": act["cli"]},
                "notes": []}
         base = None
+        launch_pkg = None; launch_params = []; launch_remaps = {}; remaps_known = False
         if kind == "ros2cli":
             rec["notes"].append("runtime CLI helper — excluded from the static model")
         elif kind == "launch_ros":
@@ -610,7 +885,7 @@ def main(argv=None):
             base = tuple(x + y for x, y in zip(VCC1_CM, CONTAINER_SVCS)); rec["class"] = "rclcpp_components::ComponentManager"; rec["class_how"] = "name"
         else:
             bn = full.rsplit("/", 1)[-1]
-            cls = None; launch_pkg = None
+            cls = None
             cands = comp.get(bn)
             if not cands:
                 pref = [(k, v) for k, v in comp.items() if k.startswith("~prefix:") and bn.startswith(k[8:])]
@@ -619,6 +894,8 @@ def main(argv=None):
             if cands:
                 plugins = {c[2] for c in cands}
                 launch_pkg = next(iter({c[3] for c in cands if c[3]}), None)
+                launch_params = sorted({y for c in cands for y in (c[4] if len(c) > 4 else ())})
+                launch_remaps = {a_: b_ for c in cands for a_, b_ in (c[5] if len(c) > 5 else ())}; remaps_known = True
                 if len(plugins) == 1:
                     cls = next(iter(plugins)); rec["class_how"] = "launch_components plugin"
                 else:
@@ -681,43 +958,77 @@ def main(argv=None):
             E, F, P = base
             if sim and kind != "launch_ros":
                 E += CLOCK_SUB[0]; F += CLOCK_SUB[1]
-            C = 0; dfE = dfF = 0
+            # ---- resolution step (exact counts where the sources / parameters / counted names allow it)
+            counted_labels = list(act["sub"]) + list(act["serv"])
+            cls_files = []
+            if rec.get("class_resolved"):
+                info = class_cache.get((rec["class"], launch_pkg)) or {}
+                cls_files = sorted({f for f, _l, _e, _n in tags.methods.get(rec["class_resolved"], [])} | set(info.get("files", [])))
+            for r in rec["rows"]:
+                if re.match(r"(for|while)", r.get("ctx", "")) and (r["delta"][0] or r["delta"][1]) and not r.get("deferred"):
+                    src_pkg = source_package(cls_files[0])[0] if cls_files else None
+                    n, how = resolve_loop_multiplicity(r, cls_files, launch_params if kind == "node" else [], src_pkg or launch_pkg)
+                    if n:
+                        r["mult"] = n; r["ctx"] = r["ctx"] + f"; loop × {n}: {how}"
+                    else:
+                        r["ctx"] = r["ctx"] + f"; loop multiplicity unresolved: {how}"
+            resolve_rows_by_names(rec["rows"], counted_labels, launch_remaps, remaps_known)
+            resolve_if_rows_by_params(rec["rows"], cls_files, launch_params if kind == "node" else [],
+                                      (source_package(cls_files[0])[0] if cls_files else None) or launch_pkg)
+            # ---- sums: static (resolved) part + unresolved range part
+            C = 0; dfE = dfF = 0; ifE = ifF = 0; loop_open = False
             for r in rec["rows"]:
                 dE, dF, dP, dC = r["delta"]
+                is_if = bool(re.match(r"(if|else|switch|case|\?|same line)", r.get("ctx", ""))) and not r.get("deferred")
+                if r.get("mult"):
+                    E += dE * r["mult"]; F += dF * r["mult"]; P += dP * r["mult"]; C += dC * r["mult"]; continue
                 if r.get("deferred"):
-                    dfE += dE; dfF += dF
-                else:
-                    E += dE; F += dF; P += dP; C += dC
+                    if r.get("resolved") == "created":
+                        E += dE; F += dF; P += dP; C += dC
+                    elif r.get("resolved") == "absent":
+                        pass
+                    else:
+                        dfE += dE; dfF += dF                            # unresolved deferred → range upper bound
+                    continue
+                if is_if and r.get("resolved") == "absent":
+                    continue
+                if is_if and not r.get("resolved"):
+                    ifE += dE; ifF += dF                                # unresolved if-guarded → range lower bound
+                if re.match(r"(for|while)", r.get("ctx", "")) and not r.get("mult") and (dE or dF):
+                    loop_open = True
+                E += dE; F += dF; P += dP; C += dC
             n_oore = len(act["other"])            # GPU (oore) threads are runtime entities outside the static model
             aE = act["E"] - n_oore; aF = act["F"] - n_oore
             rec["expected"] = {"E": E, "F": F, "pub": P, "cli": C, "deferred_E": dfE, "deferred_F": dfF,
-                               "base": list(base), "clock": bool(sim and kind != "launch_ros")}
+                               "base": list(base), "clock": bool(sim and kind != "launch_ros"),
+                               "resolved": {"loops": sum(1 for r in rec["rows"] if r.get("mult")),
+                                            "created": sum(1 for r in rec["rows"] if r.get("resolved") == "created"),
+                                            "absent": sum(1 for r in rec["rows"] if r.get("resolved") == "absent")}}
             rec["actual"]["oore"] = n_oore
+            rec["launch_remaps"] = launch_remaps; rec["remaps_known"] = remaps_known
             rec["delta"] = {"E": aE - E, "F": aF - F}
-            if_rows = [r for r in rec["rows"] if not r.get("deferred") and re.match(r"(if|else|switch|case|\?|same line)", r.get("ctx", "")) and (r["delta"][0] or r["delta"][1])]
-            loop_rows = [r for r in rec["rows"] if not r.get("deferred") and re.match(r"(for|while)", r.get("ctx", "")) and (r["delta"][0] or r["delta"][1])]
-            lo_E = E - sum(r["delta"][0] for r in if_rows); lo_F = F - sum(r["delta"][1] for r in if_rows)
-            hi_E = E + dfE; hi_F = F + dfF
+            lo_E, lo_F = E - ifE, F - ifF
+            hi_E, hi_F = E + dfE, F + dfF
             rtc = any(("cooperate_commands" in x or "/rtc/" in x or x.endswith("/auto_mode")) for x in act["serv"])
-            rec["expected"]["range"] = [lo_E, "inf" if loop_rows else hi_E]
+            rec["expected"]["range"] = [lo_E, "inf" if loop_open else hi_E]
             if rec["delta"]["E"] == 0 and rec["delta"]["F"] == 0:
                 rec["verdict"] = "OK"
-            elif lo_E <= aE <= (10**9 if loop_rows else hi_E) and lo_F <= aF <= (10**9 if loop_rows else hi_F) and (aE - lo_E) == (aF - lo_F) - (0):
+            elif lo_E <= aE <= (10**9 if loop_open else hi_E) and lo_F <= aF <= (10**9 if loop_open else hi_F) and (aE - lo_E) == (aF - lo_F):
                 why = []
-                if if_rows and aE < E: why.append(f"{E - aE} if-guarded row(s) not taken")
-                if dfE and aE > E: why.append("deferred method rows created at runtime")
-                if loop_rows and aE > E: why.append(f"loop row(s) × N from parameters (+{aE - E})")
+                if ifE and aE < E: why.append(f"{E - aE} unresolved if-guarded row(s) not taken")
+                if dfE and aE > E: why.append("unresolved deferred row(s) created at runtime")
+                if loop_open and aE > E: why.append(f"unresolved loop row(s) (+{aE - E})")
                 rec["verdict"] = "OK:range"; rec["notes"].append("within static range: " + "; ".join(why))
             elif rtc and not any(r["vcc"] == "VCCA4" for r in rec["rows"]):
                 rec["verdict"] = "mismatch:plugins"; rec["notes"].append("RTC/auto_mode services come from scene-module plugins (pluginlib) — not in this class's sources")
             else:
-                ctx_rows = [r for r in rec["rows"] if r.get("ctx") and (r["delta"][0] or r["delta"][1])]
+                ctx_rows = [r for r in rec["rows"] if r.get("ctx") and not r.get("mult") and not r.get("resolved") and (r["delta"][0] or r["delta"][1])]
                 plugin = any(re.search(r"pluginlib|ClassLoader|createSharedInstance|load_plugin|createUnmanagedInstance", r["code"]) for r in rec["rows"]) \
                     or any(re.search(r"pluginlib|ClassLoader", l) for l in _class_text(rec.get("class_resolved")))
                 if plugin:
                     rec["verdict"] = "mismatch:plugins"      # scene modules / filters loaded via pluginlib create their own entities
                 elif ctx_rows:
-                    rec["verdict"] = "mismatch:ctx"          # loop/if-conditioned creation rows (parameter-driven multiplicity)
+                    rec["verdict"] = "mismatch:ctx"          # loop/if-conditioned creation rows that could not be resolved
                 else:
                     rec["verdict"] = "mismatch"
         results[full] = rec

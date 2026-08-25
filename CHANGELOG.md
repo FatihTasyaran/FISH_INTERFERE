@@ -11,6 +11,7 @@ minor versions.
   users) rebuilt against the overlay for prebuilt stacks; `ros2` wrapper now
   exports `LTTNG_UST_REGISTER_TIMEOUT=-1` (r24 lost 26 nodes' init events to
   the 3 s UST registration timeout during the planning/control launch burst).
+- Autoware A2 exactness: loop × N (literal/parameter/call-site), name/parameter-resolved if/deferred rows, ctor-called methods static, same-package helper classes; `scripts/aw_a2_waitables.py` IPC-waitable tracepoint check (r25: 192/224 exact, 143 waitables 140 ok).
 - Autoware A2 expected-vs-counted, mechanised (`scripts/aw_a2_expected.py`,
   `scripts/aw_a2_sheet.py`): per-node class identification, ctags-ranged
   scan of creation calls incl. Autoware wrapper rules, Google Sheet
