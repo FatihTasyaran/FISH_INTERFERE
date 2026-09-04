@@ -183,10 +183,19 @@ def capture_params(snapshot_dir: str, nodes, num_workers: int = 4, tag: str = ""
     try:
         node = rclpy.create_node(f"_fish_params_{os.getpid()}", context=ctx, use_global_arguments=False)
         exe = rclpy.executors.SingleThreadedExecutor(context=ctx); exe.add_node(node)
+        # Clients are kept alive until the sweep ends (destroyed in bulk
+        # below) instead of per target: destroying each pair immediately let
+        # the allocator hand the SAME rcl handle address to the next target's
+        # client, so one address stood for hundreds of services in the trace
+        # (identity is handle-based; see notes/client_instrumentation_handoff.md).
+        # One client per service is unavoidable — each target node has its
+        # own parameter services — so the init count itself stays.
+        live_clients = []
         for target in todo:
             try:
                 lc = node.create_client(ListParameters, f"{target}/list_parameters")
                 gc = node.create_client(GetParameters, f"{target}/get_parameters")
+                live_clients += [lc, gc]
                 if not lc.wait_for_service(timeout_sec=per_node_timeout / 2):
                     continue
                 fut = lc.call_async(ListParameters.Request(depth=0))
@@ -210,11 +219,11 @@ def capture_params(snapshot_dir: str, nodes, num_workers: int = 4, tag: str = ""
                     allp[target] = flat; n_new += 1
             except Exception:
                 pass
-            finally:
-                try:
-                    node.destroy_client(lc); node.destroy_client(gc)
-                except Exception:
-                    pass
+        for c in live_clients:
+            try:
+                node.destroy_client(c)
+            except Exception:
+                pass
         exe.remove_node(node); node.destroy_node()
     finally:
         try:
