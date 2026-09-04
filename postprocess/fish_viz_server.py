@@ -2654,7 +2654,12 @@ _GANTT_CTES = """
                  f.label AS cb_symbol,
                  e.etype || ':' || e.label AS entity,
                  e.etype AS etype,
-                 en.node_name
+                 en.node_name,
+                 -- handle-reuse disambiguation: clients are transient and
+                 -- their rcl handle address is recycled (one address seen
+                 -- for 224 services in Autoware); the span picks the latest
+                 -- init preceding it (NULL = static mapping, other etypes)
+                 (f.attrs->>'init_ts_ns')::bigint AS init_ts
           FROM graph_nodes f
           JOIN graph_edges ge ON ge.session_id=f.session_id AND ge.scope=f.scope
                              AND ge.target=f.node_id AND ge.rel='contains'
@@ -2714,14 +2719,15 @@ _GANTT_CTES = """
         ),
         f_to_n AS (
           -- 1. Graph-resolved
-          SELECT cb_addr, cb_symbol, entity, etype, node_name FROM f_to_n_graph
+          SELECT cb_addr, cb_symbol, entity, etype, node_name, init_ts FROM f_to_n_graph
           UNION ALL
           -- 2. Fallback: not in f_to_n_graph but has sub_cb_added → subscription_init
           SELECT s.cb_addr,
                  COALESCE(sym.symbol, '')                AS cb_symbol,
                  'sub:' || s.topic                       AS entity,
                  'sub'                                    AS etype,
-                 NULL                                     AS node_name
+                 NULL                                     AS node_name,
+                 NULL::bigint                             AS init_ts
           FROM sub_cb_to_topic s
           LEFT JOIN cb_symbols sym ON sym.cb_addr = s.cb_addr
           WHERE s.cb_addr NOT IN (SELECT cb_addr FROM f_to_n_graph)
@@ -2755,16 +2761,27 @@ CREATE TABLE IF NOT EXISTS gantt_meta (
 );
 """
 
-_GANTT_SPANS_SQL = """SELECT p.pid, p.vtid, p.t0, p.t1, p.cb_addr,
-       COALESCE(fn.node_name, pn.node_name, '(unknown)') AS node,
-       COALESCE(fn.entity, p.cb_addr)                     AS entity,
-       COALESCE(fn.etype, '?')                            AS etype,
-       COALESCE(fn.cb_symbol, '')                         AS symbol
-FROM paired p
-LEFT JOIN f_to_n fn ON fn.cb_addr = p.cb_addr
-LEFT JOIN pid_to_owning_node pn ON pn.pid = p.pid
-WHERE p.event='ros2:callback_start' AND p.next_event='ros2:callback_end'
-  AND p.t1 IS NOT NULL"""
+_GANTT_SPANS_SQL = """SELECT q.pid, q.vtid, q.t0, q.t1, q.cb_addr,
+       COALESCE(q.node_name, pn.node_name, '(unknown)') AS node,
+       COALESCE(q.entity, q.cb_addr)                     AS entity,
+       COALESCE(q.etype, '?')                            AS etype,
+       COALESCE(q.cb_symbol, '')                         AS symbol
+FROM (
+  -- a cb_addr can map to several F's when the handle was recycled
+  -- (clients); keep, per span, the candidate with the latest init_ts not
+  -- after the span start. Static (init_ts NULL) candidates rank last.
+  SELECT p.pid, p.vtid, p.t0, p.t1, p.cb_addr,
+         fn.node_name, fn.entity, fn.etype, fn.cb_symbol,
+         row_number() OVER (PARTITION BY p.vtid, p.t0, p.cb_addr
+                            ORDER BY fn.init_ts DESC NULLS LAST) AS rn
+  FROM paired p
+  LEFT JOIN f_to_n fn ON fn.cb_addr = p.cb_addr
+                     AND (fn.init_ts IS NULL OR fn.init_ts <= p.t0)
+  WHERE p.event='ros2:callback_start' AND p.next_event='ros2:callback_end'
+    AND p.t1 IS NOT NULL
+) q
+LEFT JOIN pid_to_owning_node pn ON pn.pid = q.pid
+WHERE q.rn = 1"""
 
 
 def _ensure_gantt_spans(cur, sid, scope):
@@ -2918,6 +2935,8 @@ class H(BaseHTTPRequestHandler):
         qs = parse_qs(u.query)
         if path in ('/', '/index.html', '/fish_viz_popup.html'):
             _serve_file(self, os.path.join(HERE, 'fish_viz_popup.html'), 'text/html; charset=utf-8')
+        elif path in ('/filters', '/filter_panel.html'):
+            _serve_file(self, os.path.join(HERE, 'filter_panel.html'), 'text/html; charset=utf-8')
         elif path in ('/gantt', '/gantt-tid', '/gantt.html', '/gantt-tid.html'):
             _serve_file(self, os.path.join(HERE, 'gantt.html'), 'text/html; charset=utf-8')
         elif path in ('/gantt-cb', '/gantt-cb.html'):

@@ -110,6 +110,12 @@ def main():
     srv_name = {}            # service_handle → (service, node_handle)
     open_start = {}          # vtid → (cb, day_sec_ns)
     stats = {}
+    # Client handles are recycled (transient clients): each rcl_client_init on
+    # an already-seen address opens a new generation so its spans/stats are
+    # keyed separately (cb_key = "<handle>#gN"), matching the time-scoped
+    # attribution the gantt builder does.
+    cur_key = {}             # raw cb → current stats key
+    cli_gen = {}             # raw handle → generation counter
 
     def label_for(cb):
         return cb_label.get(cb, (None, None))
@@ -157,7 +163,7 @@ def main():
         if ev in ('ros2:callback_start', 'ros2:callback_end'):
             vm = re.search(r'vtid\s*=\s*(\d+)', line)
             vtid = vm.group(1) if vm else '?'
-            cb = p.get('callback')
+            cb = cur_key.get(p.get('callback'), p.get('callback'))
             if ev.endswith('start'):
                 open_start[vtid] = (cb, t)
             else:
@@ -209,10 +215,18 @@ def main():
                                                  p.get('node_handle'))
         elif ev == 'ros2:rcl_client_init':
             # executor execute_client wrap uses the rcl client handle as the
-            # cb-id, so the handle itself labels the spans
-            note(p.get('client_handle'),
-                 node_of_handle.get(p.get('node_handle')),
-                 f"cli:{p.get('service_name', '?')}")
+            # cb-id, so the handle itself labels the spans; a re-init of the
+            # same address starts a new generation (see cur_key)
+            ch = p.get('client_handle')
+            if ch:
+                if ch in cb_label:
+                    cli_gen[ch] = cli_gen.get(ch, 0) + 1
+                    key = f"{ch}#g{cli_gen[ch]}"
+                else:
+                    key = ch
+                cur_key[ch] = key
+                cb_label[key] = (node_of_handle.get(p.get('node_handle')),
+                                 f"cli:{p.get('service_name', '?')}")
         elif ev in ('ros2:rclcpp_service_callback_added',
                     'ros2:fish_rclpy_service_callback_added'):
             sn, nh = srv_name.get(p.get('service_handle'), (None, None))

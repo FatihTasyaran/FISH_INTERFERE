@@ -386,14 +386,19 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
     # (install_fish_tracepoints) emits callback_start/end with the rcl client
     # handle as cb-id — the same address recorded here, so no extra
     # registration event is needed.
-    clients_by_node: dict[str, list[tuple[str, str]]] = {}
+    # Client handles are REUSED: a transient client is created, destroyed
+    # and the next one lands on the same address (Autoware: one address
+    # re-initialised 224× for 224 different services). The init timestamp
+    # therefore travels with the entity/F so span attribution can pick the
+    # latest init preceding the span (gantt) instead of a static cb_addr map.
+    clients_by_node: dict[str, list[tuple[str, str, int]]] = {}
     for d in _all_events(session_id, "ros2:rcl_client_init"):
         p = d["payload"]
         ch, nh = p.get("client_handle"), p.get("node_handle")
         srv = p.get("service_name", "?")
         if not ch or not nh:
             continue
-        clients_by_node.setdefault(nh, []).append((ch, srv))
+        clients_by_node.setdefault(nh, []).append((ch, srv, int(d["ts_ns"])))
 
     for node_id, node in nodes.items():
         full_name = node.A_v["full_name"]
@@ -489,7 +494,7 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
             node.Z_v.append(e.id_v)
             entities[e.id_v] = e
 
-        for client_handle, srv_name in clients_by_node.get(node_handle, []):
+        for client_handle, srv_name, init_ts in clients_by_node.get(node_handle, []):
             if SKIP_PARAMSERVICE and _is_param_service(srv_name):
                 continue
             e_A = {
@@ -498,6 +503,7 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
                 # execute_client wrap emits callback_start/end with it.
                 "cb_addr": client_handle,
                 "client_handle": client_handle,
+                "init_ts_ns": init_ts,
                 "aspects": [{"aspect": "pub", "service": srv_name},
                             {"aspect": "sub", "service": srv_name}],
             }
@@ -799,12 +805,16 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                 ch = entity.A_v.get("client_handle")
                 if ch:
                     cb_info = {"callback": ch,
-                               "symbol": f"client:{entity.A_v['label']}"}
+                               "symbol": f"client:{entity.A_v['label']}",
+                               "init_ts_ns": entity.A_v.get("init_ts_ns")}
 
             if cb_info:
                 entity.A_v["cb_addr"] = cb_info["callback"]
                 f_A = {"label": cb_info["symbol"], "ptype": "cpu",
                        "cb_addr": cb_info["callback"]}
+                if cb_info.get("init_ts_ns") is not None:
+                    # handle-reuse disambiguation for gantt (see clients_by_node)
+                    f_A["init_ts_ns"] = cb_info["init_ts_ns"]
                 if is_gpu:
                     f_A["gpu_node"] = True
                 ip = cb_info.get("intra_proc_waitable")

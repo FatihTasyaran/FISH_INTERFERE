@@ -137,7 +137,7 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
 }
 
 echo "mode,rep,epoch" > "$OUTROOT/runs.csv"
-for M in baseline lttng nsys; do
+for M in ${MODES:-baseline lttng nsys}; do
     for i in $(seq 1 $REPS); do
         run_one "$M" "$i"
         echo "$M,$i,$(date +%s)" >> "$OUTROOT/runs.csv"

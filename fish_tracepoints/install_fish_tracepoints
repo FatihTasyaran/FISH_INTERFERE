@@ -3203,6 +3203,23 @@ def trace_cb_end(callback):
     _active_cb.value = None
 
 
+def trace_cb_start_ptr(cb_ptr):
+    """callback_start with an explicit cb-id (a native handle address rather
+    than id(python_callable)) — used for client dispatch, where the cb-id is
+    the rcl client handle so spans resolve via rcl_client_init."""
+    if not _enabled:
+        return
+    _active_cb.value = cb_ptr
+    _lib.ros_trace_callback_start(ctypes.c_void_p(cb_ptr), False)
+
+
+def trace_cb_end_ptr(cb_ptr):
+    if not _enabled:
+        return
+    _lib.ros_trace_callback_end(ctypes.c_void_p(cb_ptr))
+    _active_cb.value = None
+
+
 def trace_client_request_sent(client_handle_ptr, sequence_number):
     if not _enabled:
         return
@@ -3481,8 +3498,58 @@ path = f"{RCLPY}/executors.py"
 with open(path) as f:
     content = f.read()
 
-if "fish_rclpy_trace" in content:
-    print("    executors.py already patched")
+# Client dispatch wrap — defined up front so both the fresh-patch and the
+# upgrade path below can use it. cb-id is the rcl client handle (the same
+# address rcl_client_init records), mirroring the rclcpp
+# Executor::execute_client wrap: rclpy clients become first-class F vertices.
+legacy_cli = """    async def _execute_client(self, client, seq_and_response):
+        header, response = seq_and_response
+        if header is not None:
+            try:
+                sequence = header.request_id.sequence_number
+                future = client.get_pending_request(sequence)
+            except KeyError:
+                # The request was cancelled
+                pass
+            else:
+                from rclpy.fish_rclpy_trace import trace_client_response_received
+                trace_client_response_received(client.handle.pointer, sequence, 0)
+                future._set_executor(self)
+                future.set_result(response)"""
+new_cli = """    async def _execute_client(self, client, seq_and_response):
+        # FISH client dispatch span (cb-id = rcl client handle)
+        from rclpy.fish_rclpy_trace import trace_cb_start_ptr, trace_cb_end_ptr
+        __fish_c_cb = client.handle.pointer
+        trace_cb_start_ptr(__fish_c_cb)
+        try:
+            header, response = seq_and_response
+            if header is not None:
+                try:
+                    sequence = header.request_id.sequence_number
+                    future = client.get_pending_request(sequence)
+                except KeyError:
+                    # The request was cancelled
+                    pass
+                else:
+                    from rclpy.fish_rclpy_trace import trace_client_response_received
+                    trace_client_response_received(client.handle.pointer, sequence, 0)
+                    future._set_executor(self)
+                    future.set_result(response)
+        finally:
+            trace_cb_end_ptr(__fish_c_cb)"""
+
+if "FISH client dispatch span" in content:
+    print("    executors.py already patched (incl. client dispatch span)")
+elif "fish_rclpy_trace" in content:
+    # patched by an older installer: sub/tmr/srv wraps present, client only
+    # emits response_received → upgrade _execute_client in place
+    if legacy_cli in content:
+        content = content.replace(legacy_cli, new_cli)
+        with open(path, "w") as f:
+            f.write(content)
+        print("    executors.py upgraded — _execute_client dispatch span added")
+    else:
+        print("    WARN: executors.py legacy _execute_client anchor not found")
 else:
     old_sub = """    async def _execute_subscription(self, sub, msg):
         if msg:
@@ -3528,7 +3595,6 @@ else:
                 trace_cb_end(srv.callback)
             srv.send_response(response, header)"""
 
-    # Patch _execute_client — trace response received
     old_cli = """    async def _execute_client(self, client, seq_and_response):
         header, response = seq_and_response
         if header is not None:
@@ -3539,20 +3605,6 @@ else:
                 # The request was cancelled
                 pass
             else:
-                future._set_executor(self)
-                future.set_result(response)"""
-    new_cli = """    async def _execute_client(self, client, seq_and_response):
-        header, response = seq_and_response
-        if header is not None:
-            try:
-                sequence = header.request_id.sequence_number
-                future = client.get_pending_request(sequence)
-            except KeyError:
-                # The request was cancelled
-                pass
-            else:
-                from rclpy.fish_rclpy_trace import trace_client_response_received
-                trace_client_response_received(client.handle.pointer, sequence, 0)
                 future._set_executor(self)
                 future.set_result(response)"""
 
