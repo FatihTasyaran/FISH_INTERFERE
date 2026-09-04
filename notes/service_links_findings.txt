@@ -1,0 +1,39 @@
+# Component-links "service" satirlari — toplanti notu (2026-08-31)
+# (component_links.html + /api/service-links; unet fish_20260830_224846 ve
+#  Autoware fish_20260817_134427 uzerinde dogrulandi)
+
+## 1. from = "(no callback)" neden?
+Bu session'larda servis istekleri callback icinden CIKMIYOR:
+- unet: ros2_benchmark'in python test-surucusu atiyor (Controller:
+  start/stop_monitoring, play_messages, parametre sorgulari) — test-driver
+  akisi, callback degil. 103 istegin yalnizca 1'i bir callback span'inin
+  icinden (o da _ros2cli timer'i → list_nodes).
+- Autoware (logging_simulator): 176 istegin TAMAMI init fazindan —
+  constructor'lardaki parameter client'lari + launch'in load_node cagrilari;
+  istek atan thread'lerde henuz hicbir callback span'i yok (executor daha
+  spin etmiyor).
+Gercek caller component'ler ancak runtime'da callback icinden servis cagiran
+bir oturumda gorunur (or. adapi ile surulen Autoware; RTC cooperate_commands).
+Yani "(no callback)" bir eksiklik degil, olcumun dogru soyledigi gercek.
+
+## 2. "(unknown server)" → aslinda "(no server — never created)"
+/r2b/unet_container/get_parameters ve list_parameters icin trace'te
+rcl_service_init HIC YOK — cunku ComponentManager container'lari parametre
+servislerini BILEREK acmaz:
+  component_manager.cpp: NodeOptions start_parameter_services(false),
+  start_parameter_event_publisher(false)   ← A2'deki VCC1.cm kuralimiz.
+ros2cli/launch yine de bu servisleri caGiriyor ve cevapsiz kaliyor:
+  get_parameters 62 istek + list_parameters 48 istek, sunucu yok.
+Tabloda artik acik etiket: "(no server — never created)".
+Ek olarak: handler-kaydi (callback_added) olmayan ama rcl_service_init'i OLAN
+servisler icin node-bazli cozumleme fallback'i eklendi (service_init.node_handle
+→ rcl_node_init) — Autoware'de artik hic cozumsuz dst yok (hepsi /adapi,
+/system, /control, /sensing... olarak cozuluyor).
+
+## Toplantida tek cumlelik ozet
+"Service tablosu iki gercegi gorunur kildi: (a) bu is yuklerinde servis
+trafiginin tamami init/test-surucusu kaynakli — callback'lerden degil;
+(b) component container'lara atilan get/list_parameters cagrilari, container
+parametre servislerini bilerek acmadigi icin CEVAPSIZ kaliyor (62+48 istek) —
+FISH bunu kendiliginden yakaladi; model dogrulamasi disinda sistem-davranisi
+tuhafligi yakalamaya ornek."

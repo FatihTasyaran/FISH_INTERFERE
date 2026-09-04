@@ -1528,6 +1528,15 @@ def _handle_standalone_gpu_process(
     pid = proc_info["pid"]
     cmdline = proc_info["cmdline"]
 
+    # lttng-only mode: never kill/relaunch under nsys (see launch_wrap.main)
+    if os.environ.get("FISH_NSYS_DISABLE", "").lower() in ("1", "true", "yes"):
+        print(
+            f"[FISH] GPU node PID={pid} {proc_info['process_name']} — "
+            f"FISH_NSYS_DISABLE set, leaving un-instrumented"
+        )
+        logger.log_daemon(f"standalone_nsys_disabled pid={pid}")
+        return
+
     # Check if already wrapped by launch_wrap (nsys in cmdline)
     already_wrapped = "nsys" in cmdline.split()[:3] if cmdline else False
     if already_wrapped:

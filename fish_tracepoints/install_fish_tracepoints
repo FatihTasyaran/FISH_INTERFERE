@@ -1852,6 +1852,36 @@ elif wait_old in content:
 else:
     print("    WARN: execute_waitable anchor not found")
 
+# Wrap execute_client(...) with callback_start/callback_end so Clients become
+# first-class F vertices — the 5th and last AnyExecutable kind. cb-id is the
+# rcl client handle: the SAME address rcl_client_init records, so the span
+# resolves to (service name, node) with no extra registration event. This
+# covers ALL response variants incl. the dominant future/Promise path, which
+# the (now removed) client.hpp inner wrap missed entirely.
+cli_old = (
+    "  if (any_exec.client) {\n"
+    "    execute_client(any_exec.client);\n"
+    "  }"
+)
+cli_new = (
+    "  if (any_exec.client) {\n"
+    "    // FISH: dispatch a Client as a first-class callback. cb-id is the\n"
+    "    // rcl client handle recorded by rcl_client_init.\n"
+    "    const void * __fish_c_cb =\n"
+    "      static_cast<const void *>(any_exec.client->get_client_handle().get());\n"
+    "    TRACEPOINT(callback_start, __fish_c_cb, false);\n"
+    "    execute_client(any_exec.client);\n"
+    "    TRACEPOINT(callback_end, __fish_c_cb);\n"
+    "  }"
+)
+if "FISH: dispatch a Client" in content:
+    print("    executor.cpp execute_client already wrapped")
+elif cli_old in content:
+    content = content.replace(cli_old, cli_new, 1)
+    print("    executor.cpp patched — callback_start/end wrap around execute_client")
+else:
+    print("    WARN: execute_client anchor not found")
+
 with open(path, "w") as f:
     f.write(content)
 PATCH_EXEC
@@ -2681,8 +2711,28 @@ path = os.environ.get("OVERLAY_WS", "/root/trace_overlay_ws") + "/src/rclcpp/inc
 with open(path) as f:
     content = f.read()
 
+def strip_inner_wraps(text):
+    """Remove the legacy per-request callback_start/end wrap around the user
+    response callback: its cb-id (&callback, a pending_requests_ slot) is
+    unstable and unregistered, so those spans could never be attributed.
+    Client spans now come from the executor-level execute_client wrap with
+    the stable rcl client handle as cb-id."""
+    text = text.replace(
+        "      TRACEPOINT(callback_start, static_cast<const void *>(&callback), false);\n"
+        "      callback(std::move(future));\n"
+        "      TRACEPOINT(callback_end, static_cast<const void *>(&callback));\n",
+        "      callback(std::move(future));\n")
+    return text
+
+
 if "fish_rclcpp_client_request_sent" in content:
-    print("    client.hpp already patched, skipping")
+    if "TRACEPOINT(callback_start, static_cast<const void *>(&callback)" in content:
+        content = strip_inner_wraps(content)
+        with open(path, "w") as f:
+            f.write(content)
+        print("    client.hpp upgraded — legacy &callback inner wraps removed")
+    else:
+        print("    client.hpp already patched, skipping")
 else:
     # 1. Add tracetools include after rcl/wait.h
     content = content.replace(
@@ -2707,7 +2757,8 @@ else:
     pending_requests_.try_emplace("""
     content = content.replace(old_send, new_send)
 
-    # 3. Patch handle_response — add response_received + callback_start/end
+    # 3. Patch handle_response — add response_received (spans come from the
+    #    executor-level execute_client wrap, not from inner callback wraps)
     # Replace the three variant branches
     old_response = """    if (std::holds_alternative<Promise>(value)) {
       auto & promise = std::get<Promise>(value);
@@ -2746,9 +2797,7 @@ else:
       auto & promise = std::get<Promise>(inner);
       auto & future = std::get<SharedFuture>(inner);
       promise.set_value(std::move(typed_response));
-      TRACEPOINT(callback_start, static_cast<const void *>(&callback), false);
       callback(std::move(future));
-      TRACEPOINT(callback_end, static_cast<const void *>(&callback));
     } else if (std::holds_alternative<CallbackWithRequestTypeValueVariant>(value)) {
       auto & inner = std::get<CallbackWithRequestTypeValueVariant>(value);
       const auto & callback = std::get<CallbackWithRequestType>(inner);
@@ -2756,9 +2805,7 @@ else:
       auto & future = std::get<SharedFutureWithRequest>(inner);
       auto & request = std::get<SharedRequest>(inner);
       promise.set_value(std::make_pair(std::move(request), std::move(typed_response)));
-      TRACEPOINT(callback_start, static_cast<const void *>(&callback), false);
       callback(std::move(future));
-      TRACEPOINT(callback_end, static_cast<const void *>(&callback));
     }"""
 
     content = content.replace(old_response, new_response)

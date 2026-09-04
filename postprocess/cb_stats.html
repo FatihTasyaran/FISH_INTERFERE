@@ -41,7 +41,22 @@
 <body>
 
 <h1>FISH callback execution stats</h1>
-<div class="subtitle">Per-callback fire counts per hyperperiod window — mean / std / min / max</div>
+<div class="subtitle">Per-callback fire counts per hyperperiod window — mean / std / min / max
+  <a href="#" id="guide-toggle" style="margin-left:10px;font-size:11px">column guide ▾</a></div>
+<div id="col-guide" style="display:none;max-width:1100px;font-size:12px;background:#f8f9fb;border:1px solid #dde;border-radius:6px;padding:8px 12px;line-height:1.5">
+  <b>Source</b>: how the period was derived (tmr-nominal drives H; sub / serv have no own period).
+  <b>Period</b>: the OWN period of the row (timers only); the dash on subs/services is correct, not missing data.
+  <b>N fires</b>: total executions in the session.
+  <b>H<sub>tmr</sub></b>: the <i>executor</i> timer hyperperiod = window size for the EX stats
+  (repeats on every row of that executor; on service rows it can be mistaken for a period - it is not one).
+  <b>μ/σ/min/max<sub>EX</sub></b>: fires per H<sub>tmr</sub> window, over the windows between the first and
+  last firing of the callback (interior silent windows count as 0).
+  <b>μ/σ/min/max<sub>sess</sub></b>: the same statistic with the session-wide timer LCM as the window.
+  <br><b>Why min<sub>sess</sub> = max<sub>sess</sub> sometimes:</b> when H<sub>session</sub> is longer than the
+  session itself (LCM explosion of many near-coprime periods - the Autoware case: H<sub>session</sub> = 3.3M s vs a
+  408 s run) only one window exists, so μ=min=max and σ=0. The EX and session groups carry the same numbers only
+  when H<sub>tmr</sub> = H<sub>session</sub> (single-executor sessions such as the Isaac benchmarks).
+</div>
 
 <div id="meta" class="meta"></div>
 
@@ -59,17 +74,17 @@
       <th data-key="node">Node<span class="arrow">↕</span></th>
       <th data-key="entity">Entity<span class="arrow">↕</span></th>
       <th data-key="symbol">Callback<span class="arrow">↕</span></th>
-      <th data-key="period_source">Source<span class="arrow">↕</span></th>
-      <th data-key="period_ns">Period<span class="arrow">↕</span></th>
-      <th data-key="n_total">N fires<span class="arrow">↕</span></th>
+      <th data-key="period_source" title="How the period was derived: tmr-nominal = explicit rcl_timer_init period (drives H); tmr-oneshot = timer cancelled after <2 fires (excluded from H); sub = message-driven, no own period; serv-aperiodic = request-driven, no period; unknown = not derivable.">Source<span class="arrow">↕</span></th>
+      <th data-key="period_ns" title="The OWN period of this row (timers only). Subscriptions/services correctly show a dash; their rate lives in the fires/window stats.">Period<span class="arrow">↕</span></th>
+      <th data-key="n_total" title="Total callback_start count over the whole session.">N fires<span class="arrow">↕</span></th>
 
-      <th class="group-ex hdr" data-key="h_tmr_ns">H<sub>tmr</sub><span class="arrow">↕</span></th>
-      <th class="group-ex hdr" data-key="ex_mean">μ<sub>EX</sub><span class="arrow">↕</span></th>
+      <th class="group-ex hdr" data-key="h_tmr_ns" title="EXECUTOR timer hyperperiod (LCM of the executor nominal timer periods). NOT the period of this row - it is the statistics window size and repeats on every row of the executor, services included.">H<sub>tmr</sub><span class="arrow">↕</span></th>
+      <th class="group-ex hdr" data-key="ex_mean" title="Mean fires per H_tmr window (windows between first and last fire of the callback; interior silent windows count as 0).">μ<sub>EX</sub><span class="arrow">↕</span></th>
       <th class="group-ex hdr" data-key="ex_std">σ<sub>EX</sub><span class="arrow">↕</span></th>
       <th class="group-ex hdr" data-key="ex_min">min<sub>EX</sub><span class="arrow">↕</span></th>
       <th class="group-ex hdr" data-key="ex_max">max<sub>EX</sub><span class="arrow">↕</span></th>
 
-      <th class="group-session hdr" data-key="sess_mean">μ<sub>sess</sub><span class="arrow">↕</span></th>
+      <th class="group-session hdr" data-key="sess_mean" title="Same statistic over H_session windows (session-wide timer LCM). If H_session exceeds the session length only ONE window exists so mean=min=max and std=0 by construction (the Autoware case).">μ<sub>sess</sub><span class="arrow">↕</span></th>
       <th class="group-session hdr" data-key="sess_std">σ<sub>sess</sub><span class="arrow">↕</span></th>
       <th class="group-session hdr" data-key="sess_min">min<sub>sess</sub><span class="arrow">↕</span></th>
       <th class="group-session hdr" data-key="sess_max">max<sub>sess</sub><span class="arrow">↕</span></th>
@@ -141,7 +156,10 @@ function render(d) {
     `<b>session:</b> <code>${d.session_id}</code> &nbsp; ` +
     `<b>scope:</b> <code>${d.scope}</code> &nbsp; ` +
     `<b>duration:</b> ${fmtNs(d.session_duration_ns)} &nbsp; ` +
-    `<b>H<sub>session</sub>:</b> ${fmtNs(d.h_session_tmr_only_ns)}`;
+    `<b>H<sub>session</sub>:</b> ${fmtNs(d.h_session_tmr_only_ns)}` +
+    ((d.h_session_tmr_only_ns || 0) > d.session_duration_ns
+      ? ` <span style="color:#c0392b;font-weight:600" title="Session-wide timer LCM exceeds the session length: every callback gets exactly one session window, so the sess columns show mean=min=max and std=0 by construction.">⚠ H_session &gt; duration → sess stats have 1 window</span>`
+      : '');
   attachHeaderHandlers();
   attachFilterHandlers();
   refresh();
@@ -160,6 +178,12 @@ function attachHeaderHandlers() {
 function attachFilterHandlers() {
   document.getElementById('q').oninput = refresh;
   document.getElementById('hide-aperiodic').onchange = refresh;
+  // guideToggle wired
+  document.getElementById('guide-toggle').onclick = (e) => {
+    e.preventDefault();
+    const g = document.getElementById('col-guide');
+    g.style.display = g.style.display === 'none' ? 'block' : 'none';
+  };
   document.getElementById('hide-zero').onchange = refresh;
 }
 

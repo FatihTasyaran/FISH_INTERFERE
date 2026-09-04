@@ -94,6 +94,831 @@ def _serve_taskset(handler, qs):
     handler.wfile.write(body)
 
 
+
+
+# ---------------------------------------------------------------------------
+# /explore — relaxed drill-down of the FISH hierarchy (T4, 2026-08-31).
+# L0 namespaces → (click, new tab) that namespace's executors + sub-namespaces
+# → (click) the executor's nodes (GPU submitters marked) → (click) the node's
+# E/F layer → (click F) the callback's GPU view (live per-stream graph from
+# cuda tables + legacy dag_out artifacts). Every element renders as a fresh
+# server-side dot→svg page; clicks open new tabs (graphviz URL/target attrs).
+# ---------------------------------------------------------------------------
+
+def _explore_q(sid, scope):
+    """Load the containment hierarchy + gpu submitter sets once per request."""
+    import psycopg2, psycopg2.extras
+    dsn = os.environ.get('FISH_PG_DSN', 'host=localhost port=5432 dbname=fish user=fish password=fish')
+    conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor); conn.autocommit = True
+    cur = conn.cursor()
+    meta = _ensure_gantt_spans(cur, sid, scope)
+    gpu_cbs = set(meta.get('gpu_submitter_cbs') or [])
+    cur.execute("""
+        SELECT n.node_id, n.type, n.label, n.full_name, n.pid, n.etype,
+               COALESCE(n.cb_addr, n.attrs->>'cb_addr', '') AS cb_addr,
+               COALESCE(n.attrs->>'cb_symbol','') AS cb_symbol,
+               ge.source AS parent
+        FROM graph_nodes n
+        LEFT JOIN graph_edges ge ON ge.session_id=n.session_id AND ge.scope=n.scope
+             AND ge.target=n.node_id AND ge.rel='contains'
+        WHERE n.session_id=%s AND n.scope=%s
+    """, (sid, scope))
+    rows = cur.fetchall()
+    cur.execute("""
+        SELECT source, target, level, attrs->'topics' AS topics,
+               COALESCE((attrs->>'comm_count')::int, 1) AS n
+        FROM graph_edges
+        WHERE session_id=%s AND scope=%s AND rel='comm' AND level IN ('L1','L2')
+    """, (sid, scope))
+    comm = cur.fetchall()
+    conn.close()
+    byid = {r['node_id']: r for r in rows}
+    kids = {}
+    for r in rows:
+        if r['parent'] is not None:
+            kids.setdefault(r['parent'], []).append(r['node_id'])
+    return byid, kids, gpu_cbs, comm
+
+
+def _dot_svg(dot):
+    import subprocess
+    try:
+        out = subprocess.run(['dot', '-Tsvg'], input=dot.encode(), capture_output=True, timeout=60)
+        if out.returncode == 0:
+            svg = out.stdout.decode()
+            return svg[svg.index('<svg'):]
+    except Exception:
+        pass
+    return '<pre>graphviz failed</pre><pre>' + dot.replace('<', '&lt;') + '</pre>'
+
+
+def _esc(x):
+    return (x or '').replace('"', '\\"')
+
+
+
+def _typed_dag_dot(dag, title=''):
+    """Render one gpu_dags shape (nodes: pe CPU/SM/CE + edges launch/cpu_order/
+    stream_fifo) as dot. SM/CE nodes clustered per stream."""
+    PE = {'CPU': ('box', '#eeeeee'), 'SM': ('ellipse', '#a9dfbf'),
+          'CE': ('parallelogram', '#f9d5a7')}
+    L = ['digraph D { rankdir=LR; bgcolor=white; fontname="Helvetica";',
+         f'label="{_esc(title)}"; labelloc=t; fontsize=12;',
+         'node [fontname="Helvetica", fontsize=9, style=filled];',
+         'edge [arrowsize=0.5];']
+    streams = {}
+    for n in dag.get('nodes', []):
+        if n['pe'] in ('SM', 'CE'):
+            streams.setdefault(n.get('stream', 0), []).append(n)
+    for st, ns in sorted(streams.items()):
+        L.append(f'subgraph cluster_s{st} {{ label="stream {st}"; color="#27ae60"; fontsize=10;')
+        for n in ns:
+            shape, fill = PE[n['pe']]
+            nm = (n.get('name') or '?')[:36]
+            extra = ''
+            if 'c_min_ns' in n:
+                extra = f"\\n{n['c_min_ns']/1e3:.0f}–{n['c_max_ns']/1e3:.0f} µs"
+            L.append(f'n{n["idx"]} [shape={shape}, fillcolor="{fill}", '
+                     f'label="{_esc(nm)}{extra}"];')
+        L.append('}')
+    for n in dag.get('nodes', []):
+        if n['pe'] == 'CPU':
+            shape, fill = PE['CPU']
+            nm = (n.get('name') or '?')[:30]
+            L.append(f'n{n["idx"]} [shape={shape}, fillcolor="{fill}", label="{_esc(nm)}"];')
+    STYLE = {'launch': 'color="#2c3e50"',
+             'cpu_order': 'color="#bbbbbb", penwidth=0.6',
+             'stream_fifo': 'color="#27ae60", style=dashed'}
+    for (u, v, lbl) in dag.get('edges', []):
+        L.append(f'n{u} -> n{v} [{STYLE.get(lbl, "")}];')
+    L.append('}')
+    return '\n'.join(L)
+
+
+
+
+def _conditional_dot(shapes, title=''):
+    """Conditional graph à la shape_skeleton (April '26): LCS backbone over
+    the callback's unique shapes (weighted by count) + per-shape insertions
+    as branch nodes with counts/probabilities. Computed live from the
+    gpu_dags shapes — no sqlite/Mongo needed."""
+    seqs = []
+    for d in shapes:
+        if d.get('truncated') or not d.get('nodes'):
+            continue
+        seqs.append(([(n['pe'], n.get('name') or '?') for n in d['nodes']],
+                     int(d.get('count') or 1), d.get('phase') or '?'))
+    if not seqs:
+        return None
+    seqs.sort(key=lambda x: -x[1])
+    total = sum(c for _, c, _ in seqs)
+
+    def lcs(a, b):
+        na, nb = len(a), len(b)
+        dp = [[0] * (nb + 1) for _ in range(na + 1)]
+        for i in range(na - 1, -1, -1):
+            for j in range(nb - 1, -1, -1):
+                dp[i][j] = dp[i+1][j+1] + 1 if a[i] == b[j] else max(dp[i+1][j], dp[i][j+1])
+        out, i, j = [], 0, 0
+        while i < na and j < nb:
+            if a[i] == b[j]:
+                out.append(a[i]); i += 1; j += 1
+            elif dp[i+1][j] >= dp[i][j+1]:
+                i += 1
+            else:
+                j += 1
+        return out
+
+    backbone = seqs[0][0]
+    for sq, _, _ in seqs[1:]:
+        backbone = lcs(backbone, sq)
+        if not backbone:
+            break
+
+    # branch attach positions (computed first so backbone runs without any
+    # attachment can be collapsed into "⋯ N calls ⋯" summary nodes — a
+    # 282-node chain otherwise renders as an unreadably wide sliver)
+    attach = set()
+    for sq, cnt, phase in seqs:
+        pos = 0; inrun = False
+        for tok in sq:
+            if pos < len(backbone) and tok == backbone[pos]:
+                if inrun:
+                    attach.add(pos); inrun = False
+                pos += 1
+            else:
+                inrun = True
+        if inrun:
+            attach.add(pos)
+
+    PHASE_COL = {'STEADY': '#2E7D32', 'INIT': '#1976D2', 'WARMUP': '#1976D2',
+                 'TAIL': '#7B1FA2', 'UNKNOWN': '#9E9E9E'}
+    L = ['digraph C { rankdir=LR; bgcolor=white;',
+         f'label="{_esc(title)}"; labelloc=t; fontsize=12; fontname="Helvetica";',
+         'node [fontname="Helvetica", fontsize=9, style=filled];',
+         'edge [arrowsize=0.5, fontsize=8, fontname="Helvetica"];']
+    # backbone chain (green boxes)
+    L.append('b_start [shape=circle, label="", width=0.15, fillcolor="#2E7D32"];')
+    prev = 'b_start'
+    KEEP = 2   # nodes kept around every attach point / chain end
+    keep_idx = set()
+    for a in attach | {0, len(backbone)}:
+        for k in range(a - KEEP, a + KEEP):
+            if 0 <= k < len(backbone):
+                keep_idx.add(k)
+    emitted = set()
+    i = 0
+    while i < len(backbone):
+        if i in keep_idx:
+            pe, nm = backbone[i]
+            L.append(f'b{i} [shape=box, fillcolor="#c8e6c9", color="#2E7D32", '
+                     f'label="{_esc(nm[:30])}\n({pe})"];')
+            L.append(f'{prev} -> b{i} [color="#2E7D32", penwidth=2];')
+            prev = f'b{i}'; emitted.add(i)
+            i += 1
+        else:
+            j = i
+            while j < len(backbone) and j not in keep_idx:
+                j += 1
+            L.append(f'b{i} [shape=box, style="filled,dashed", fillcolor="#e8f5e9", '
+                     f'color="#2E7D32", label="⋯ {j - i} calls ⋯"];')
+            L.append(f'{prev} -> b{i} [color="#2E7D32", penwidth=2];')
+            prev = f'b{i}'; emitted.add(i)
+            i = j
+    L.append('b_end [shape=doublecircle, label="", width=0.12, fillcolor="#2E7D32"];')
+    L.append(f'{prev} -> b_end [color="#2E7D32", penwidth=2];')
+    # branches: per shape, contiguous insertions vs backbone
+    bid = 0
+    for si, (sq, cnt, phase) in enumerate(seqs):
+        # align: walk sq, matching backbone greedily
+        pos = 0
+        run = []
+        anchors = []   # (backbone_pos_before, run)
+        for tok in sq:
+            if pos < len(backbone) and tok == backbone[pos]:
+                if run:
+                    anchors.append((pos, run)); run = []
+                pos += 1
+            else:
+                run.append(tok)
+        if run:
+            anchors.append((pos, run))
+        col = PHASE_COL.get((phase.split('(')[0]), '#9E9E9E')
+        for bpos, r in anchors:
+            names = ', '.join(f'{n[:22]}' for _, n in r[:4]) + ('…' if len(r) > 4 else '')
+            L.append(f'br{bid} [shape=note, fillcolor="#f5f5f5", color="{col}", '
+                     f'label="+{len(r)}: {_esc(names)}"];')
+            def bnode(idx):
+                while idx >= 0:
+                    if idx in emitted:
+                        return f'b{idx}'
+                    idx -= 1
+                return 'b_start'
+            src = 'b_start' if bpos == 0 else bnode(bpos - 1)
+            dst = 'b_end' if bpos >= len(backbone) else bnode(bpos)
+            p = cnt / total if total else 0
+            L.append(f'{src} -> br{bid} [color="{col}", style=dashed, '
+                     f'label="×{cnt} (p={p:.2f}, {_esc(phase)})"];')
+            L.append(f'br{bid} -> {dst} [color="{col}", style=dashed];')
+            bid += 1
+    L.append('}')
+    return '\n'.join(L)
+
+
+def _serve_drill2(handler, qs):
+    """drill-down-2: the components (Layer B) view, clickable one level down
+    per click. Identical pipeline/style to /components (same _component_graph
+    + _components_to_dot, classified trigger/sampled edges, merge-ext); the
+    only additions are the `focus` grouping and URL attrs on the boxes.
+    Levels: root = top namespaces → focus=/ns → sub-namespaces + nodes at that
+    level (context = other top namespaces, greyed) → node box links into
+    /explore view=node (E/F layer, then callback GPU DAGs)."""
+    from urllib.parse import quote
+    sid = (qs.get('session_id') or qs.get('session') or [''])[0]
+    scope = (qs.get('scope') or ['__main__'])[0]
+    key = (qs.get('key') or [''])[0].rstrip('/')
+    if not sid:
+        handler.send_error(400, 'session_id required'); return
+    show_infra = (qs.get('infra', ['hide'])[0] == 'show')
+    show_crosscut = (qs.get('crosscut', ['hide'])[0] == 'show')
+    try:
+        fnodes, edges, _wccs, _n = _fetch_wcc_payload(sid, scope, {'data'}, 'exclude', '', '', 'show')
+        node_fulls = {n.get('node_full') for n in fnodes.values() if n.get('node_full')}
+
+        f_cb_of = {}          # component name → cb_addr (node-level F boxes)
+        if key in node_fulls:
+            # NODE level: same style, same payload — each of the node's
+            # (phase-filtered) F's becomes its own component, so the counts
+            # match the parent label exactly. Clicking an F opens its
+            # callback GPU page.
+            fnodes = {fid: dict(n) for fid, n in fnodes.items()}
+            for n in fnodes.values():
+                if n.get('node_full') == key:
+                    lbl = n.get('ent_label') or n.get('symbol') or n.get('cb_addr') or 'F'
+                    # '/' inside entity labels (sub:/map/vector_map) would make
+                    # comp_of split them like namespaces — replace with '⁄'
+                    lbl = lbl.replace('/', '⁄')
+                    comp = f"{key}/{lbl}"
+                    i = 2
+                    while comp in f_cb_of and f_cb_of[comp] != n.get('cb_addr'):
+                        comp = f"{key}/{lbl}#{i}"; i += 1
+                    f_cb_of[comp] = n.get('cb_addr')
+                    n['node_full'] = comp
+        cg = _component_graph(fnodes, edges, depth=1, axis='ros', focus=key or None)
+        for c in cg.get('components', []):
+            if c['name'] in f_cb_of:
+                c['short'] = 'F ' + c['name'][len(key):].lstrip('/')
+
+        def url_of(c):
+            k = c['name']
+            if k in ('/viz', 'ext:in', 'ext:out'):
+                return None
+            if k in f_cb_of:
+                cb = f_cb_of[k]
+                if cb:
+                    return (f'/explore?session_id={quote(sid)}&scope={quote(scope)}'
+                            f'&view=cb&cb={quote(cb)}')
+                return None
+            base = f'/drill2?session_id={quote(sid)}&scope={quote(scope)}'
+            return base + f'&key={quote(k)}'
+
+        dot = _components_to_dot(cg, show_infra, show_crosscut, ext_split=False,
+                                 url_of=url_of)
+        svg = _render_dot_to_svg(dot)
+        if 'render failed' in (svg or '')[:200]:
+            svg = _render_dot_to_svg(_components_to_dot(
+                cg, show_infra, show_crosscut, ext_split=False,
+                pin_rows=False, url_of=url_of))
+    except Exception as e:
+        handler.send_error(500, f'error: {e}'); return
+    crumb = f'<a href="/drill2?session_id={quote(sid)}&scope={quote(scope)}">top</a>'
+    if key:
+        parts = [p for p in key.split('/') if p]
+        acc = ''
+        for pp in parts[:-1]:
+            acc += '/' + pp
+            crumb += f' / <a href="/drill2?session_id={quote(sid)}&scope={quote(scope)}&key={quote(acc)}">{pp}</a>'
+        crumb += f' / <b>{parts[-1]}</b>'
+    html = f"""<!doctype html><html><head><meta charset="utf-8">
+<title>FISH drill-down-2 — {key or 'top-level'}</title>
+<style>body{{font:13px system-ui;margin:12px}} svg{{max-width:100%;height:auto}}
+h2{{font-size:15px;margin:0 0 4px 0}} .k{{color:#777;margin-bottom:8px}}</style></head><body>
+<h2>FISH drill-down-2 · {key or 'top-level namespaces'}</h2>
+<div class="k">session {sid} · {crumb} · click a box to descend (new tab); grey boxes = context (other namespaces)</div>
+{svg}
+</body></html>"""
+    body = html.encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'text/html; charset=utf-8')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _node_id_by_full(sid, scope, full):
+    import psycopg2
+    dsn = os.environ.get('FISH_PG_DSN', 'host=localhost port=5432 dbname=fish user=fish password=fish')
+    try:
+        conn = psycopg2.connect(dsn); cur = conn.cursor()
+        cur.execute("SELECT node_id FROM graph_nodes WHERE session_id=%s AND scope=%s "
+                    "AND type='N' AND full_name=%s LIMIT 1", (sid, scope, full))
+        r = cur.fetchone(); conn.close()
+        return r[0] if r else None
+    except Exception:
+        return None
+
+
+def _serve_explore(handler, qs):
+    from urllib.parse import quote
+    sid = (qs.get('session_id') or qs.get('session') or [''])[0]
+    scope = (qs.get('scope') or ['__main__'])[0]
+    view = (qs.get('view') or ['root'])[0]
+    if not sid:
+        handler.send_error(400, 'session_id required'); return
+    try:
+        byid, kids, gpu_cbs, comm = _explore_q(sid, scope)
+    except Exception as e:
+        handler.send_error(500, f'PG error: {e}'); return
+
+    def url(**kw):
+        base = f'/explore?session_id={quote(sid)}&scope={quote(scope)}'
+        return base + ''.join(f'&{k}={quote(str(v))}' for k, v in kw.items())
+
+    nodesN = [r for r in byid.values() if r['type'] == 'N']
+    def ns_of(full, depth):
+        parts = [x for x in (full or '').split('/') if x]
+        if len(parts) <= 1:
+            return '/'
+        return '/' + '/'.join(parts[:min(depth, len(parts) - 1)])
+
+    # node → gpu? (any contained F cb in gpu_cbs)
+    def node_gpu(nid):
+        for eid in kids.get(nid, []):
+            for fid in kids.get(eid, []):
+                if byid[fid].get('cb_addr') in gpu_cbs:
+                    return True
+        return False
+
+    # Aggregated comm edges, lifted onto whatever containers a view displays
+    # (same idea as the components view: as abstract as the current level).
+    INFRA_T = ('/parameter_events', '/rosout', '/clock', '/tf', '/tf_static',
+               '/service_log', '/diagnostics', '_supported_types')
+    VIEWER_NS = ('_ros2cli', 'launch_ros', 'rviz', 'rqt', 'transform_listener_impl',
+                 'managed_tf_listener_impl', '_fish')
+
+    def _is_viewer_node(nid):
+        r = byid.get(nid) or {}
+        nm = (r.get('full_name') or r.get('label') or '')
+        return any(v in nm for v in VIEWER_NS)
+
+    def emit_edges(level, owner_of, allow_ext=False):
+        """owner_of: graph node_id → displayed dot-node id (or None=hidden).
+        Aggregates comm edges of `level` onto displayed pairs; endpoints not
+        displayed become ext:in/ext:out pseudo nodes when allow_ext."""
+        agg = {}
+        for e in comm:
+            if e['level'] != level:
+                continue
+            # components-view discipline: drop infra-only edges and edges
+            # touching viewer/tooling nodes (ros2cli, launch, tf listeners …)
+            tps = [t for t in (e['topics'] or [])
+                   if not any(i in t for i in INFRA_T)]
+            if (e['topics'] and not tps):
+                continue
+            if _is_viewer_node(e['source']) or _is_viewer_node(e['target']):
+                continue
+            e = dict(e); e['topics'] = tps
+            a, b = owner_of(e['source']), owner_of(e['target'])
+            if a is None and b is None:
+                continue
+            if a is None:
+                if not allow_ext: continue
+                a = 'EXTIN'
+            if b is None:
+                if not allow_ext: continue
+                b = 'EXTOUT'
+            if a == b:
+                continue
+            key = (a, b)
+            cell = agg.setdefault(key, {'n': 0, 'topics': set()})
+            cell['n'] += e['n'] or 1
+            for t in (e['topics'] or []):
+                cell['topics'].add(t)
+        used_ext = set()
+        for (a, b), cell in agg.items():
+            nt = len(cell['topics']) or 1
+            tip = ', '.join(sorted(cell['topics'])[:6])
+            L.append(f'{a} -> {b} [label="{nt}t·{cell["n"]}", '
+                     f'color="#2c3e50", fontcolor="#555", penwidth={min(3, 0.8+0.3*nt)}, '
+                     f'tooltip="{_esc(tip)}"];')
+            if a == 'EXTIN': used_ext.add('EXTIN')
+            if b == 'EXTOUT': used_ext.add('EXTOUT')
+        if 'EXTIN' in used_ext:
+            L.append('EXTIN [shape=cds, fillcolor="#eeeeee", label="ext in"];')
+        if 'EXTOUT' in used_ext:
+            L.append('EXTOUT [shape=cds, fillcolor="#eeeeee", label="ext out"];')
+
+    title, dot = '', None
+    body_extra = ''
+    L = ['digraph G { rankdir=LR; bgcolor=white;',
+         'node [fontname="Helvetica", fontsize=11, style=filled];',
+         'edge [fontname="Helvetica", fontsize=9];']
+
+    if view == 'root':
+        title = 'L0 — namespaces'
+        seen = {}
+        for r in nodesN:
+            k = ns_of(r['full_name'], 1)
+            seen.setdefault(k, {'n': 0, 'ex': set()})
+            seen[k]['n'] += 1
+            p = byid.get(r['parent'])
+            if p: seen[k]['ex'].add(p['node_id'])
+        for k, v in sorted(seen.items()):
+            L.append(f'"{_esc(k)}" [shape=folder, fillcolor="#cfe3f5", '
+                     f'label="{_esc(k)}\\n{v["n"]} node · {len(v["ex"])} EX", '
+                     f'URL="{url(view="ns", key=k)}", target="_blank"];')
+        nsof = {r['node_id']: '"' + _esc(ns_of(r['full_name'], 1)) + '"' for r in nodesN}
+        emit_edges('L1', lambda nid: nsof.get(nid))
+    elif view == 'ns':
+        key = (qs.get('key') or ['/'])[0]
+        depth = key.count('/') if key != '/' else 0
+        title = f'namespace {key} — executors + sub-namespaces'
+        subs, exs = {}, {}
+        for r in nodesN:
+            full = r['full_name'] or ''
+            if key != '/' and not (full == key or full.startswith(key + '/')):
+                continue
+            deeper = ns_of(full, depth + 1)
+            if deeper != key and deeper != full:
+                subs.setdefault(deeper, 0)
+                subs[deeper] += 1
+            else:
+                p = byid.get(r['parent'])
+                if p:
+                    exs.setdefault(p['node_id'], []).append(r)
+        for k, n in sorted(subs.items()):
+            L.append(f'"{_esc(k)}" [shape=folder, fillcolor="#cfe3f5", label="{_esc(k)}\\n{n} node", '
+                     f'URL="{url(view="ns", key=k)}", target="_blank"];')
+        for exid, nlist in sorted(exs.items()):
+            ex = byid[exid]
+            gpu = any(node_gpu(r['node_id']) for r in nlist)
+            extra = ' ⚡' if gpu else ''
+            L.append(f'"EX{exid}" [shape=box3d, fillcolor="#dfe8dc", '
+                     f'label="EX {_esc(ex["label"])}{extra}\\n{len(nlist)} node here", '
+                     f'URL="{url(view="ex", ex=exid, key=key)}", target="_blank"];')
+        owner = {}
+        for r in nodesN:
+            full = r['full_name'] or ''
+            if key != '/' and not (full == key or full.startswith(key + '/')):
+                continue
+            deeper = ns_of(full, depth + 1)
+            if deeper != key and deeper != full and deeper in subs:
+                owner[r['node_id']] = '"' + _esc(deeper) + '"'
+            elif r['parent'] in exs:
+                owner[r['node_id']] = f'"EX{r["parent"]}"'
+        emit_edges('L1', lambda nid: owner.get(nid), allow_ext=True)
+    elif view == 'ex':
+        exid = int((qs.get('ex') or ['0'])[0]); key = (qs.get('key') or ['/'])[0]
+        ex = byid.get(exid) or {}
+        title = f'executor {ex.get("label")} — nodes under {key}'
+        shown_ns = set()
+        for nid in kids.get(exid, []):
+            r = byid[nid]
+            if r['type'] != 'N':
+                continue
+            full = r['full_name'] or ''
+            if key != '/' and not (full == key or full.startswith(key + '/')):
+                continue
+            gpu = node_gpu(nid)
+            fill = '#f5b7b1' if gpu else '#d5f5e3'
+            mark = ' ⚡GPU' if gpu else ''
+            ne = len(kids.get(nid, []))
+            L.append(f'"N{nid}" [shape=box, fillcolor="{fill}", '
+                     f'label="{_esc(full or r["label"])}{mark}\\n{ne} entities", '
+                     f'URL="{url(view="node", node=nid)}", target="_blank"];')
+            shown_ns.add(nid)
+        emit_edges('L1', lambda n: (f'"N{n}"' if n in shown_ns else None), allow_ext=True)
+    elif view == 'node':
+        nid = int((qs.get('node') or ['0'])[0])
+        r = byid.get(nid) or {}
+        shown_es = set()
+        title = f'node {r.get("full_name") or r.get("label")} — entities + callbacks'
+        L.append(f'"N{nid}" [shape=box, fillcolor="#d5f5e3", label="{_esc(r.get("full_name") or "")}"];')
+        ECOL = {'sub': '#F9E79F', 'tmr': '#AED6F1', 'serv': '#D7BDE2', 'waitable': '#F5CBA7'}
+        for eid in kids.get(nid, []):
+            e = byid[eid]
+            L.append(f'"E{eid}" [shape=ellipse, fillcolor="{ECOL.get(e["etype"], "#eeeeee")}", '
+                     f'label="{_esc(e["label"])}\\n({e["etype"]})"];')
+            L.append(f'"N{nid}" -> "E{eid}" [color="#999"];')
+            shown_es.add(eid)
+            for fid in kids.get(eid, []):
+                f = byid[fid]
+                gpu = f.get('cb_addr') in gpu_cbs
+                fill = '#f5b7b1' if gpu else '#fdfefe'
+                sym = (f.get('cb_symbol') or '')[:60]
+                mark = ' ⚡' if gpu else ''
+                L.append(f'"F{fid}" [shape=note, fillcolor="{fill}", '
+                         f'label="F {_esc(sym) or f["cb_addr"]}{mark}", '
+                         f'URL="{url(view="cb", cb=f.get("cb_addr") or "", f=fid)}", target="_blank"];')
+                L.append(f'"E{eid}" -> "F{fid}" [color="#bbb"];')
+        emit_edges('L2', lambda n: (f'"E{n}"' if n in shown_es else None), allow_ext=True)
+    elif view == 'cb':
+        cb = (qs.get('cb') or [''])[0]; fid = (qs.get('f') or [''])[0]
+        title = f'callback {cb} — GPU view'
+        # live per-stream GPU graph from cuda tables
+        import psycopg2, psycopg2.extras
+        dsn = os.environ.get('FISH_PG_DSN', 'host=localhost port=5432 dbname=fish user=fish password=fish')
+        conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor); conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT k.stream_id AS stream, COALESCE(k.kernel_short_name, k.kernel_name) AS kname,
+                   count(*) AS n, sum(k.duration_ns) AS gpu_ns
+            FROM gantt_spans sp
+            JOIN cuda_runtime r ON r.session_id=sp.session_id
+                 AND r.tid=sp.vtid AND r.ts_ns BETWEEN sp.t0_ns AND sp.t1_ns
+            JOIN gpu_kernels k ON k.session_id=r.session_id
+                 AND k.correlation_id=r.correlation_id AND k.source=r.source
+            WHERE sp.session_id=%s AND sp.scope=%s AND sp.cb_addr=%s
+            GROUP BY 1,2 ORDER BY 1, 4 DESC
+        """, (sid, scope, cb))
+        rows = cur.fetchall()
+        # CUDA API profile inside the callback — NITROS launches most kernels
+        # from GXF worker threads OUTSIDE rclcpp callback spans, so a callback
+        # can be a GPU *submitter* (event/copy APIs) with zero correlated
+        # kernels; show what it actually does on the CUDA API.
+        cur.execute("""
+            SELECT r.api_name, count(*) AS n, sum(COALESCE(r.duration_ns,0)) AS cpu_ns
+            FROM gantt_spans sp
+            JOIN cuda_runtime r ON r.session_id=sp.session_id
+                 AND r.tid=sp.vtid AND r.ts_ns BETWEEN sp.t0_ns AND sp.t1_ns
+            WHERE sp.session_id=%s AND sp.scope=%s AND sp.cb_addr=%s
+            GROUP BY 1 ORDER BY 2 DESC LIMIT 12
+        """, (sid, scope, cb))
+        api_rows = cur.fetchall()
+        conn.close()
+        L.append(f'"CB" [shape=note, fillcolor="#fdfefe", label="F {_esc(cb)}"];')
+        streams = {}
+        for row in rows:
+            streams.setdefault(row['stream'], []).append(row)
+        for st, krows in sorted(streams.items()):
+            tot = sum(k['gpu_ns'] for k in krows); n = sum(k['n'] for k in krows)
+            top = '\\n'.join(f"{(k['kname'] or '?')[:34]} ×{k['n']}" for k in krows[:5])
+            L.append(f'"S{st}" [shape=cylinder, fillcolor="#a9dfbf", '
+                     f'label="stream {st}\\n{n} kernels · {float(tot or 0)/1e6:.1f} ms\\n{_esc(top)}"];')
+            L.append(f'"CB" -> "S{st}" [label="{n}", color="#27ae60"];')
+        if not streams:
+            L.append('"none" [shape=plaintext, label="no kernels correlate to launches inside this callback\n(NITROS: kernels are launched from GXF worker threads outside rclcpp spans)"];')
+        # Typed GPU DAGs (gpu_dag_pg extraction) for this callback
+        conn2 = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor); conn2.autocommit = True
+        cur2 = conn2.cursor()
+        dag_html = ''
+        try:
+            cur2.execute("""SELECT n_invocations, n_shapes, dags FROM gpu_dags
+                            WHERE session_id=%s AND scope=%s AND anchor_type='cb' AND anchor=%s""",
+                         (sid, scope, cb))
+            gd = cur2.fetchone()
+            if gd:
+                shapes = gd['dags'] if isinstance(gd['dags'], list) else json.loads(gd['dags'])
+                parts = [f'<h3>Typed GPU DAGs — {gd["n_shapes"]} shape(s) over {gd["n_invocations"]} invocations</h3>']
+                for i, d in enumerate(shapes[:6]):
+                    if d.get('truncated'):
+                        ss = d.get('stream_summary') or {}
+                        det = ', '.join(f"s{k}: {v.get('SM',0)}SM/{v.get('CE',0)}CE" for k, v in list(ss.items())[:6] if k != 'cpu')
+                        parts.append(f'<p><b>shape {i}</b> ({d.get("phase","?")}, ×{d.get("count",0)}) — '
+                                     f'{d.get("n_nodes","?")} nodes / {d.get("n_edges","?")} edges, stored as summary '
+                                     f'(too large): {det} {d.get("note","")}</p>')
+                        continue
+                    if len(d.get('nodes', [])) > 400:
+                        parts.append(f'<p>shape {i} ({d["phase"]}, ×{d["count"]}): {len(d["nodes"])} nodes — too large to draw, sig {d["signature"]}</p>')
+                        continue
+                    t = f"shape {i} · {d.get('phase','?')} · ×{d.get('count',0)} · sig {d.get('signature','')[:8]}"
+                    parts.append('<details ' + ('open' if i == 0 else '') + f'><summary>{t} — {len(d.get("nodes",[]))} nodes</summary>'
+                                 + _dot_svg(_typed_dag_dot(d, t)) + '</details>')
+                if len(shapes) > 6:
+                    parts.append(f'<p>… +{len(shapes)-6} more shapes (see gpu_dags table)</p>')
+                cdot = _conditional_dot(shapes, 'conditional graph — LCS skeleton + branches')
+                if cdot:
+                    parts.append('<details><summary><b>conditional graph</b> — '
+                                 'skeleton (LCS backbone) + per-shape branches with probabilities'
+                                 '</summary>' + _dot_svg(cdot) + '</details>')
+                dag_html = ''.join(parts)
+            else:
+                dag_html = ('<p style="color:#777">No typed GPU DAGs extracted for this callback yet — run '
+                            f'<code>python3 -m postprocess.gpu_dag_pg {sid}</code>.</p>')
+        except Exception as e:
+            dag_html = f'<p style="color:#b00">gpu_dags query failed: {e}</p>'
+        conn2.close()
+        body_extra = dag_html + body_extra
+
+        if api_rows:
+            tbl = ''.join(f'<tr><td>{a["api_name"]}</td><td style="text-align:right">{a["n"]}</td>'
+                          f'<td style="text-align:right">{float(a["cpu_ns"] or 0)/1e6:.2f} ms</td></tr>' for a in api_rows)
+            body_extra = ('<h3>CUDA API calls inside this callback</h3>'
+                          '<table border=1 cellpadding=4 style="border-collapse:collapse;font-size:12px">'
+                          '<tr><th>api</th><th>n</th><th>cpu time</th></tr>' + tbl + '</table>') + body_extra
+    elif view == 'gpudags':
+        title = 'GPU DAG anchors (gpu_dag_pg)'
+        import psycopg2, psycopg2.extras
+        dsn = os.environ.get('FISH_PG_DSN', 'host=localhost port=5432 dbname=fish user=fish password=fish')
+        conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor); conn.autocommit = True
+        cur = conn.cursor()
+        try:
+            cur.execute("""SELECT anchor_type, anchor, node, entity, n_invocations, n_shapes
+                            FROM gpu_dags WHERE session_id=%s AND scope=%s
+                            ORDER BY anchor_type, n_invocations DESC""", (sid, scope))
+            rows = cur.fetchall()
+        except Exception:
+            rows = []
+        conn.close()
+        trs = ''
+        for r in rows:
+            if r['anchor_type'] == 'cb':
+                link = url(view='cb', cb=r['anchor'])
+                who = f"{r['node']} · {r['entity']}"
+            else:
+                link = url(view='tiddag', tid=r['anchor'])
+                who = f"GXF/worker thread tid {r['anchor']}"
+            trs += (f'<tr><td>{r["anchor_type"]}</td>'
+                    f'<td><a href="{link}" target="_blank">{r["anchor"]}</a></td>'
+                    f'<td>{who}</td><td style="text-align:right">{r["n_shapes"]}</td>'
+                    f'<td style="text-align:right">{r["n_invocations"]}</td></tr>')
+        body_extra = ('<table border=1 cellpadding=4 style="border-collapse:collapse;font-size:12px">'
+                      '<tr><th>anchor</th><th>id</th><th>who</th><th>shapes</th><th>invocations</th></tr>'
+                      + (trs or '<tr><td colspan=5>none — run gpu_dag_pg</td></tr>') + '</table>')
+        L.append('"i" [shape=plaintext, label="see table below"];')
+    elif view == 'tiddag':
+        tid = (qs.get('tid') or [''])[0]
+        title = f'GXF/worker thread {tid} — typed GPU DAGs'
+        import psycopg2, psycopg2.extras
+        dsn = os.environ.get('FISH_PG_DSN', 'host=localhost port=5432 dbname=fish user=fish password=fish')
+        conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor); conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("""SELECT n_invocations, n_shapes, dags FROM gpu_dags
+                        WHERE session_id=%s AND scope=%s AND anchor_type='tid' AND anchor=%s""",
+                    (sid, scope, tid))
+        gd = cur.fetchone(); conn.close()
+        if gd:
+            shapes = gd['dags'] if isinstance(gd['dags'], list) else json.loads(gd['dags'])
+            parts = [f'<h3>{gd["n_shapes"]} shape(s) over {gd["n_invocations"]} invocations</h3>']
+            for i, d in enumerate(shapes[:6]):
+                if d.get('truncated'):
+                    ss = d.get('stream_summary') or {}
+                    det = ', '.join(f"s{k}: {v.get('SM',0)}SM/{v.get('CE',0)}CE" for k, v in list(ss.items())[:6] if k != 'cpu')
+                    parts.append(f'<p><b>shape {i}</b> ({d.get("phase","?")}, ×{d.get("count",0)}) — '
+                                 f'{d.get("n_nodes","?")} nodes / {d.get("n_edges","?")} edges, stored as summary '
+                                 f'(too large): {det} {d.get("note","")}</p>')
+                    continue
+                if len(d.get('nodes', [])) > 400:
+                    parts.append(f'<p>shape {i} ({d.get("phase")}, ×{d.get("count")}): {len(d["nodes"])} nodes — too large, sig {d.get("signature")}</p>')
+                    continue
+                t = f"shape {i} · {d.get('phase','?')} · ×{d.get('count',0)} · sig {d.get('signature','')[:8]}"
+                parts.append('<details ' + ('open' if i == 0 else '') + f'><summary>{t} — {len(d.get("nodes",[]))} nodes</summary>'
+                             + _dot_svg(_typed_dag_dot(d, t)) + '</details>')
+            body_extra = ''.join(parts)
+        else:
+            body_extra = '<p>no gpu_dags row for this tid</p>'
+        L.append(f'"t" [shape=plaintext, label="tid {_esc(tid)}"];')
+    else:
+        handler.send_error(400, f'unknown view {view}'); return
+
+    L.append('}')
+    svg = _dot_svg('\n'.join(L))
+    crumb = (f'<a href="{url(view="root")}">L0 namespaces</a> · '
+             f'<a href="{url(view="gpudags")}">GPU DAG anchors</a>')
+    html = f"""<!doctype html><html><head><meta charset="utf-8">
+<title>FISH explore — {title}</title>
+<style>body{{font:13px system-ui;margin:12px}} svg{{max-width:100%;height:auto;border:1px solid #eee}}
+details svg{{max-width:none;height:auto}}
+details {{overflow-x:auto; max-width:100%}}
+h2{{font-size:15px}} .k{{color:#777}}</style></head><body>
+<h2>FISH explore · {title}</h2>
+<div class="k">session {sid} · scope {scope} · {crumb} · clicks open new tabs</div>
+{svg}
+{body_extra}
+</body></html>"""
+    body = html.encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'text/html; charset=utf-8')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _serve_service_links(handler, qs):
+    """Component-level service/action relations for the component-links table
+    (T3, 2026-08-31). One row per (caller component, server component, service):
+    caller = component of the callback span that contained the
+    fish_rclcpp_client_request_sent event (spanless callers → '(no callback)');
+    server = component of the node owning the serv E in the FISH graph.
+    Components = namespace prefixes at ?depth=, mirroring /api/components.
+    action_links: plumbing in place; empty until a session carries action
+    events (none in the current Autoware/Isaac sessions).
+    """
+    import psycopg2, psycopg2.extras
+    sid = (qs.get('session_id') or qs.get('session') or [''])[0]
+    scope = (qs.get('scope') or ['__main__'])[0]
+    depth = int((qs.get('depth') or ['1'])[0])
+    if not sid:
+        handler.send_error(400, 'session_id required'); return
+
+    def ns_key(full):
+        if not full:
+            return '(unresolved)'
+        parts = [x for x in full.split('/') if x]
+        if len(parts) <= 1 or depth >= 3:
+            return full if len(parts) > 1 else '/'
+        return '/' + '/'.join(parts[:min(depth, len(parts) - 1)])
+
+    dsn = os.environ.get('FISH_PG_DSN', 'host=localhost port=5432 dbname=fish user=fish password=fish')
+    try:
+        conn = psycopg2.connect(dsn); conn.autocommit = True
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        _ensure_gantt_spans(cur, sid, scope)
+        # service name → owning node full_name (graph: N contains E[etype=serv])
+        cur.execute("""
+            SELECT e.label AS elabel, COALESCE(n.full_name, n.label) AS node_full
+            FROM graph_nodes e
+            JOIN graph_edges ge ON ge.session_id=e.session_id AND ge.scope=e.scope
+                               AND ge.target=e.node_id AND ge.rel='contains'
+            JOIN graph_nodes n ON n.session_id=ge.session_id AND n.scope=ge.scope
+                              AND n.node_id=ge.source AND n.type='N'
+            WHERE e.session_id=%s AND e.scope=%s AND e.type='E' AND e.etype='serv'
+        """, (sid, scope))
+        srv_owner = {}
+        for r in cur.fetchall():
+            lab = (r['elabel'] or '')
+            if lab.startswith('serv:'):
+                lab = lab[5:]
+            if lab:
+                srv_owner[lab] = r['node_full']
+        # Fallback: services whose handler registration never fired (known
+        # instrumentation gap, e.g. the container's own parameter services) —
+        # resolve the OWNING NODE from rcl_service_init.node_handle instead.
+        cur.execute("""
+            SELECT si.payload->>'service_name' AS sn,
+                   '/' || (ni.payload->>'namespace') || '/' || (ni.payload->>'node_name') AS node_full
+            FROM ros2_trace si
+            JOIN ros2_trace ni ON ni.session_id=si.session_id
+                 AND ni.event='ros2:rcl_node_init'
+                 AND ni.payload->>'node_handle' = si.payload->>'node_handle'
+            WHERE si.session_id=%s AND si.event='ros2:rcl_service_init'
+        """, (sid,))
+        known_services = set()
+        for (sn, nf) in cur.fetchall():
+            if not sn:
+                continue
+            known_services.add(sn)
+            if sn not in srv_owner and nf:
+                srv_owner[sn] = nf.replace('//', '/')
+        # caller: request events joined to their containing callback span
+        cur.execute("""
+            SELECT c.ts_ns, c.vtid,
+                   ci.payload->>'service_name' AS service,
+                   g.node AS caller_node
+            FROM ros2_trace c
+            JOIN ros2_trace ci ON ci.session_id=c.session_id
+                 AND ci.event='ros2:rcl_client_init'
+                 AND ci.payload->>'client_handle' = c.payload->>'client_handle'
+            LEFT JOIN LATERAL (
+                 SELECT node FROM gantt_spans g
+                 WHERE g.session_id=c.session_id AND g.scope=%s
+                   AND g.vtid=c.vtid AND g.t0_ns<=c.ts_ns AND g.t1_ns>=c.ts_ns
+                 LIMIT 1) g ON true
+            WHERE c.session_id=%s AND c.event='ros2:fish_rclcpp_client_request_sent'
+        """, (scope, sid))
+        agg = {}
+        for r in cur.fetchall():
+            svc = r['service']
+            if not svc:
+                continue
+            src = ns_key('/' + r['caller_node']) if r['caller_node'] else '(no callback)'
+            if srv_owner.get(svc):
+                dst = ns_key(srv_owner[svc])
+            elif svc not in known_services:
+                # ComponentManager containers run with
+                # start_parameter_services(false): callers (ros2cli/launch)
+                # still fire get/list_parameters at them — no server exists.
+                dst = '(no server — never created)'
+            else:
+                dst = '(unknown server)'
+            key = (src, dst, svc)
+            agg[key] = agg.get(key, 0) + 1
+        conn.close()
+    except Exception as e:
+        handler.send_error(500, f'PG error: {e}'); return
+    links = [{'src': k[0], 'dst': k[1], 'kind': 'service', 'service': k[2], 'n': v}
+             for k, v in sorted(agg.items(), key=lambda x: -x[1])]
+    body = json.dumps({'session_id': sid, 'scope': scope, 'depth': depth,
+                       'service_links': links, 'action_links': []}).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.send_header('Access-Control-Allow-Origin', '*')
+    handler.send_header('Cache-Control', 'no-store')
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 def _serve_causal(handler, qs):
     """Empirical comm-edge data: for each publish event (fish_rclcpp_publish_link)
     return (ts_ns, vtid, pub_cb_addr, topic); plus per-topic the set of subscriber
@@ -147,6 +972,58 @@ def _serve_causal(handler, qs):
         for (topic, cb) in cur.fetchall():
             if topic and cb:
                 subs_by_topic.setdefault(topic, []).append(cb)
+
+        # Callback registration times: a publish BEFORE the subscription (or
+        # service handler) existed cannot have triggered it — without this
+        # guard the "first span after publish" pairing fabricates arrows into
+        # late-joining subscribers (ros2cli helpers etc.). transient_local
+        # late-joiner delivery is the one real exception; accepted as a
+        # documented approximation.
+        cur.execute("""
+            SELECT payload->>'callback', min(ts_ns) FROM ros2_trace
+            WHERE session_id=%s AND event IN
+              ('ros2:rclcpp_subscription_callback_added',
+               'ros2:fish_rclpy_subscription_callback_added',
+               'ros2:fish_rclpy_timer_callback_added',
+               'ros2:rclcpp_service_callback_added',
+               'ros2:fish_rclpy_service_callback_added')
+            GROUP BY 1
+        """, (sid,))
+        cb_created = {cb: ts for (cb, ts) in cur.fetchall() if cb}
+
+        # --- service-client edges (2026-08-31): per-request events + handler cbs
+        # client_handle → service_name
+        cur.execute("""
+            SELECT payload->>'client_handle', payload->>'service_name'
+            FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_client_init'
+        """, (sid,))
+        cli_handle_srv = {h: s for (h, s) in cur.fetchall() if h and s}
+        # each request: (ts, vtid, service_name) — caller span found client-side
+        cur.execute("""
+            SELECT ts_ns, vtid, payload->>'client_handle'
+            FROM ros2_trace
+            WHERE session_id=%s AND event='ros2:fish_rclcpp_client_request_sent'
+            ORDER BY ts_ns
+        """, (sid,))
+        cli_calls = []
+        for (ts, vtid, handle) in cur.fetchall():
+            srv = cli_handle_srv.get(handle)
+            if srv:
+                cli_calls.append([ts, vtid, srv])
+        # handler cb_addrs per service (rclcpp + rclpy callback_added chains)
+        cur.execute("""
+            WITH si AS (SELECT payload->>'service_handle' sh, payload->>'service_name' sn
+                        FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_service_init'),
+                 ca AS (SELECT payload->>'service_handle' sh, payload->>'callback' cb
+                        FROM ros2_trace WHERE session_id=%s
+                          AND event IN ('ros2:rclcpp_service_callback_added',
+                                        'ros2:fish_rclpy_service_callback_added'))
+            SELECT si.sn, ca.cb FROM ca JOIN si ON si.sh = ca.sh
+        """, (sid, sid))
+        srv_by_service = {}
+        for (sn, cb) in cur.fetchall():
+            if sn and cb:
+                srv_by_service.setdefault(sn, []).append(cb)
         conn.close()
     except Exception as e:
         handler.send_error(500, f'PG error: {e}')
@@ -160,6 +1037,11 @@ def _serve_causal(handler, qs):
         'fields_pub': ['ts_ns', 'vtid', 'pub_cb_addr', 'topic'],
         'pubs': pubs,
         'subs_by_topic': subs_by_topic,
+        'cb_created': cb_created,
+        'n_cli_calls': len(cli_calls),
+        'fields_cli': ['ts_ns', 'vtid', 'service'],
+        'cli_calls': cli_calls,
+        'srv_by_service': srv_by_service,
     }).encode()
     handler.send_response(200)
     handler.send_header('Content-Type', 'application/json')
@@ -933,7 +1815,7 @@ def _gpu_stream_of_cb(sid, scope):
     return out
 
 
-def _component_graph(fnodes, edges, depth=1, axis='ros', stream_of=None):
+def _component_graph(fnodes, edges, depth=1, axis='ros', stream_of=None, focus=None):
     """Layer B — the architecture view. Components = ROS namespaces (top-level,
     or the first `depth` segments); each component aggregates its F's and the
     FTs they belong to; component→component links aggregate every crossing L3
@@ -970,6 +1852,20 @@ def _component_graph(fnodes, edges, depth=1, axis='ros', stream_of=None):
         if any(base.startswith(v) for v in VIEWERS):
             return '/viz'          # viewers / tooling — rqt_graph "quiet" idea
         parts = [p for p in full.strip('/').split('/') if p]
+        if focus:
+            # drill-down-2: inside `focus` split one level deeper (nodes that sit
+            # directly at the focus level become their own components); outside
+            # F's collapse to their top-level namespace as context boxes.
+            fparts = [p for p in focus.strip('/').split('/') if p]
+            if full == focus or full.startswith(focus.rstrip('/') + '/'):
+                d = len(fparts) + 1
+                key = full if len(parts) <= d else '/' + '/'.join(parts[:d])
+                comp_meta.setdefault(key, {})['in_focus'] = True
+                return key
+            # everything outside the focus collapses into ext:in / ext:out —
+            # inside a namespace we only care about ITS contents (feedback
+            # 2026-08-31: no context boxes from upper layers).
+            return None
         if len(parts) <= 1:
             return '/'
         return '/' + '/'.join(parts[:depth])
@@ -1049,7 +1945,7 @@ _ARCH_ORDER = ['ext:in', '/map', '/sensing', '/localization', '/perception', '/p
 _CROSSCUT = {'/system', '/adapi', '/default_adapi', '/viz', '/', '/pointcloud_container'}
 
 
-def _components_to_dot(cg, show_infra=False, show_crosscut=False, compact=True, rankdir='TB', splines='spline', ext_split=True, pin_rows=None):
+def _components_to_dot(cg, show_infra=False, show_crosscut=False, compact=True, rankdir='TB', splines='spline', ext_split=True, pin_rows=None, url_of=None):
     def esc(x): return _dot_escape(str(x))
     axis = cg.get('axis', 'ros')
     if axis != 'ros':
@@ -1074,7 +1970,7 @@ def _components_to_dot(cg, show_infra=False, show_crosscut=False, compact=True, 
         if c.get('n_gpu'): extra.append(f"GPU {c['n_gpu']}")
         if c.get('n_internal_edges'): extra.append(f"{c['n_internal_edges']} hops")
         if c.get('n_internal_state'): extra.append(f"{c['n_internal_state']} state reads")
-        head = c['name']
+        head = c.get('short') or c['name']
         if axis == 'os' and c.get('ex_label'):
             head = f"{c['ex_label']}" + (f" · {c['ex_type']}" if c.get('ex_type') else '') + (f"({c['ex_threads']})" if c.get('ex_threads') and str(c['ex_threads']) not in ('1', '') else '')
         if axis == 'gpu' and c.get('n_kernels'):
@@ -1084,7 +1980,13 @@ def _components_to_dot(cg, show_infra=False, show_crosscut=False, compact=True, 
         return "\\n".join(lines)          # escape parts first, then DOT newlines
     for i, c in enumerate(comps):
         ids[c['name']] = f'c{i}'
-        out.append(f'  {ids[c["name"]]} [label="{node_label(c)}"];')
+        extra_attrs = ''
+        if c.get('in_focus') is False:
+            extra_attrs += ' fillcolor="#9fb8bc" color="#7a9296"'   # context box
+        u = url_of(c) if url_of else None
+        if u:
+            extra_attrs += f' URL="{u}" target="_blank"'
+        out.append(f'  {ids[c["name"]]} [label="{node_label(c)}"{extra_attrs}];')
     ext_style = 'fillcolor="#e6e6e6" color="#999999" fontcolor="#333333" shape=ellipse fontsize=10'
     ext_ids = {}                          # (kind, component) -> dot id when ext_split
     if ext_split:
@@ -2043,6 +2945,16 @@ class H(BaseHTTPRequestHandler):
             _serve_graph(self, qs)
         elif path == '/api/gantt':
             _serve_gantt_data(self, qs)
+        elif path == '/drill2':
+            _serve_drill2(self, qs)
+        elif path == '/explore':
+            _serve_explore(self, qs)
+        elif path.startswith('/dag-out/'):
+            fn = os.path.basename(path[len('/dag-out/'):])
+            _serve_file(self, os.path.join(HERE, 'dag_out', fn),
+                        'image/svg+xml' if fn.endswith('.svg') else 'text/plain; charset=utf-8')
+        elif path == '/api/service-links':
+            _serve_service_links(self, qs)
         elif path == '/api/causal':
             _serve_causal(self, qs)
         elif path == '/api/taskset':

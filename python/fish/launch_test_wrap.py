@@ -19,8 +19,13 @@ import sys
 def main() -> int:
     # Install Node.execute + ComposableNodeContainer.execute monkey-patches
     # using the same logic the ros2 launch flow uses.
-    from fish.launch_wrap import install_patches
-    install_patches()
+    import os
+    if os.environ.get("FISH_NSYS_DISABLE", "").lower() in ("1", "true", "yes"):
+        # lttng-only measurement mode: LTTng untouched, no nsys wrapping
+        print("[FISH] launch_test_wrap: FISH_NSYS_DISABLE set — containers NOT nsys-wrapped")
+    else:
+        from fish.launch_wrap import install_patches
+        install_patches()
 
     # Hand off to the real launch_test CLI entry. launch_testing internally
     # constructs a launch.LaunchService — the same engine ros2 launch uses —

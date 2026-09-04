@@ -1,0 +1,25 @@
+# Autoware FISH overhead pair — 2026-08-30 (run 3, overhead_20260830_223727)
+# Script: scripts/autoware_runs/run_overhead_pair.sh, analyzer: analyze_overhead.py
+# traced = full FISH (LTTng per_instance + CUPTI + nsys), baseline = no FISH.
+# Probes identical both sides. Metrics = Autoware's own /diagnostics measurements.
+#
+# metric                       baseline   traced    delta
+# CPU cores (busiest 60 s)        4.32      7.79    +80%   (incl. FISH's own procs)
+# objects rate [Hz]               9.74      9.71    -0.3%
+# obstacle pc rate [Hz]           9.84      8.96    -9%
+# tsm violations (post-init)      0         0       none
+# concat processing [ms]          9.67     17.76    +84%   (highest-event-rate node)
+# centerpoint GPU proc [ms]      23.09     24.83    +7.6%
+# Total Latency [ms]            382.81    423.11    +10.5% (threshold 1000 — never violated)
+#   multi_object_tracker [ms]   131.68    201.08    +53%
+# trace: 5 092 734 events, 0 discarded, 396 MB session (fish_20260830_203731)
+#
+# Function intact: 0 topic_state_monitor violations, rates within thresholds.
+# hz-probe cross-check (pilot): kinematic_state + objects identical both sides;
+#   pointcloud probe delivery degraded under trace load (4.92->3.71) while the
+#   internal tsm rate only -9% -> external hz probes dropped from the protocol
+#   (diag-only from now on). Pilot with hz: overhead_20260830_222059 + _223727.
+# Known quirk: traced-side probe echo/hz loops die at FISH auto-stop (~replay
+#   end) — replay window fully covered; cause not yet chased.
+# Caveats: n=1 per side; per_instance = most expensive LTTng mode; three-mode
+#   split (baseline / lttng-only / lttng+nsys) comes with the Isaac campaign.

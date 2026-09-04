@@ -34,7 +34,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -94,7 +94,12 @@ def gather_host_info() -> dict:
 def session_start_ts(session_dir: str, tz_name: str) -> datetime:
     """Derive the trace date from the session dir basename.
 
-    Convention: fish_YYYYMMDD_HHMMSS → tz-aware datetime at midnight that day.
+    Convention: fish_YYYYMMDD_HHMMSS. The name is written by the FISH wrapper
+    INSIDE the container, whose clock is UTC — so parse it as UTC and convert
+    to tz. Parsing it as local time anchored ros2_trace timestamps a full day
+    early whenever the UTC→local conversion crosses midnight (unet nsys_1,
+    2026-08-30 22:48 UTC = 00:48 next day CEST: spans landed 24 h before the
+    nsys rows and gpu_submitter_cbs came out empty).
     """
     name = os.path.basename(session_dir.rstrip("/"))
     m = re.search(r"(\d{8})_(\d{6})", name)
@@ -102,7 +107,8 @@ def session_start_ts(session_dir: str, tz_name: str) -> datetime:
     if m:
         d, t = m.group(1), m.group(2)
         return datetime(int(d[0:4]), int(d[4:6]), int(d[6:8]),
-                        int(t[0:2]), int(t[2:4]), int(t[4:6]), tzinfo=tz)
+                        int(t[0:2]), int(t[2:4]), int(t[4:6]),
+                        tzinfo=ZoneInfo("UTC")).astimezone(tz)
     return datetime.now(tz)
 
 
@@ -520,7 +526,18 @@ def _parse_trace_line(line: str, trace_date: datetime) -> tuple | None:
     hh, mm, ss = int(hms[0:2]), int(hms[3:5]), int(hms[6:8])
     nanos = int(hms[9:])
 
-    ts_sec = trace_date.replace(hour=hh, minute=mm, second=ss, microsecond=0)
+    # babeltrace prints local time-of-day only; the date comes from trace_date.
+    # If the session runs across local midnight the time-of-day wraps — detect
+    # the backwards jump (>12 h) and advance the date. State lives on the
+    # function object (single-threaded streaming loop).
+    day_sec = hh * 3600 + mm * 60 + ss
+    st = _parse_trace_line._roll
+    if st["last"] is not None and day_sec < st["last"] - 43200:
+        st["extra_days"] += 1
+    st["last"] = day_sec
+    base = trace_date + timedelta(days=st["extra_days"])
+
+    ts_sec = base.replace(hour=hh, minute=mm, second=ss, microsecond=0)
     ts_ns = int(ts_sec.timestamp()) * 1_000_000_000 + nanos
 
     return (
@@ -536,6 +553,7 @@ def _parse_trace_line(line: str, trace_date: datetime) -> tuple | None:
 
 
 def ingest_ros2_trace(session_id: str, session_dir: str, trace_date: datetime):
+    _parse_trace_line._roll = {"last": None, "extra_days": 0}
     trace_root = os.path.join(session_dir, "ros2")
     if not os.path.isdir(trace_root):
         log("  ros2_trace: ros2/ missing, skip")
@@ -1306,6 +1324,25 @@ def ingest_session(session_dir: str, *,
             end_ts_ns=row["e"],
         )
 
+    # Time-base cross-check: ros2_trace (babeltrace local time-of-day + date
+    # from the session name) vs cuda_runtime (nsys absolute epoch). A
+    # date-anchor bug puts them a whole day apart while everything else looks
+    # fine (2026-08-31: UTC session name crossing local midnight → ros2 spans
+    # 24 h early, empty gpu_submitter_cbs). Loud warning, not fatal: sessions
+    # without nsys have nothing to compare.
+    cu = pg_store.fetch_one(
+        "SELECT min(ts_ns) AS s FROM cuda_runtime WHERE session_id = %s",
+        (session_id,),
+    )
+    if row and row["s"] and cu and cu["s"]:
+        skew_s = abs(int(cu["s"]) - int(row["s"])) / 1e9
+        if skew_s > 600:
+            log(f"  *** TIME-BASE MISMATCH: ros2_trace and cuda_runtime start "
+                f"{skew_s/3600:.2f} h apart — date-anchor bug? "
+                f"(ros2 min={row['s']}, cuda min={cu['s']}) ***")
+        else:
+            log(f"  time-base check OK: ros2↔cuda skew {skew_s:.1f} s")
+
     if errors:
         log(f"DONE WITH ERRORS: {len(errors)}")
         for e in errors:
@@ -1334,3 +1371,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+_parse_trace_line._roll = {"last": None, "extra_days": 0}

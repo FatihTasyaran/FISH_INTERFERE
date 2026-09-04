@@ -100,7 +100,9 @@ function onPick(){
   const q = document.getElementById('quick'); q.innerHTML = '';
   if (s){
     const sid = encodeURIComponent(s.session_id), sc = encodeURIComponent(s.scope || '__main__');
-    [['components', `${VIZ}/components?session_id=${sid}&scope=${sc}`],
+    [['drill-down-2', `${VIZ}/drill2?session_id=${sid}&scope=${sc}`],
+     ['explore', `${VIZ}/explore?session_id=${sid}&scope=${sc}`],
+     ['components', `${VIZ}/components?session_id=${sid}&scope=${sc}`],
      ['fish tasks', `${VIZ}/wcc?session_id=${sid}&scope=${sc}`],
      ['gantt', `${VIZ}/gantt-tid?session_id=${sid}&scope=${sc}`],
      ['cb-stats', `${VIZ}/cb-stats?session_id=${sid}&scope=${sc}`],

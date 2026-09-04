@@ -12,12 +12,22 @@
   #toolbar .sep { width: 1px; height: 20px; background: #ddd; }
   #stats { color: #666; font-size: 11px; margin-left: auto; }
   #trace-status { font-size: 11px; color: #c0392b; font-weight: 600; padding: 2px 8px; background: #fdedec; border: 1px solid #f5b7b1; border-radius: 3px; display: none; }
-  #legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 12px; background: #f7f7f7; border-bottom: 1px solid #ddd; font-size: 11px; max-height: 50px; overflow-y: auto; }
-  #legend .swatch { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 3px; background: #fff; border: 1px solid #ddd; cursor: pointer; }
-  #legend .swatch .dot { width: 10px; height: 10px; border-radius: 2px; }
-  #legend .swatch.muted { opacity: 0.35; }
+  /* Connections panel (replaces the old per-node mute chips, 2026-08-31):
+     left = callbacks sorted by up+down connection count (scrollable),
+     right = arrow-drawing mode radios for the selected callbacks. */
+  #conn-panel { display: flex; background: #f7f7f7; border-bottom: 1px solid #ddd; font-size: 11px; height: 96px; }
+  #conn-list { flex: 1; overflow-y: auto; padding: 3px 8px; }
+  #conn-list .crow { display: flex; align-items: center; gap: 5px; padding: 1px 5px; border-radius: 3px; cursor: pointer; white-space: nowrap; }
+  #conn-list .crow:hover { background: #eef5fc; }
+  #conn-list .crow.on { background: #d9ebf9; font-weight: 600; }
+  #conn-list .dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  #conn-list .cname { overflow: hidden; text-overflow: ellipsis; }
+  #conn-list .cbadge { margin-left: auto; color: #666; padding-left: 8px; }
+  #conn-ctl { width: 230px; border-left: 1px solid #ddd; padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; }
+  #conn-ctl b { font-size: 11px; }
+  #conn-ctl label { cursor: pointer; }
   /* Two-pane layout: collapsible layer tree on the left, gantt on the right. */
-  #main { display: flex; height: calc(100vh - 90px); }
+  #main { display: flex; height: calc(100vh - 138px); }
   #layer-tree {
     width: 260px; min-width: 100px; max-width: 50vw;
     border-right: 1px solid #ddd; background: #fcfcfc;
@@ -68,7 +78,9 @@
   .axis text { fill: #555; font-size: 10px; }
   .bar { stroke: #fff; stroke-width: 0.3; cursor: pointer; }
   .bar:hover { stroke: #000; stroke-width: 1; }
-  .bar.dim { opacity: 0.08; }
+  .bar.dim { opacity: 0.35; }
+  .bar.unsel { opacity: 0.55; }
+  .bar.sel { stroke-width: 2.2; }
   /* Trace-mode strokes — must be defined BEFORE .bar.gpu so that, when a bar
      has BOTH the trace class and the gpu class, the gpu border still wins
      (same specificity → later rule wins) */
@@ -80,6 +92,7 @@
   .causal-arrow { fill: none; pointer-events: none; }
   .causal-arrow.down { stroke: #2980b9; stroke-opacity: 0.85; }
   .causal-arrow.up   { stroke: #27ae60; stroke-opacity: 0.85; }
+  .causal-arrow.srv  { stroke: #8e44ad; stroke-dasharray: 5,3; }
   /* Hyperperiod overlay — vertical guide lines anchored at first tmr firing.
      - .hp-tmr     : per-EX LCM of timer-only periods
      - .hp-session : application-wide LCM */
@@ -123,7 +136,15 @@
   <span style="color:#888">scroll = zoom · drag = pan · click bar = trace</span>
   <span id="stats"></span>
 </div>
-<div id="legend"></div>
+<div id="conn-panel">
+  <div id="conn-list"></div>
+  <div id="conn-ctl">
+    <b>up/down arrows</b>
+    <label><input type="radio" name="connmode" value="off" checked> off</label>
+    <label><input type="radio" name="connmode" value="first"> first period — all arrows</label>
+    <label><input type="radio" name="connmode" value="all"> all periods — all arrows</label>
+  </div>
+</div>
 <div id="main">
   <div id="layer-tree">
     <div class="header">
@@ -221,6 +242,43 @@ function render(raw, causal) {
   for (const [tp, lst] of Object.entries(causal.subs_by_topic || {})) {
     subsByTopic.set(tp, new Set(lst));
   }
+  // service-client calls: [(ts, vtid, service)] + service → handler cb_addrs
+  const svcEvents = (causal.cli_calls || []).map(c => ({
+    ts: c[0] - t0_min, ts_abs: c[0], vtid: c[1], service: c[2],
+  })).sort((a, b) => a.ts - b.ts);
+  const srvByService = new Map();
+  for (const [sv, lst] of Object.entries(causal.srv_by_service || {})) {
+    srvByService.set(sv, new Set(lst));
+  }
+  // registration-time guard: cb → creation ts (rel ns); pairing skips any
+  // event that predates the target callback's registration (no fabricated
+  // arrows into late-joining subscribers — feedback 2026-08-31).
+  const cbCreated = new Map();
+  for (const [cb, ts] of Object.entries(causal.cb_created || {})) cbCreated.set(cb, ts - t0_min);
+  const bornBefore = (cb, ts) => {
+    const c = cbCreated.get(cb);
+    return c === undefined || c <= ts;
+  };
+  const servicesOfHandler = new Map();   // handler cb → Set<service>
+  for (const [sv, cbs] of srvByService) for (const cb of cbs) {
+    if (!servicesOfHandler.has(cb)) servicesOfHandler.set(cb, new Set());
+    servicesOfHandler.get(cb).add(sv);
+  }
+  const svcByVtid = new Map();
+  for (const ev of svcEvents) {
+    if (!svcByVtid.has(ev.vtid)) svcByVtid.set(ev.vtid, []);
+    svcByVtid.get(ev.vtid).push(ev);
+  }
+  function svcEventsWithinSpan(s) {
+    const arr = svcByVtid.get(s.vtid);
+    if (!arr) return [];
+    const out = [];
+    for (const ev of arr) {
+      if (ev.ts >= s.t0 && ev.ts <= s.t1) out.push(ev);
+      else if (ev.ts > s.t1) break;
+    }
+    return out;
+  }
 
   // Spans sorted by start within each vtid (for "next callback start ≥ t" lookups)
   const spansByVtid = new Map();
@@ -298,10 +356,25 @@ function render(raw, causal) {
           const subs = subsByTopic.get(ev.topic);
           if (!subs) continue;
           for (const cb of subs) {
+            if (!bornBefore(cb, ev.ts)) continue;
             const next = nextSpanByCb(cb, ev.ts);
             if (next && !visited.has(next.id)) {
               visited.set(next.id, d + 1);
               edges.push({src: cur, dst: next, topic: ev.topic, ev_ts: ev.ts});
+              q.push({s: next, d: d + 1});
+            }
+          }
+        }
+        // service calls issued inside this span → the handler's next execution
+        for (const ev of svcEventsWithinSpan(cur)) {
+          const handlers = srvByService.get(ev.service);
+          if (!handlers) continue;
+          for (const cb of handlers) {
+            if (!bornBefore(cb, ev.ts)) continue;
+            const next = nextSpanByCb(cb, ev.ts);
+            if (next && !visited.has(next.id)) {
+              visited.set(next.id, d + 1);
+              edges.push({src: cur, dst: next, topic: ev.service, ev_ts: ev.ts, kind: 'srv'});
               q.push({s: next, d: d + 1});
             }
           }
@@ -313,6 +386,7 @@ function render(raw, causal) {
           if (ev.ts >= cur.t0) continue;  // must be before cur starts
           const subs = subsByTopic.get(ev.topic);
           if (!subs || !subs.has(cur.cb_addr)) continue;
+          if (!bornBefore(cur.cb_addr, ev.ts)) continue;
           // Is cur really the FIRST span with this cb_addr after ev.ts?
           const cand = nextSpanByCb(cur.cb_addr, ev.ts);
           if (!cand || cand.id !== cur.id) continue;
@@ -322,6 +396,21 @@ function render(raw, causal) {
             visited.set(pubSpan.id, d + 1);
             edges.push({src: pubSpan, dst: cur, topic: ev.topic, ev_ts: ev.ts});
             q.push({s: pubSpan, d: d + 1});
+          }
+        }
+        const mySvcs = servicesOfHandler.get(cur.cb_addr);
+        if (mySvcs) {
+          for (const ev of svcEvents) {
+            if (ev.ts >= cur.t0 || !mySvcs.has(ev.service)) continue;
+            if (!bornBefore(cur.cb_addr, ev.ts)) continue;
+            const cand = nextSpanByCb(cur.cb_addr, ev.ts);
+            if (!cand || cand.id !== cur.id) continue;
+            const callerSpan = spanAt(ev.vtid, ev.ts);
+            if (callerSpan && !visited.has(callerSpan.id)) {
+              visited.set(callerSpan.id, d + 1);
+              edges.push({src: callerSpan, dst: cur, topic: ev.service, ev_ts: ev.ts, kind: 'srv'});
+              q.push({s: callerSpan, d: d + 1});
+            }
           }
         }
       }
@@ -352,23 +441,151 @@ function render(raw, causal) {
     '#8dd3c7','#ffffb3','#bebada','#80b1d3','#fdb462','#b3de69','#d9d9d9','#bc80bd','#ccebc5','#ffed6f'
   ];
   const colorFor = new Map(nodes.map((n,i) => [n, palette[i % palette.length]]));
-  const muted = new Set();
+  const muted = new Set();   // kept for spansInView(); no UI mutes any more
 
-  const legendEl = document.getElementById('legend');
-  nodes.forEach(n => {
-    const cnt = spans.filter(s => s.node===n).length;
-    const div = document.createElement('div');
-    div.className = 'swatch';
-    div.innerHTML = `<span class="dot" style="background:${colorFor.get(n)}"></span> ${n} (${cnt})`;
-    div.onclick = () => { muted.has(n) ? muted.delete(n) : muted.add(n);
-                          div.classList.toggle('muted'); redrawBars(); };
-    legendEl.appendChild(div);
+  // ---- connections panel: per-callback up/down counts + arrow-mode radios --
+  // down(cb) = arrows leaving cb's spans (each publish × subscriber with a
+  // later span); up(cb) = cb's spans that are the first execution after a
+  // publish on a subscribed topic (the arrow that would be drawn INTO it).
+  const connCounts = new Map();   // cb_addr → {up:Set<channel>, down:Set<channel>}
+  {
+    const bump = (cb, k, ch) => {
+      let c = connCounts.get(cb); if (!c) { c = {up: new Set(), down: new Set()}; connCounts.set(cb, c); }
+      c[k].add(ch);
+    };
+    for (const ev of pubEvents) {
+      const pubSpan = spanAt(ev.vtid, ev.ts);
+      const subs = subsByTopic.get(ev.topic);
+      if (!subs) continue;
+      for (const cb of subs) {
+        if (!bornBefore(cb, ev.ts)) continue;
+        const next = nextSpanByCb(cb, ev.ts);
+        if (!next) continue;
+        if (pubSpan) bump(pubSpan.cb_addr, 'down', ev.topic);
+        bump(cb, 'up', ev.topic);
+      }
+    }
+    for (const ev of svcEvents) {
+      const callerSpan = spanAt(ev.vtid, ev.ts);
+      const handlers = srvByService.get(ev.service);
+      if (!handlers) continue;
+      for (const cb of handlers) {
+        if (!bornBefore(cb, ev.ts)) continue;
+        const next = nextSpanByCb(cb, ev.ts);
+        if (!next) continue;
+        if (callerSpan) bump(callerSpan.cb_addr, 'down', ev.service);
+        bump(cb, 'up', ev.service);
+      }
+    }
+  }
+  const connSel = new Set();      // selected cb_addrs in the list
+  let connMode = 'off';
+  const CONN_ALL_ANCHOR_CAP = 1500;
+
+  function buildConnList() {
+    const el = document.getElementById('conn-list');
+    el.innerHTML = '';
+    const meta = new Map();       // cb_addr → sample span (node/entity label)
+    for (const s of spans) if (!meta.has(s.cb_addr)) meta.set(s.cb_addr, s);
+    const rows = [...connCounts.entries()]
+      .map(([cb, c]) => ({cb, up: c.up.size, down: c.down.size,
+                          total: c.up.size + c.down.size, s: meta.get(cb)}))
+      .filter(r => r.s && r.total > 0)
+      .sort((a, b) => b.total - a.total);
+    for (const r of rows) {
+      const div = document.createElement('div');
+      div.className = 'crow' + (connSel.has(r.cb) ? ' on' : '');
+      div.innerHTML =
+        `<span class="dot" style="background:${colorFor.get(r.s.node)}"></span>` +
+        `<span class="cname" title="${r.s.node} · ${r.s.entity}">${r.s.node} · ${r.s.entity}</span>` +
+        `<span class="cbadge">↑${r.up} ↓${r.down}</span>`;
+      div.onclick = () => {
+        connSel.has(r.cb) ? connSel.delete(r.cb) : connSel.add(r.cb);
+        div.classList.toggle('on');
+        applyConnMenu();
+      };
+      el.appendChild(div);
+    }
+    if (!rows.length) el.innerHTML = '<span style="color:#999">no publish/subscribe connections in trace</span>';
+  }
+
+  // Build a merged traceState from the menu selection so redrawArrows()/
+  // classify() work unchanged. 'first' = BFS (toolbar depth) from each selected
+  // callback's first span; 'all' = depth-1 up/down from EVERY span of the
+  // selected callbacks (anchor count capped for sanity).
+  function applyConnMenu() {
+    if (connMode === 'off' || connSel.size === 0) {
+      traceState = null;
+      traceStatus.style.display = 'none';
+      redrawBars(); redrawArrows();
+      return;
+    }
+    const depth = Math.max(1, +document.getElementById('depth-input').value || 5);
+    const up = {visited: new Map(), edges: []}, down = {visited: new Map(), edges: []};
+    let anchor = null;
+    if (connMode === 'first') {
+      // BFS (toolbar depth) from each selected callback's first execution.
+      const merge = (dst, res) => {
+        for (const [id, d] of res.visited) if (!dst.visited.has(id)) dst.visited.set(id, d);
+        dst.edges.push(...res.edges);
+      };
+      for (const cb of connSel) {
+        let first = null;
+        for (const arr of spansByVtid.values()) for (const s of arr)
+          if (s.cb_addr === cb && (!first || s.t0 < first.t0)) first = s;
+        if (!first) continue;
+        if (!anchor) anchor = first;
+        merge(down, bfs(first, depth, 'down'));
+        merge(up, bfs(first, depth, 'up'));
+      }
+    } else {
+      // ALL periods: every arrow is born from a publish event, so one pass
+      // over pubEvents yields the complete direct up/down edge set for the
+      // selection — no per-span BFS, no anchor cap, no start-of-session bias
+      // (the old capped version clustered all arrows at the first 1500 spans).
+      const allPass = (events, targetsOf, kind) => {
+        for (const ev of events) {
+          const targets = targetsOf(ev);
+          if (!targets) continue;
+          const srcSpan = spanAt(ev.vtid, ev.ts);
+          const label = kind === 'srv' ? ev.service : ev.topic;
+          for (const cb of targets) {
+            if (!bornBefore(cb, ev.ts)) continue;
+            const next = nextSpanByCb(cb, ev.ts);
+            if (!next) continue;
+            if (srcSpan && connSel.has(srcSpan.cb_addr)) {          // arrow OUT of selection
+              down.visited.set(srcSpan.id, 0); down.visited.set(next.id, 1);
+              down.edges.push({src: srcSpan, dst: next, topic: label, ev_ts: ev.ts, kind});
+              if (!anchor) anchor = srcSpan;
+            } else if (connSel.has(cb) && srcSpan) {                 // arrow INTO selection
+              up.visited.set(next.id, 0); up.visited.set(srcSpan.id, 1);
+              up.edges.push({src: srcSpan, dst: next, topic: label, ev_ts: ev.ts, kind});
+              if (!anchor) anchor = next;
+            }
+          }
+        }
+      };
+      allPass(pubEvents, ev => subsByTopic.get(ev.topic), undefined);
+      allPass(svcEvents, ev => srvByService.get(ev.service), 'srv');
+    }
+    traceState = anchor ? {anchor, up, down} : null;
+    traceStatus.style.display = 'inline';
+    const uCh = new Set(up.edges.map(e => e.topic)), dCh = new Set(down.edges.map(e => e.topic));
+    traceStatus.textContent = `menu: ${connSel.size} cb · Comm. Channels ↑${uCh.size} ↓${dCh.size} · ` +
+      `${up.edges.length} up / ${down.edges.length} down arrows` +
+      (connMode === 'first' ? ` · depth ${depth}` : ' · all periods');
+    redrawBars(); redrawArrows();
+  }
+  document.querySelectorAll('input[name=connmode]').forEach(r => r.onchange = () => {
+    connMode = r.value; applyConnMenu();
   });
+  buildConnList();
 
   const svg = d3.select('#chart');
   const tooltip = d3.select('#tooltip');
   const traceStatus = document.getElementById('trace-status');
-  const margin = {top: 30, right: 20, bottom: 10, left: 120};
+  const margin = {top: 30, right: 20, bottom: 10, left: 236};
+  const EXW = 156;  // EX (executor) group column width, left of the cb labels
 
   // render()-scoped maps. gantt-cb keys lanes by cb_addr (not vtid).
   // We still need vtid→pid mapping because bars are filled by their executing
@@ -495,6 +712,19 @@ function render(raw, causal) {
     // ── Color hierarchy ──
     // Executor gets a categorical palette color; each node within that executor
     // gets an HSL-equal-step shade of its executor's color.
+    // Label gutter sized to the LONGEST entity label (feedback 2026-08-31:
+    // labels were clipped against the EX column). Measured once per draw.
+    {
+      const ctx = document.createElement('canvas').getContext('2d');
+      ctx.font = '10px system-ui, sans-serif';
+      let maxW = 60;
+      for (const c of cbInfo.values()) {
+        const t = shortenSymbol(c.symbol) || c.entity || '';
+        const wpx = ctx.measureText(t).width;
+        if (wpx > maxW) maxW = wpx;
+      }
+      margin.left = EXW + Math.ceil(maxW) + 30;   // swatch + paddings
+    }
     const distinctPids = [...new Set(curCbs.map(c => cbInfo.get(c).pid))];
     // Red/pink reserved for GPU-submitter bar stroke (#c0392b) and the "⚡ submits
     // GPU work" badge — so the pid palette must not contain any reddish base.
@@ -569,13 +799,13 @@ function render(raw, causal) {
         .attr('class', i % 2 === 0 ? 'lane-row' : 'lane-row alt');
       // Left margin tint: bigger shade band ("the node color") + thin executor stripe
       gMain.append('rect')
-        .attr('x', 0).attr('y', yScale(cb))
+        .attr('x', EXW).attr('y', yScale(cb))
         .attr('width', 6).attr('height', yScale.bandwidth())
         .attr('fill', exCol);
       gMain.append('rect')
-        .attr('x', 6).attr('y', yScale(cb))
-        .attr('width', margin.left - 24).attr('height', yScale.bandwidth())
-        .attr('fill', ndCol).attr('opacity', 0.45);
+        .attr('x', EXW + 6).attr('y', yScale(cb))
+        .attr('width', margin.left - 24 - EXW).attr('height', yScale.bandwidth())
+        .attr('fill', exCol).attr('opacity', 0.28);   // same executor → same colour
       // cb swatch + lane label
       gMain.append('rect')
         .attr('class', 'cb-swatch')
@@ -605,6 +835,48 @@ function render(raw, causal) {
         })
         .on('mouseleave', () => tooltip.style('display', 'none'));
     });
+
+    // EX (executor) group column — one darker block + centred name per pid
+    // group of cb rows (ported from gantt-tid, 2026-08-31).
+    {
+      let gi = 0;
+      while (gi < curCbs.length) {
+        const pid = cbInfo.get(curCbs[gi]).pid;
+        let gj = gi;
+        while (gj + 1 < curCbs.length && cbInfo.get(curCbs[gj + 1]).pid === pid) gj++;
+        const y0 = yScale(curCbs[gi]);
+        const y1 = yScale(curCbs[gj]) + yScale.bandwidth();
+        const col = d3.color(pidColor(pid)).darker(0.9);
+        gMain.append('rect')
+          .attr('x', 2).attr('y', y0)
+          .attr('width', EXW - 6).attr('height', y1 - y0)
+          .attr('fill', col).attr('opacity', 0.9).attr('rx', 3);
+        const name = cbInfo.get(curCbs[gi]).ex_label || `pid ${pid}`;
+        const short = name.length > 24 ? name.slice(0, 23) + '…' : name;
+        const label = gMain.append('text')
+          .attr('x', 2 + (EXW - 6) / 2).attr('y', (y0 + y1) / 2)
+          .attr('dy', '.35em').attr('text-anchor', 'middle')
+          .attr('fill', '#fff').attr('font-size', '10px').attr('font-weight', 600)
+          .style('pointer-events', 'none')
+          .text(`EX ${short}`);
+        if ((y1 - y0) > 64 && name.length > 24) {
+          label.attr('transform', `rotate(-90 ${2 + (EXW - 6) / 2} ${(y0 + y1) / 2})`)
+               .text(`EX ${name.length > 40 ? name.slice(0, 39) + '…' : name}`);
+        }
+        gi = gj + 1;
+      }
+    }
+
+    // Thin dividers between DIFFERENT NODES within the same executor
+    for (let i = 1; i < curCbs.length; i++) {
+      const A = cbInfo.get(curCbs[i-1]), B = cbInfo.get(curCbs[i]);
+      if (A.pid === B.pid && A.node !== B.node) {
+        const yb = yScale(curCbs[i]) - yScale.step() * yScale.padding() / 2;
+        gMain.append('line')
+          .attr('x1', EXW).attr('x2', w).attr('y1', yb).attr('y2', yb)
+          .attr('stroke', '#777').attr('stroke-width', 0.7).attr('stroke-opacity', 0.55);
+      }
+    }
 
     exBoundaries.forEach(yb => {
       gMain.append('line').attr('class', 'pid-divider')
@@ -713,14 +985,15 @@ function render(raw, causal) {
   }
 
   function classify(s) {
-    // Layer-tree filter/hover takes priority when set (no trace active).
-    // Hover gets first pick because it should always feel responsive.
+    // Layer-tree hover takes priority when set (no trace active). Tree
+    // SELECTION no longer dims: selected spans get an own-colour frame and
+    // the rest recede via .unsel (see redrawBars) — feedback 2026-08-31.
     if (!traceState) {
       if (layerHoverCbs) {
         return layerHoverCbs.has(s.cb_addr) ? null : 'dim';
       }
-      if (layerFilterCbs) {
-        return layerFilterCbs.has(s.cb_addr) ? null : 'dim';
+      if (selUnion.size) {
+        return selUnion.has(s.cb_addr) ? 'sel' : 'unsel';
       }
       return null;
     }
@@ -750,6 +1023,20 @@ function render(raw, causal) {
     }
     return out;
   }
+  // Zoom so [t0,t1] occupies 80 % of the plot width (10 % margin each side).
+  // Used by dblclick on both individual bars and density columns.
+  function zoomToRange(t0, t1) {
+    if (!(t1 > t0)) t1 = t0 + 1;
+    const pad = (t1 - t0) * 0.125;
+    const d0 = t0 - pad, d1 = t1 + pad;
+    const [r0, r1] = xScale.range();
+    let k = (r1 - r0) / (xScale(d1) - xScale(d0));
+    k = Math.max(1, Math.min(100000, k));           // respect scaleExtent
+    const tx = r0 - k * xScale(d0);
+    svg.transition().duration(400)
+       .call(zoom.transform, d3.zoomIdentity.translate(tx, 0).scale(k));
+  }
+
   const MAX_RECTS = 20000;   // above this: density strips per row (see gantt.html)
   function redrawBars() {
     gBars.selectAll('rect').remove();
@@ -773,19 +1060,38 @@ function render(raw, causal) {
       const rects = [];
       for (const [cb, row] of bins) for (const [b, cell] of row) {
         let best = null, bestv = -1; for (const [p, val] of cell.byPid) if (val > bestv) { bestv = val; best = p; }
-        rects.push({cb, b, frac: Math.min(1, cell.busy / bw), n: cell.n, pid: best});
+        rects.push({cb, b, frac: Math.min(1, cell.busy / bw), n: cell.n, pid: best,
+                    busy: cell.busy, byPid: cell.byPid,
+                    gpu: gpuMarkerOn && gpuSubmitterCbs.has(cb),
+                    sel: selUnion.size > 0 && selUnion.has(cb)});
       }
       const xr0 = xZoomed.range()[0];
       gBars.selectAll('rect').data(rects).enter().append('rect')
-        .attr('class', 'bar density')
+        .attr('class', d => 'bar density' + (d.gpu ? ' gpu' : ''))
         .attr('x', d => xr0 + d.b).attr('y', d => yScale(d.cb))
         .attr('width', 1.05).attr('height', yScale.bandwidth())
-        .attr('fill', d => pidColor(d.pid)).attr('opacity', d => 0.25 + 0.75 * d.frac)
-        .on('mousemove', (ev, d) => {
-          tooltip.style('display', 'block').style('left', (ev.clientX + 12) + 'px').style('top', (ev.clientY + 12) + 'px')
-            .html(`<b>density</b> — zoom in for individual executions<br><span class="k">executions in column:</span> ${d.n}<br><span class="k">busy:</span> ${(d.frac*100).toFixed(0)} %<br><span class="k">dominant pid:</span> ${d.pid}`);
+        .attr('fill', d => pidColor(d.pid))
+        .style('stroke', d => (!traceState && d.sel)
+            ? d3.color(pidColor(d.pid)).darker(1.4).formatHex() : null)
+        .attr('opacity', d => {
+          const base = 0.55 + 0.45 * d.frac;
+          return (selUnion.size && !d.sel) ? base * 0.5 : base;
         })
-        .on('mouseleave', () => tooltip.style('display', 'none'));
+        .on('mousemove', (ev, d) => {
+          const rows = [...d.byPid.entries()].sort((a, b) => b[1] - a[1])
+            .map(([p, val]) => `<tr><td style="padding-right:10px">pid ${p} (${labelForPidGlobal(p)})</td>` +
+                 `<td style="text-align:right">${(100 * val / d.busy).toFixed(1)} %</td></tr>`).join('');
+          tooltip.style('display', 'block').style('left', (ev.clientX + 12) + 'px').style('top', (ev.clientY + 12) + 'px')
+            .html(`<b>density</b> — zoom in for individual executions (dblclick: zoom here)<br>` +
+                  `<span class="k">executions:</span> ${d.n} &nbsp; <span class="k">busy:</span> ${(d.frac*100).toFixed(0)} %<br>` +
+                  `<span class="k">window:</span> t₀+${((x0 + d.b*bw)/1e6).toFixed(1)}–${((x0 + (d.b+1)*bw)/1e6).toFixed(1)} ms<br>` +
+                  `<table style="margin-top:4px;border-collapse:collapse">${rows}</table>`);
+        })
+        .on('mouseleave', () => tooltip.style('display', 'none'))
+        .on('dblclick', (ev, d) => {
+          ev.stopPropagation();
+          zoomToRange(x0 + d.b * bw, x0 + (d.b + 1) * bw);
+        });
       if (stat) stat.textContent = `${spans.length} spans · density view (${inView.length} in window, zoom in for bars)`;
       return;
     }
@@ -808,6 +1114,13 @@ function render(raw, causal) {
         .attr('height', yScale.bandwidth())
         // bar fill = pid color of the vtid that ran this execution
         .attr('fill', s => pidColor(vtidToPid.get(s.vtid) || s.pid))
+        .style('stroke', s => (!traceState && selUnion.has(s.cb_addr))
+            ? d3.color(pidColor(vtidToPid.get(s.vtid) || s.pid)).darker(1.4).formatHex() : null)
+        .on('dblclick', (ev, s) => {
+          ev.stopPropagation();
+          if (_barClickTimer) { clearTimeout(_barClickTimer); _barClickTimer = null; }
+          zoomToRange(s.t0, s.t1);
+        })
         .on('mousemove', (ev, s) => {
           let causal = '';
           if (traceState && s.id === traceState.anchor.id) {
@@ -820,13 +1133,20 @@ function render(raw, causal) {
                   `<span class="k">ran on:</span> vtid <b>${s.vtid}</b> (pid ${s.pid}, ${labelForPidGlobal(s.pid)})<br>` +
                   `<span class="k">node:</span> ${s.node}<br>` +
                   `<span class="k">duration:</span> ${((s.t1-s.t0)/1e3).toFixed(1)} μs<br>` +
+                  `<span class="k">start:</span> t₀+${(s.t0/1e6).toFixed(3)} ms &nbsp; ` +
+                  `<span class="k">end:</span> t₀+${(s.t1/1e6).toFixed(3)} ms<br>` +
                   `<span class="k">cb_addr:</span> ${s.cb_addr}` +
                   (gpuSubmitterCbs.has(s.cb_addr) ? '<br><span style="color:#e74c3c">⚡ submits GPU work</span>' : '') +
                   causal);
         })
         .on('mouseleave', () => tooltip.style('display', 'none'))
-        .on('click', (ev, s) => { ev.stopPropagation(); startTrace(s); });
+        .on('click', (ev, s) => {
+          ev.stopPropagation();
+          if (_barClickTimer) clearTimeout(_barClickTimer);
+          _barClickTimer = setTimeout(() => { _barClickTimer = null; startTrace(s); }, 260);
+        });
   }
+  let _barClickTimer = null;
 
   function redrawArrows() {
     if (!gArrows) return;
@@ -834,7 +1154,7 @@ function render(raw, causal) {
     if (!traceState) return;
     const drawEdges = (edges, cls) => {
       gArrows.selectAll(null).data(edges).enter().append('path')
-        .attr('class', `causal-arrow ${cls}`)
+        .attr('class', e => `causal-arrow ${cls}` + (e.kind === 'srv' ? ' srv' : ''))
         .attr('d', e => {
           const x1 = xZoomed(e.src.t1);
           const y1 = yScale(e.src.cb_addr) + yScale.bandwidth()/2;
@@ -866,12 +1186,18 @@ function render(raw, causal) {
     const up   = bfs(s, depth, 'up');
     traceState = {anchor: s, down, up};
     traceStatus.style.display = 'inline-block';
+    const dCh = new Set(down.edges.map(e => e.topic)), uCh = new Set(up.edges.map(e => e.topic));
     traceStatus.textContent =
-      `TRACE: ${s.node}::${s.entity} (vtid ${s.vtid}) — ↓${down.visited.size-1} ↑${up.visited.size-1}, depth ${depth}`;
+      `Comm. Channels: ${s.node}::${s.entity} (vtid ${s.vtid}) — ↓${dCh.size} ↑${uCh.size}, depth ${depth}`;
     redrawBars(); redrawArrows();
   }
   function clearTrace() {
     traceState = null;
+    // also reset the connections menu so ✕ clear really clears everything
+    connMode = 'off'; connSel.clear();
+    const off = document.querySelector('input[name=connmode][value=off]');
+    if (off) off.checked = true;
+    document.querySelectorAll('#conn-list .crow.on').forEach(x => x.classList.remove('on'));
     traceStatus.style.display = 'none';
     redrawBars(); redrawArrows();
   }
@@ -949,11 +1275,22 @@ function render(raw, causal) {
   hpSessLabel.onmouseleave = _hideTooltip;
   document.getElementById('trace-clear').onclick = clearTrace;
   document.getElementById('zoom-reset').onclick = () => svg.transition().call(zoom.transform, d3.zoomIdentity);
-  document.getElementById('depth-input').onchange = () => { if (traceState) startTrace(traceState.anchor); };
+  document.getElementById('depth-input').onchange = () => {
+    if (connMode !== 'off' && connSel.size) applyConnMenu();
+    else if (traceState) startTrace(traceState.anchor);
+  };
   document.addEventListener('keydown', ev => { if (ev.key === 'Escape') { clearTrace(); clearLayerFilter(); }});
 
   // ===== Layer tree (L0 EX → L1 N → L2 E → L3 F) =====
-  let layerFilterKey = null, layerFilterCbs = null, layerHoverCbs = null;
+  // Multi-select: key → Set<cb_addr>; selUnion is the flattened set used by
+  // classify()/redrawBars. (Replaces the old single layerFilterKey/Cbs.)
+  const selKeys = new Map();
+  let selUnion = new Set();
+  let layerHoverCbs = null;
+  function rebuildSelUnion() {
+    selUnion = new Set();
+    for (const cbs of selKeys.values()) for (const cb of cbs) selUnion.add(cb);
+  }
 
   // Heuristic shortener for demangled C++ / Python callback symbols.
   // The raw "symbol" field is huge (std::_Bind<void (*(...))(...)>, etc.).
@@ -967,6 +1304,33 @@ function render(raw, causal) {
     if (sym.includes('<locals>')) {
       const parts = sym.split('<locals>')[0].split('.').filter(Boolean);
       return parts.slice(-2).join('.') + '.<locals>';
+    }
+    // Python: functools.partial(<bound method Class.method of ...>)
+    const bm = /<bound method ([A-Za-z_][\w.]*)/.exec(sym);
+    if (bm) {
+      const segs = bm[1].split('.');
+      return segs.slice(-2).join('.');
+    }
+    // Python dotted path (no C++ ::): rclpy.parameter_service.ParameterService._cb
+    if (!sym.includes('::') && /^[A-Za-z_][\w.]*$/.test(sym.trim())) {
+      const segs = sym.trim().split('.');
+      return segs.slice(-2).join('.');
+    }
+    // std::bind member-pointer: the demangled TYPE names the class and the
+    // signature but NOT the method (method names don't exist in the type
+    // system) — best extractable label is Class::bind(FirstArgType).
+    // e.g. std::_Bind<void (ns::NegotiatedPublisher::*(...))(ns::msg::SupportedTypes_<...> const&, ...)>
+    const mp = /\(([A-Za-z_][A-Za-z0-9_:]*)::\*\(/.exec(sym);
+    if (mp) {
+      const cls = mp[1].split('::').pop();
+      // first parameter type of the bound signature, if any
+      const sig = /\)\)?\(([A-Za-z_][A-Za-z0-9_:]*)/.exec(sym.slice(mp.index));
+      let arg = '';
+      if (sig) {
+        const a = sig[1].split('::').pop().replace(/_$/, '');
+        if (a && !/^(void|std)$/.test(a)) arg = a;
+      }
+      return arg ? `${cls}::bind(${arg})` : `${cls}::bind()`;
     }
     // Find ALL Namespace::Class::method-ish patterns (3+ identifiers separated by ::)
     const cppRe = /([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*){1,3})\s*[\(<]/g;
@@ -982,7 +1346,10 @@ function render(raw, causal) {
         !s.startsWith('rclcpp_action::') &&
         !s.startsWith('rclcpp_components::')
       );
-      const pick = meaningful.length ? meaningful[meaningful.length-1] : matches[matches.length-1];
+      // std-only matches carry no information — let the caller fall back to
+      // the entity label instead of showing std::_Bind / std::allocator.
+      if (!meaningful.length) return '';
+      const pick = meaningful[meaningful.length-1];
       // Trim to last 2 components if too long
       const segs = pick.split('::');
       return segs.length > 2 ? segs.slice(-2).join('::') : pick;
@@ -1049,24 +1416,26 @@ function render(raw, causal) {
         };
       }
       li.onmouseenter = (ev) => { ev.stopPropagation(); layerHoverCbs = node.cbs; redrawBars(); };
+      // Multi-select: click toggles this key in/out of the selection;
+      // any number of EX/N/E/F rows can be selected together.
       row.onclick = (ev) => {
         ev.stopPropagation();
-        document.querySelectorAll('#layer-tree li.active').forEach(x => x.classList.remove('active'));
-        if (layerFilterKey === node.key) {
-          clearLayerFilter();
+        if (selKeys.has(node.key)) {
+          selKeys.delete(node.key);
+          li.classList.remove('active');
         } else {
+          selKeys.set(node.key, node.cbs);
           li.classList.add('active');
-          layerFilterKey = node.key;
-          layerFilterCbs = node.cbs;
-          redrawBars();
         }
+        rebuildSelUnion();
+        redrawBars();
       };
       parentEl.appendChild(li);
     }
   }
 
   function clearLayerFilter() {
-    layerFilterKey = null; layerFilterCbs = null; layerHoverCbs = null;
+    selKeys.clear(); rebuildSelUnion(); layerHoverCbs = null;
     document.querySelectorAll('#layer-tree li.active').forEach(x => x.classList.remove('active'));
     redrawBars();
   }

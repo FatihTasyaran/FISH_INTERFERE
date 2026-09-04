@@ -321,6 +321,47 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
     # event in the trace (for completeness + receive/publish attribution)
     # but skip creating a Waitable entity for it, otherwise each intra-proc
     # sub would emit a singleton "waitable@xxxx" node into the FT graph.
+    # --- what does each waitable SERVE? (T1, 2026-08-31)
+    # A Waitable is a real schedulable entity, but "waitable@addr" hides whose
+    # work it dispatches. Associations derivable from the trace:
+    #   * NITROS pub-side: fish_nitros_pub_link carries waitable_handle +
+    #     publisher_handle + GXF component/entity names; publisher_handle →
+    #     topic via rcl_publisher_init.
+    #   * rclcpp IPC: fish_rclcpp_ipb_to_subscription (waitable → subscription)
+    #     — those waitables are skipped as entities (node_handle=0x0), but if
+    #     a future overlay emits the event for entity-worthy waitables the map
+    #     is ready.
+    pub_handle_topic = {}
+    for d in _all_events(session_id, "ros2:rcl_publisher_init"):
+        p = d["payload"]
+        if p.get("publisher_handle") and p.get("topic_name"):
+            pub_handle_topic[p["publisher_handle"]] = p["topic_name"]
+    waitable_serves: dict[str, dict] = {}   # waitable ptr → {label_suffix, attrs}
+    for d in _all_events(session_id, "ros2:fish_nitros_pub_link"):
+        p = d["payload"]
+        wp = p.get("waitable_handle")
+        if not wp:
+            continue
+        topic = pub_handle_topic.get(p.get("publisher_handle"))
+        gxf = "/".join(x for x in (p.get("component_name"), p.get("entity_name")) if x)
+        waitable_serves[wp] = {
+            "suffix": f"→pub:{topic}" if topic else (f":{gxf}" if gxf else ""),
+            "serves_topic": topic, "serves_role": "pub",
+            "gxf_entity": gxf or None,
+        }
+    for d in _all_events(session_id, "ros2:fish_rclcpp_ipb_to_subscription"):
+        p = d["payload"]
+        wp = p.get("waitable") or p.get("ipb")
+        sub = p.get("subscription_topic") or p.get("topic_name")
+        if wp and wp not in waitable_serves:
+            waitable_serves[wp] = {
+                "suffix": f"→sub:{sub}" if sub else "→sub", "serves_topic": sub,
+                "serves_role": "sub", "gxf_entity": None,
+            }
+    if waitable_serves:
+        log(f"  Waitables: {len(waitable_serves)} association(s) "
+            f"(NITROS pub_link / ipb_to_subscription) → labels enriched")
+
     waitables_by_node: dict[str, list[tuple[str, str]]] = {}
     intra_proc_waitables_skipped = 0
     for d in _all_events(session_id, "ros2:fish_rclcpp_waitable_init"):
@@ -338,6 +379,21 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
         log(f"  Waitables: {intra_proc_waitables_skipped} intra-proc "
             f"(IntraProcessManager-registered) — no standalone entity; bound to "
             f"their parent sub entity/F in identify_callbacks via rclcpp_subscription_init")
+
+    # Client registrations — rcl_client_init, indexed by owning node_handle.
+    # Clients are the 5th AnyExecutable kind: the executor dispatches
+    # execute_client() when a response arrives, and our executor.cpp wrap
+    # (install_fish_tracepoints) emits callback_start/end with the rcl client
+    # handle as cb-id — the same address recorded here, so no extra
+    # registration event is needed.
+    clients_by_node: dict[str, list[tuple[str, str]]] = {}
+    for d in _all_events(session_id, "ros2:rcl_client_init"):
+        p = d["payload"]
+        ch, nh = p.get("client_handle"), p.get("node_handle")
+        srv = p.get("service_name", "?")
+        if not ch or not nh:
+            continue
+        clients_by_node.setdefault(nh, []).append((ch, srv))
 
     for node_id, node in nodes.items():
         full_name = node.A_v["full_name"]
@@ -412,8 +468,13 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
 
         for waitable_ptr, cb_group in waitables_by_node.get(node_handle, []):
             short = waitable_ptr[-6:] if waitable_ptr and waitable_ptr.startswith("0x") else waitable_ptr
+            srv = waitable_serves.get(waitable_ptr)
+            wl = f"waitable{srv['suffix']}" if srv and srv.get("suffix") else f"waitable@{short}"
             e_A = {
-                "label": f"waitable@{short}", "etype": "waitable",
+                "label": wl, "etype": "waitable",
+                "serves_topic": (srv or {}).get("serves_topic"),
+                "serves_role": (srv or {}).get("serves_role"),
+                "gxf_entity": (srv or {}).get("gxf_entity"),
                 # The Waitable's `this` ptr IS the cb_addr — no resolution
                 # needed. Executor::execute_waitable wraps dispatch with
                 # callback_start(this), so any publish_link / client_link
@@ -428,11 +489,28 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
             node.Z_v.append(e.id_v)
             entities[e.id_v] = e
 
+        for client_handle, srv_name in clients_by_node.get(node_handle, []):
+            if SKIP_PARAMSERVICE and _is_param_service(srv_name):
+                continue
+            e_A = {
+                "label": srv_name, "etype": "cli",
+                # rcl client handle IS the cb_addr: the executor.cpp
+                # execute_client wrap emits callback_start/end with it.
+                "cb_addr": client_handle,
+                "client_handle": client_handle,
+                "aspects": [{"aspect": "pub", "service": srv_name},
+                            {"aspect": "sub", "service": srv_name}],
+            }
+            e = FishVertex("E", next(vertex_counter), e_A, [], 2)
+            node.Z_v.append(e.id_v)
+            entities[e.id_v] = e
+
     log(f"Entities: {len(entities)} "
         f"(sub={sum(1 for e in entities.values() if e.A_v['etype']=='sub')}, "
         f"serv={sum(1 for e in entities.values() if e.A_v['etype']=='serv')}, "
         f"tmr={sum(1 for e in entities.values() if e.A_v['etype']=='tmr')}, "
-        f"waitable={sum(1 for e in entities.values() if e.A_v['etype']=='waitable')})")
+        f"waitable={sum(1 for e in entities.values() if e.A_v['etype']=='waitable')}, "
+        f"cli={sum(1 for e in entities.values() if e.A_v['etype']=='cli')})")
     return entities
 
 
@@ -714,6 +792,14 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                 if wp:
                     sym = symbol_by_cb.get(wp) or entity.A_v["label"]
                     cb_info = {"callback": wp, "symbol": sym}
+            elif etype == "cli":
+                # The rcl client handle is the cb_addr (executor.cpp
+                # execute_client wrap). No callback_register fires for the
+                # response path — label from the service name.
+                ch = entity.A_v.get("client_handle")
+                if ch:
+                    cb_info = {"callback": ch,
+                               "symbol": f"client:{entity.A_v['label']}"}
 
             if cb_info:
                 entity.A_v["cb_addr"] = cb_info["callback"]

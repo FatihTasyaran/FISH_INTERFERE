@@ -1,0 +1,52 @@
+# Isaac overhead kampanya notlari (2026-08-31, devam)
+- Gece kosusu ~3h'te harness tarafindan kesildi (unet + tensor_rt TAM SET
+  temiz: 10/10 kosu rc=0 + rapor). runs.csv append-mode oldugundan kampanya
+  ayni DEST_BASE'e devam ediyor; kalan bench'ler 2-3'luk parcalar halinde.
+- TRITON KAMPANYADAN CIKARILDI: "unable to find backend library for backend
+  'tensorrt'" — Triton server'in tensorrt backend'i fish-r2b-triton
+  image'larinin HICBIRINDE yok (find / libtriton_tensorrt* bos). Haziran
+  A2'deki "%100 match" YAPISAL dogrulamaydi (E/F sayimi); inference hicbir
+  zaman calismamis (v3 measure rc zaten 1'di — v3 raporu benchmark
+  tamamlanmasini gerektirmiyordu). Overhead raporu icin benchmark'in
+  TAMAMLANMASI gerekir -> triton veri uretemez. Fix = image'a Triton
+  tensorrt backend kurulumu (agir, ayri is; istenirse sonra).
+- detectnet/rtdetr kampanyada birakildi — haziranda "partial" idiler,
+  rapor uretemezlerse runs.csv'de rc=1 ile kendini belgeler (~15 dk maliyet).
+- ESS: warmup/kosular hizli fail — trtexec, ess_plugins.so'yu yukleyemiyor:
+  "libcudnn.so.9: cannot open shared object file". cudnn9 HICBIR ess
+  varyantinda yok -> haziran ess "%100"u de (triton gibi) yapisal
+  dogrulamaydi, inference calismamis. Fix: fish-r2b-ess-wip2 =
+  ess-wip + libcudnn9-cuda-13 (apt, 9.25.1.1) bake edildi; kampanya
+  bitince IMG override ile ess tam seti yeniden kosulacak.
+  (Kampanya scripti kosarken edit edilmedi — bash lazy-read riski.)
+- segformer lttng#3: rc=139 (SIGSEGV) erken cokme, 20829 event'te (normal ~1.5M);
+  ayni modun #1-#2'si ve tum base'ler temiz -> flaky. Telafi listesine eklendi
+  (kampanya sonunda 1 rerun). Log'da FastRTPS SHM port-lock hatalari var ama
+  bunlar Isaac container'larinda bilinen gurultu, nedensellik belirsiz.
+TELAFI LISTESI (kampanya sonunda):
+  1. ess tam seti (fish-r2b-ess-wip2 + IMG override)
+  2. segformer lttng x1 rerun (lttng_3 dizinini arsivleyip)
+- 2026-08-31 ~11:00 BELLEK OLAYI: detectnet warmup container'i orphan kaldi
+  (timeout docker CLIENT'i oldurur, container'i degil; --rm de client olunce
+  temizlemiyor) -> 2 saatte launch_test 23.7G RSS + 63G swap doldu, host
+  kilitlenme esigine geldi; ayrica --net host + GPU tutup base_1'i asili
+  birakti. Mudahale: fish-r2b-detectnet-wip tag'i gecici olarak
+  -wip-keep'e park edildi (katmanlar korunuyor, kampanya sonrasi geri
+  tag'lenecek), orphan container kill -> bellek 29G->2.5G.
+  DERS: v4'te timeout'lu docker run'lara --name + drivera per-run cleanup
+  eklenmeli (bir sonraki kampanya oncesi); detectnet/triton zaten rapor
+  uretemez (Triton backend yok), kalan kosulari rc=125 ile hizli dusuyor.
+# KAMPANYA KAPANIS (2026-08-31 16:20)
+- Isaac: 13 bench tam veri (ess dahil — wip2/cudnn9 telafisiyle; segformer
+  lttng uclusu taze), 4 bench veri uretemiyor (triton/detectnet: Triton
+  backend yok; rtdetr: prepare_buffer; nitros_bridge: monitor'a mesaj yok)
+  — dordunde de base dahil TUM modlar ayni sekilde dusuyor -> FISH-bagimsiz.
+- Autoware: 3x3 mod tamam (overhead_aw_20260831_133353).
+- Trace sagligi: Isaac 90 traced kosu, 60.1M event, 3178 discard (%0.005;
+  yalnizca dnn_image_encoder nsys x3 + bi3d_freespace nsys x1'de);
+  Autoware 6 traced kosu, 30.5M event, 0 discard.
+- Ozetler: notes/overhead_isaac_summary.md (bench x mod tablosu),
+  notes/overhead_autoware_modes.md, ham: ~/fish_traces/overhead_isaac/,
+  ~/fish_traces/overhead_aw_20260831_133353/.
+- ACIK IS: callback-bazli exec-time lttng<->nsys eslesmesi (trace'lerden,
+  GPU'lu/CPU'lu ayrimiyla) — rapor tablolarina ek derin analiz.

@@ -24,6 +24,7 @@
   td.topics .more { color: #2980b9; cursor: pointer; }
   .kind-data { color: #222; font-weight: 600; } .kind-sampled, .kind-state { color: #e07b00; font-weight: 600; }
   .kind-join { color: #1f77b4; } .kind-infra { color: #999; }
+  .kind-service { color: #8e44ad; font-weight: 600; } .kind-action { color: #16a085; font-weight: 600; }
   .nullv { color: #bbb; }
   .meta { color: #555; font-size: 11px; margin: 6px 0; } .meta code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
   a { color: #2980b9; }
@@ -31,12 +32,20 @@
 </head>
 <body>
 <h1>FISH component links (Layer B)</h1>
-<div class="subtitle">One row per (from component, to component, kind). trigger = message hop whose consumer continues the chain (p50/p90 = hop latency publish→take); sampled = latest-value read (p50/p90 = data age at the read); join = join-membership tie; infra = /clock, /tf, /parameter_events … Instances = measured message instances behind the row.</div>
+<div class="subtitle">One row per (from component, to component, kind). trigger = message hop whose consumer continues the chain (p50/p90 = hop latency publish→take); sampled = latest-value read (p50/p90 = data age at the read); join = join-membership tie; infra = /clock, /tf, /parameter_events …; service = client→server requests (count = requests; callers outside any callback show as (no callback)); action = goal relations (empty until a session carries action events) Instances = measured message instances behind the row.</div>
 <div id="meta" class="meta"></div>
 <div class="toolbar">
   <label>session: <input type="text" id="sessionId" style="width:200px"> <button id="loadBtn">Load</button></label>
   <label>filter: <input type="text" id="q" placeholder="component / topic substring"></label>
-  <label><input type="checkbox" id="hideInfra" checked> hide infra</label>
+  <span>kinds:
+    <label><input type="checkbox" class="kindf" value="data" checked> trigger</label>
+    <label><input type="checkbox" class="kindf" value="sampled" checked> sampled</label>
+    <label><input type="checkbox" class="kindf" value="state" checked> state</label>
+    <label><input type="checkbox" class="kindf" value="join" checked> join</label>
+    <label><input type="checkbox" class="kindf" value="infra"> infra</label>
+    <label><input type="checkbox" class="kindf" value="service" checked> service</label>
+    <label><input type="checkbox" class="kindf" value="action" checked title="plumbing ready; no action events in current sessions"> action</label>
+  </span>
   <label><input type="checkbox" id="hideExt"> hide ext:in / ext:out</label>
   <label><input type="checkbox" id="hideCross"> hide cross-cutting (/system, /adapi, /viz, /)</label>
   <label>depth <select id="depth"><option value="1">1</option><option value="2">2</option></select></label>
@@ -74,8 +83,9 @@ function val(l, k){
 }
 function render(){
   const q = document.getElementById('q').value.trim().toLowerCase();
-  const hideInfra = document.getElementById('hideInfra').checked, hideExt = document.getElementById('hideExt').checked, hideCross = document.getElementById('hideCross').checked;
-  let list = rows.filter(l => !(hideInfra && l.kind==='infra'))
+  const kindsOn = new Set([...document.querySelectorAll('.kindf:checked')].map(c => c.value));
+  const hideExt = document.getElementById('hideExt').checked, hideCross = document.getElementById('hideCross').checked;
+  let list = rows.filter(l => kindsOn.has(l.kind==='gxf_internal' ? 'data' : l.kind))
                  .filter(l => !(hideExt && (l.src.startsWith('ext:') || l.dst.startsWith('ext:'))))
                  .filter(l => !(hideCross && (CROSS.has(l.src) || CROSS.has(l.dst))))
                  .filter(l => !q || (l.src+' '+l.dst+' '+l.kind+' '+(l.topics||[]).join(' ')).toLowerCase().includes(q));
@@ -101,13 +111,28 @@ async function load(){
   const r = await fetch(`/api/components?session=${encodeURIComponent(sid)}&scope=${encodeURIComponent(scope0)}&depth=${depth}`);
   if (!r.ok){ document.getElementById('empty').style.display='block'; document.getElementById('empty').textContent = 'error ' + r.status; return; }
   const d = await r.json(); rows = d.links || [];
-  const nData = rows.filter(l=>l.kind==='data').length, nS = rows.filter(l=>l.kind==='sampled').length, nJ = rows.filter(l=>l.kind==='join').length, nI = rows.filter(l=>l.kind==='infra').length;
-  document.getElementById('meta').innerHTML = `session <code>${sid}</code> · scope <code>${scope0}</code> · ${d.components.length} components · links: ${nData} trigger, ${nS} sampled, ${nJ} join, ${nI} infra`;
+  try {
+    const sr = await fetch(`/api/service-links?session=${encodeURIComponent(sid)}&scope=${encodeURIComponent(scope0)}&depth=${depth}`);
+    if (sr.ok) {
+      const sd = await sr.json();
+      for (const l of (sd.service_links || [])) rows.push({
+        src: l.src, dst: l.dst, kind: 'service', n_topics: 1, n_edges: null,
+        flow_n: l.n, topics: [l.service],
+      });
+      for (const l of (sd.action_links || [])) rows.push({
+        src: l.src, dst: l.dst, kind: 'action', n_topics: 1, n_edges: null,
+        flow_n: l.n, topics: [l.action],
+      });
+    }
+  } catch (e) { /* service links optional */ }
+  const cnt = k => rows.filter(l=>l.kind===k).length;
+  document.getElementById('meta').innerHTML = `session <code>${sid}</code> · scope <code>${scope0}</code> · ${d.components.length} components · links: ${cnt('data')} trigger, ${cnt('sampled')} sampled, ${cnt('state')} state, ${cnt('join')} join, ${cnt('infra')} infra, ${cnt('service')} service, ${cnt('action')} action`;
   document.getElementById('graphLink').href = `/components?session_id=${encodeURIComponent(sid)}&scope=${encodeURIComponent(scope0)}`;
   render();
 }
 document.querySelectorAll('th').forEach(th => th.addEventListener('click', () => { const k = th.dataset.key; if (sortKey===k) sortDir = -sortDir; else { sortKey = k; sortDir = (k==='src'||k==='dst'||k==='kind'||k==='topics') ? 1 : -1; } render(); }));
-['q','hideInfra','hideExt','hideCross'].forEach(id => document.getElementById(id).addEventListener('input', render));
+['q','hideExt','hideCross'].forEach(id => document.getElementById(id).addEventListener('input', render));
+document.querySelectorAll('.kindf').forEach(c => c.addEventListener('input', render));
 document.getElementById('depth').addEventListener('change', load);
 document.getElementById('loadBtn').addEventListener('click', load);
 document.getElementById('sessionId').addEventListener('keydown', e => { if (e.key==='Enter') load(); });

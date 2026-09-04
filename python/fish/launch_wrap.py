@@ -496,7 +496,13 @@ def main() -> int:
         )
         return 2
 
-    install_patches()
+    # FISH_NSYS_DISABLE=1 → "lttng-only" measurement mode: no nsys prefix on
+    # containers (the daemon honours the same switch for standalone nodes).
+    # LTTng tracepoints are untouched; only GPU introspection is dropped.
+    if os.environ.get("FISH_NSYS_DISABLE", "").lower() in ("1", "true", "yes"):
+        print("[FISH] launch_wrap: FISH_NSYS_DISABLE set — containers NOT nsys-wrapped")
+    else:
+        install_patches()
 
     # Hand off to the real `ros2 launch` entry point with the user's args.
     # We use ros2cli.cli.main() which dispatches the 'launch' verb.
