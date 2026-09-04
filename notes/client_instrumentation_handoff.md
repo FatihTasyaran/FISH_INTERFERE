@@ -83,11 +83,35 @@ servis; unet 606/606, 33 servis), unresolved 0.
 | etiketsiz cb | 1 / 1997 | 0 / 233 |
 | gantt = extract | ✓ | ✓ |
 
+## DÖRDÜNCÜ ADIM: rcl *_fini ömür event'leri (2026-09-04 gece) ✓
+Upstream ros2_tracing sadece `*_init` kaydediyor; 6 `fish_rcl_*_fini`
+tracepoint'i eklendi (client/timer/subscription/publisher/service/node —
+tracetools tp_call.h/tracetools.h/tracetools.c + rcl `*_fini` girişleri;
+`--link` grubunda, idempotent). **Whitelist:** asıl liste
+`config/fish_events.txt` (install_fish.sh → ros2 wrapper), names.py değil
+— Fatih yakaladı; 6 event oraya da eklendi (42 event). Model cli
+entity/F'ye `fini_ts_ns` yazıyor; gantt `init_ts <= t0 < fini_ts` ile
+atıyor; extractor fini'de nesli kapatıyor. snapshot.py düzeltmesi de
+devrede: AW'de 1059 client init → 1059 FARKLI handle (önce 173).
+Image'lar: **fishwait10** (= fishwait9 + fini), unet-wip yeniden bake.
+
+Doğrulama (AW fish_20260904_190606, unet fish_20260904_191700):
+| | AW fishwait10 | unet wip |
+|---|---|---|
+| fini kaydı | client 996/1059 init, timer 1771/1822 (kalanlar trace bitince ölüyor) | — |
+| cli entity with fini_ts | 996/1059 | 160/160 |
+| gantt cli span = extract | 1564 = 1564 (388 servis) | 610 = 610 (33 servis) |
+| unresolved | 0 | 0 |
+
 ## SIRADAKI İŞ
 1. Filtre kararı: param-servis client'ları model'de kalır (doğru), viz'de
    **F6 (parameter plumbing)** filtresiyle süzülür. SKIP_PARAMSERVICE
    model tarafında inaktif.
-2. Makine boşaltılıp TAM kampanya (client patch'li image'larla, 3-mode).
+2. Makine boşaltılıp TAM kampanya: Autoware = fishwait10; Isaac = 16 kalan
+   `-wip` image'ı `build_wip_images.sh` ile yeniden bake (şu an sadece
+   unet güncel), sonra 3-mode.
+3. (opsiyonel) init/fini ömür penceresini cli dışındaki F'lere de yay —
+   graph'ta paylaşım küçük (tmr 5, sub 6, serv 3) ama sıfır değil.
 
 ## Commit durumu
 Hepsi commit'lendi: `206ccf7` (kampanya/paper) → `e0640da` (client spans

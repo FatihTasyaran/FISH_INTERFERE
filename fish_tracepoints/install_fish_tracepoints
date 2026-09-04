@@ -805,6 +805,222 @@ PATCH_CLIENT_C
 }
 
 # ─── Tracetools: callback-link tracepoints ───────────────────────────────────
+patch_tracetools_fini() {
+    log "  Patching tracetools for rcl *_fini lifetime tracepoints ..."
+
+    python3 <<'PATCH_FINI_C'
+OVERLAY = "/root/trace_overlay_ws/src/tracetools"
+
+# ── tp_call.h ──
+path = f"{OVERLAY}/include/tracetools/tp_call.h"
+with open(path) as f:
+    content = f.read()
+if "fish_rcl_client_fini" in content:
+    print("    tp_call.h already has fini events, skipping")
+else:
+    INSERT_BEFORE = "#endif  // _TRACETOOLS__TP_CALL_H_"
+    new_events = """
+/* FISH rcl lifetime-end tracepoints (entity handles are recycled by the
+   allocator; without *_fini the model must infer lifetimes from re-init) */
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_rcl_client_fini,
+  TP_ARGS(
+    const void *, client_handle_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, client_handle, client_handle_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_rcl_timer_fini,
+  TP_ARGS(
+    const void *, timer_handle_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, timer_handle, timer_handle_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_rcl_subscription_fini,
+  TP_ARGS(
+    const void *, subscription_handle_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, subscription_handle, subscription_handle_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_rcl_publisher_fini,
+  TP_ARGS(
+    const void *, publisher_handle_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, publisher_handle, publisher_handle_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_rcl_service_fini,
+  TP_ARGS(
+    const void *, service_handle_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, service_handle, service_handle_arg)
+  )
+)
+
+TRACEPOINT_EVENT(
+  TRACEPOINT_PROVIDER,
+  fish_rcl_node_fini,
+  TP_ARGS(
+    const void *, node_handle_arg
+  ),
+  TP_FIELDS(
+    ctf_integer_hex(const void *, node_handle, node_handle_arg)
+  )
+)
+
+"""
+    content = content.replace(INSERT_BEFORE, new_events + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tp_call.h patched — 6 fish_rcl_*_fini TRACEPOINT_EVENT added")
+
+# ── tracetools.h ──
+path = f"{OVERLAY}/include/tracetools/tracetools.h"
+with open(path) as f:
+    content = f.read()
+if "fish_rcl_client_fini" in content:
+    print("    tracetools.h already has fini events, skipping")
+else:
+    INSERT_BEFORE = "#ifdef __cplusplus\n}\n#endif\n\n#endif  // TRACETOOLS__TRACETOOLS_H_"
+    new_decls = """/* FISH rcl lifetime-end tracepoints */
+
+/// `fish_rcl_client_fini` — rcl_client_fini entry: closes the lifetime opened by
+/// rcl_client_init (upstream ros2_tracing records creation only).
+DECLARE_TRACEPOINT(
+  fish_rcl_client_fini,
+  const void * client_handle)
+
+/// `fish_rcl_timer_fini` — rcl_timer_fini entry: closes the lifetime opened by
+/// rcl_timer_init (upstream ros2_tracing records creation only).
+DECLARE_TRACEPOINT(
+  fish_rcl_timer_fini,
+  const void * timer_handle)
+
+/// `fish_rcl_subscription_fini` — rcl_subscription_fini entry: closes the lifetime opened by
+/// rcl_subscription_init (upstream ros2_tracing records creation only).
+DECLARE_TRACEPOINT(
+  fish_rcl_subscription_fini,
+  const void * subscription_handle)
+
+/// `fish_rcl_publisher_fini` — rcl_publisher_fini entry: closes the lifetime opened by
+/// rcl_publisher_init (upstream ros2_tracing records creation only).
+DECLARE_TRACEPOINT(
+  fish_rcl_publisher_fini,
+  const void * publisher_handle)
+
+/// `fish_rcl_service_fini` — rcl_service_fini entry: closes the lifetime opened by
+/// rcl_service_init (upstream ros2_tracing records creation only).
+DECLARE_TRACEPOINT(
+  fish_rcl_service_fini,
+  const void * service_handle)
+
+/// `fish_rcl_node_fini` — rcl_node_fini entry: closes the lifetime opened by
+/// rcl_node_init (upstream ros2_tracing records creation only).
+DECLARE_TRACEPOINT(
+  fish_rcl_node_fini,
+  const void * node_handle)
+
+"""
+    if INSERT_BEFORE not in content:
+        raise SystemExit("tracetools.h anchor not found")
+    content = content.replace(INSERT_BEFORE, new_decls + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tracetools.h patched — 6 fini DECLARE_TRACEPOINT added")
+
+# ── tracetools.c ──
+path = f"{OVERLAY}/src/tracetools.c"
+with open(path) as f:
+    content = f.read()
+if "fish_rcl_client_fini" in content:
+    print("    tracetools.c already has fini events, skipping")
+else:
+    INSERT_BEFORE = "#ifndef _WIN32\n# pragma GCC diagnostic pop"
+    new_impls = """void TRACEPOINT(
+  fish_rcl_client_fini,
+  const void * client_handle)
+{
+  CONDITIONAL_TP(
+    fish_rcl_client_fini,
+    client_handle);
+}
+
+void TRACEPOINT(
+  fish_rcl_timer_fini,
+  const void * timer_handle)
+{
+  CONDITIONAL_TP(
+    fish_rcl_timer_fini,
+    timer_handle);
+}
+
+void TRACEPOINT(
+  fish_rcl_subscription_fini,
+  const void * subscription_handle)
+{
+  CONDITIONAL_TP(
+    fish_rcl_subscription_fini,
+    subscription_handle);
+}
+
+void TRACEPOINT(
+  fish_rcl_publisher_fini,
+  const void * publisher_handle)
+{
+  CONDITIONAL_TP(
+    fish_rcl_publisher_fini,
+    publisher_handle);
+}
+
+void TRACEPOINT(
+  fish_rcl_service_fini,
+  const void * service_handle)
+{
+  CONDITIONAL_TP(
+    fish_rcl_service_fini,
+    service_handle);
+}
+
+void TRACEPOINT(
+  fish_rcl_node_fini,
+  const void * node_handle)
+{
+  CONDITIONAL_TP(
+    fish_rcl_node_fini,
+    node_handle);
+}
+
+"""
+    if INSERT_BEFORE not in content:
+        raise SystemExit("tracetools.c anchor not found")
+    content = content.replace(INSERT_BEFORE, new_impls + INSERT_BEFORE)
+    with open(path, "w") as f:
+        f.write(content)
+    print("    tracetools.c patched — 6 fini implementations added")
+PATCH_FINI_C
+}
+
 patch_tracetools_link() {
     log "  Patching tracetools for callback-link tracepoints ..."
 
@@ -2675,6 +2891,45 @@ else:
     else:
         print("    WARNING: rcl_send_request pattern not found in client.c")
 
+# ── *_fini lifetime-end tracepoints (fish_rcl_*_fini) ──
+# timer/node: after their null/impl checks (repeat fini is a no-op there);
+# client/subscription/publisher/service: at function entry.
+FINI_SITES = [
+    ("client.c",
+     "rcl_client_fini(rcl_client_t * client, rcl_node_t * node)\n{\n",
+     "  TRACEPOINT(fish_rcl_client_fini, (const void *)client);\n"),
+    ("subscription.c",
+     "rcl_subscription_fini(rcl_subscription_t * subscription, rcl_node_t * node)\n{\n",
+     "  TRACEPOINT(fish_rcl_subscription_fini, (const void *)subscription);\n"),
+    ("publisher.c",
+     "rcl_publisher_fini(rcl_publisher_t * publisher, rcl_node_t * node)\n{\n",
+     "  TRACEPOINT(fish_rcl_publisher_fini, (const void *)publisher);\n"),
+    ("service.c",
+     "rcl_service_fini(rcl_service_t * service, rcl_node_t * node)\n{\n",
+     "  TRACEPOINT(fish_rcl_service_fini, (const void *)service);\n"),
+    ("timer.c",
+     "rcl_timer_fini(rcl_timer_t * timer)\n{\n  if (!timer || !timer->impl) {\n    return RCL_RET_OK;\n  }\n",
+     "  TRACEPOINT(fish_rcl_timer_fini, (const void *)timer);\n"),
+    ("node.c",
+     "  if (!node->impl) {\n    // Repeat calls to fini or calling fini on a zero initialized node is ok.\n    return RCL_RET_OK;\n  }\n",
+     "  TRACEPOINT(fish_rcl_node_fini, (const void *)node);\n"),
+]
+for fname, anchor, emit in FINI_SITES:
+    fpath = f"{OVERLAY}/src/rcl/{fname}"
+    with open(fpath) as f:
+        c = f.read()
+    marker = emit.strip()
+    if marker in c:
+        print(f"    {fname} fini already patched")
+    elif anchor in c:
+        c = c.replace(anchor, anchor + emit, 1)
+        with open(fpath, "w") as f:
+            f.write(c)
+        print(f"    {fname} patched — {marker.split('(')[1].split(',')[0]}")
+    else:
+        print(f"    WARN: {fname} fini anchor not found")
+
+
 print("  Done.")
 PATCH_RCL
 
@@ -3939,6 +4194,12 @@ if do_link:
         "fish_rclcpp_waitable_init",
         "fish_nitros_sub_link",
         "fish_nitros_pub_link",
+        "fish_rcl_client_fini",
+        "fish_rcl_timer_fini",
+        "fish_rcl_subscription_fini",
+        "fish_rcl_publisher_fini",
+        "fish_rcl_service_fini",
+        "fish_rcl_node_fini",
     ])
 if do_scheduler:
     fish_groups.append([
@@ -4042,7 +4303,7 @@ print(len(DEFAULT_EVENTS_ROS))
     $DO_ACTION    && expected=$((expected + 4))
     $DO_RCLPY     && expected=$((expected + 5))
     $DO_CLIENT    && expected=$((expected + 3))
-    $DO_LINK      && expected=$((expected + 2))
+    $DO_LINK      && expected=$((expected + 12))   # 6 link + 6 rcl *_fini
     $DO_SCHEDULER && expected=$((expected + 4))
     log "Events in DEFAULT_EVENTS_ROS: $event_count (expected: $expected)"
 
@@ -4096,6 +4357,7 @@ main() {
     $DO_RCLPY     && patch_tracetools_rclpy
     $DO_CLIENT    && patch_tracetools_client
     $DO_LINK      && patch_tracetools_link
+    $DO_LINK      && patch_tracetools_fini
     $DO_SCHEDULER && patch_tracetools_scheduler
 
     build_tracetools

@@ -2659,7 +2659,8 @@ _GANTT_CTES = """
                  -- their rcl handle address is recycled (one address seen
                  -- for 224 services in Autoware); the span picks the latest
                  -- init preceding it (NULL = static mapping, other etypes)
-                 (f.attrs->>'init_ts_ns')::bigint AS init_ts
+                 (f.attrs->>'init_ts_ns')::bigint AS init_ts,
+                 (f.attrs->>'fini_ts_ns')::bigint AS fini_ts
           FROM graph_nodes f
           JOIN graph_edges ge ON ge.session_id=f.session_id AND ge.scope=f.scope
                              AND ge.target=f.node_id AND ge.rel='contains'
@@ -2719,7 +2720,7 @@ _GANTT_CTES = """
         ),
         f_to_n AS (
           -- 1. Graph-resolved
-          SELECT cb_addr, cb_symbol, entity, etype, node_name, init_ts FROM f_to_n_graph
+          SELECT cb_addr, cb_symbol, entity, etype, node_name, init_ts, fini_ts FROM f_to_n_graph
           UNION ALL
           -- 2. Fallback: not in f_to_n_graph but has sub_cb_added → subscription_init
           SELECT s.cb_addr,
@@ -2727,7 +2728,8 @@ _GANTT_CTES = """
                  'sub:' || s.topic                       AS entity,
                  'sub'                                    AS etype,
                  NULL                                     AS node_name,
-                 NULL::bigint                             AS init_ts
+                 NULL::bigint                             AS init_ts,
+                 NULL::bigint                             AS fini_ts
           FROM sub_cb_to_topic s
           LEFT JOIN cb_symbols sym ON sym.cb_addr = s.cb_addr
           WHERE s.cb_addr NOT IN (SELECT cb_addr FROM f_to_n_graph)
@@ -2777,6 +2779,7 @@ FROM (
   FROM paired p
   LEFT JOIN f_to_n fn ON fn.cb_addr = p.cb_addr
                      AND (fn.init_ts IS NULL OR fn.init_ts <= p.t0)
+                     AND (fn.fini_ts IS NULL OR p.t0 < fn.fini_ts)
   WHERE p.event='ros2:callback_start' AND p.next_event='ros2:callback_end'
     AND p.t1 IS NOT NULL
 ) q

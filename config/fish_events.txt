@@ -54,6 +54,16 @@ ros2:fish_rclcpp_waitable_init
 ros2:fish_nitros_sub_link
 ros2:fish_nitros_pub_link
 
+# --- Entity lifetime end (FISH custom rcl *_fini; upstream has init only) ---
+# Handles are recycled by the allocator; these close the lifetime opened by
+# rcl_*_init so attribution never has to infer it from re-initialisation.
+ros2:fish_rcl_client_fini
+ros2:fish_rcl_timer_fini
+ros2:fish_rcl_subscription_fini
+ros2:fish_rcl_publisher_fini
+ros2:fish_rcl_service_fini
+ros2:fish_rcl_node_fini
+
 # --- Scheduler introspection (FISH custom, all consumed) ---
 ros2:fish_rclcpp_executor_init
 ros2:fish_rclcpp_callback_group_init

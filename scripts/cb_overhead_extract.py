@@ -144,7 +144,7 @@ def main():
             'ros2:rclcpp_subscription_callback_added', 'ros2:rcl_timer_init',
             'ros2:rclcpp_timer_callback_added', 'ros2:rclcpp_timer_link_node',
             'ros2:rcl_service_init', 'ros2:rclcpp_service_callback_added',
-            'ros2:rcl_client_init',
+            'ros2:rcl_client_init', 'ros2:fish_rcl_client_fini',
             'ros2:fish_rclpy_service_callback_added',
             'ros2:fish_rclpy_subscription_callback_added',
             'ros2:fish_rclpy_timer_callback_added',
@@ -227,6 +227,9 @@ def main():
                 cur_key[ch] = key
                 cb_label[key] = (node_of_handle.get(p.get('node_handle')),
                                  f"cli:{p.get('service_name', '?')}")
+        elif ev == 'ros2:fish_rcl_client_fini':
+            # lifetime end: spans after this (without a re-init) stay unlabeled
+            cur_key.pop(p.get('client_handle'), None)
         elif ev in ('ros2:rclcpp_service_callback_added',
                     'ros2:fish_rclpy_service_callback_added'):
             sn, nh = srv_name.get(p.get('service_handle'), (None, None))

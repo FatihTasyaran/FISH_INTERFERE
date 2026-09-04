@@ -39,5 +39,5 @@ docker exec $NAME bash -lc '
   FISH_SETUP_PARENT=1 source scripts/install_fish.sh 2>&1 | tail -3
 '
 echo "[build] committing $DST_IMG"
-docker commit -m "fishwait7 + client dispatch spans: rclcpp Executor::execute_client and rclpy Executor._execute_client wrapped with callback_start/end (cb-id = rcl client handle); legacy &callback inner wraps stripped from overlay client.hpp" $NAME "$DST_IMG"
+docker commit -m "FISH overlay refresh: client dispatch spans (rclcpp+rclpy) + fish_rcl_*_fini lifetime tracepoints; rclcpp Executor::execute_client and rclpy Executor._execute_client wrapped with callback_start/end (cb-id = rcl client handle); legacy &callback inner wraps stripped from overlay client.hpp" $NAME "$DST_IMG"
 docker image inspect "$DST_IMG" --format '[build] done: {{.RepoTags}} {{.Size}} bytes'

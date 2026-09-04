@@ -391,14 +391,25 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
     # re-initialised 224× for 224 different services). The init timestamp
     # therefore travels with the entity/F so span attribution can pick the
     # latest init preceding the span (gantt) instead of a static cb_addr map.
-    clients_by_node: dict[str, list[tuple[str, str, int]]] = {}
+    # Lifetime end: our fish_rcl_client_fini (upstream ros2_tracing has no
+    # *_fini events). For every init, fini = first fini on the same handle
+    # after it; None when the client outlives the trace or the image predates
+    # the fini tracepoints.
+    fini_by_handle: dict[str, list[int]] = {}
+    for d in _all_events(session_id, "ros2:fish_rcl_client_fini"):
+        ch = d["payload"].get("client_handle")
+        if ch:
+            fini_by_handle.setdefault(ch, []).append(int(d["ts_ns"]))
+    clients_by_node: dict[str, list[tuple[str, str, int, int | None]]] = {}
     for d in _all_events(session_id, "ros2:rcl_client_init"):
         p = d["payload"]
         ch, nh = p.get("client_handle"), p.get("node_handle")
         srv = p.get("service_name", "?")
         if not ch or not nh:
             continue
-        clients_by_node.setdefault(nh, []).append((ch, srv, int(d["ts_ns"])))
+        t0 = int(d["ts_ns"])
+        fini = next((t for t in fini_by_handle.get(ch, []) if t > t0), None)
+        clients_by_node.setdefault(nh, []).append((ch, srv, t0, fini))
 
     for node_id, node in nodes.items():
         full_name = node.A_v["full_name"]
@@ -494,7 +505,7 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
             node.Z_v.append(e.id_v)
             entities[e.id_v] = e
 
-        for client_handle, srv_name, init_ts in clients_by_node.get(node_handle, []):
+        for client_handle, srv_name, init_ts, fini_ts in clients_by_node.get(node_handle, []):
             if SKIP_PARAMSERVICE and _is_param_service(srv_name):
                 continue
             e_A = {
@@ -504,6 +515,7 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
                 "cb_addr": client_handle,
                 "client_handle": client_handle,
                 "init_ts_ns": init_ts,
+                "fini_ts_ns": fini_ts,
                 "aspects": [{"aspect": "pub", "service": srv_name},
                             {"aspect": "sub", "service": srv_name}],
             }
@@ -806,15 +818,18 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                 if ch:
                     cb_info = {"callback": ch,
                                "symbol": f"client:{entity.A_v['label']}",
-                               "init_ts_ns": entity.A_v.get("init_ts_ns")}
+                               "init_ts_ns": entity.A_v.get("init_ts_ns"),
+                               "fini_ts_ns": entity.A_v.get("fini_ts_ns")}
 
             if cb_info:
                 entity.A_v["cb_addr"] = cb_info["callback"]
                 f_A = {"label": cb_info["symbol"], "ptype": "cpu",
                        "cb_addr": cb_info["callback"]}
                 if cb_info.get("init_ts_ns") is not None:
-                    # handle-reuse disambiguation for gantt (see clients_by_node)
+                    # lifetime for gantt attribution (see clients_by_node)
                     f_A["init_ts_ns"] = cb_info["init_ts_ns"]
+                    if cb_info.get("fini_ts_ns") is not None:
+                        f_A["fini_ts_ns"] = cb_info["fini_ts_ns"]
                 if is_gpu:
                     f_A["gpu_node"] = True
                 ip = cb_info.get("intra_proc_waitable")
