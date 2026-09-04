@@ -89,7 +89,12 @@ run_one() {   # $1=bench $2=mode(warmup|base|lttng|nsys) $3=rep-index
                [ "${CUDA_EVT:-1}" = 1 ] && EXTRA_ENV=(-e FISH_CUDA_EVENT_TRACE=1) ;;
     esac
     log "----- $B [$MODE #$IDX] FISH=$FISH_ON -----"
-    timeout "$SMOKE_TIMEOUT" docker run --rm --gpus all --privileged --net host \
+    # Named container + forced removal after the run: `timeout` only kills the
+    # docker CLIENT; the container kept running (detectnet 2026-08-31 orphan
+    # ate 23.7 GB RSS + swap). --rm still cleans up the normal path.
+    local CNAME="ovh-$B-$MODE-$IDX"
+    docker rm -f "$CNAME" >/dev/null 2>&1 || true
+    timeout "$SMOKE_TIMEOUT" docker run --rm --name "$CNAME" --gpus all --privileged --net host \
         --shm-size=2g \
         -v "$REPO_ROOT":/host/fish_src:ro \
         -v "$NGC_ASSETS":/host/isaac_assets:ro \
@@ -160,6 +165,10 @@ run_one() {   # $1=bench $2=mode(warmup|base|lttng|nsys) $3=rep-index
             exit \$rc
         " > "$OUT/launch.log" 2>&1
     local rc=$?
+    if docker ps -q -f "name=^${CNAME}$" | grep -q .; then
+        log "$B [$MODE #$IDX] container still alive after rc=$rc (timeout?) — removing"
+        docker rm -f "$CNAME" >/dev/null 2>&1 || true
+    fi
     local nrep; nrep=$(ls "$OUT"/r2b-log-*.json 2>/dev/null | wc -l)
     log "$B [$MODE #$IDX] rc=$rc report_json=$nrep"
     echo "$B,$MODE,$IDX,$rc,$nrep,$(date +%s)" >> "$DEST_BASE/runs.csv"
