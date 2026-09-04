@@ -736,6 +736,31 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
     rclpy_srv_cb_by_handle = _keep_first(rclpy_srv_cb_added, "service_handle", "callback")
     rclpy_tmr_cb_by_handle = _keep_first(rclpy_tmr_cb_added, "timer_handle", "callback")
 
+    # Entity lifetimes [init, fini) per rcl handle, from rcl_*_init and our
+    # fish_rcl_*_fini. Handles are recycled, so a handle may have several
+    # incarnations; an F gets a window only when its handle has exactly one
+    # (the recycled sub/timer/service cases are rare in the graph — AW: 5/6/3
+    # shared cb_addrs — and stay on the static mapping, counted below).
+    lifetimes: dict[str, dict[str, list[tuple[int, int | None]]]] = {}
+    for kind, hcol in (("subscription", "subscription_handle"),
+                       ("service", "service_handle"),
+                       ("timer", "timer_handle")):
+        finis: dict[str, list[int]] = {}
+        for d in _all_events(session_id, f"ros2:fish_rcl_{kind}_fini"):
+            h = d["payload"].get(hcol)
+            if h:
+                finis.setdefault(h, []).append(int(d["ts_ns"]))
+        per: dict[str, list[tuple[int, int | None]]] = {}
+        for d in _all_events(session_id, f"ros2:rcl_{kind}_init"):
+            h = d["payload"].get(hcol)
+            if not h:
+                continue
+            t0 = int(d["ts_ns"])
+            per.setdefault(h, []).append(
+                (t0, next((t for t in finis.get(h, []) if t > t0), None)))
+        lifetimes[kind] = per
+    ambiguous_windows = collections.Counter()
+
     def _resolve_cb(cb_ptr):
         sym = symbol_by_cb.get(cb_ptr)
         if sym:
@@ -770,12 +795,14 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                             info["intra_proc_primary"] = cb_ptr in rclcpp_sub_cb_all_by_sub.get(ip, [])
                         if alts:
                             info["alt_cb_addrs"] = alts
+                    info = dict(info); info["rcl_handle"] = sub_handle
                     sub_chain[topic] = info
                     continue
             cb_ptr = rclpy_sub_cb_by_handle.get(sub_handle)
             if cb_ptr:
                 info = _resolve_cb(cb_ptr)
                 if info:
+                    info = dict(info); info["rcl_handle"] = sub_handle
                     sub_chain[topic] = info
                 else:
                     warn("sub_no_register",
@@ -790,12 +817,14 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
             if cb_ptr:
                 info = _resolve_cb(cb_ptr)
                 if info:
+                    info = dict(info); info["rcl_handle"] = srv_handle
                     srv_chain[srv_name] = info
                     continue
             cb_ptr = rclpy_srv_cb_by_handle.get(srv_handle)
             if cb_ptr:
                 info = _resolve_cb(cb_ptr)
                 if info:
+                    info = dict(info); info["rcl_handle"] = srv_handle
                     srv_chain[srv_name] = info
 
         for e_id in list(node.Z_v):
@@ -840,6 +869,16 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                                "init_ts_ns": entity.A_v.get("init_ts_ns"),
                                "fini_ts_ns": entity.A_v.get("fini_ts_ns")}
 
+            if cb_info and etype in ("sub", "serv", "tmr"):
+                kind = {"sub": "subscription", "serv": "service", "tmr": "timer"}[etype]
+                h = entity.A_v.get("timer_handle") if etype == "tmr" else cb_info.get("rcl_handle")
+                inc = lifetimes.get(kind, {}).get(h, []) if h else []
+                if len(inc) == 1:
+                    cb_info = dict(cb_info)
+                    cb_info["init_ts_ns"], cb_info["fini_ts_ns"] = inc[0]
+                    entity.A_v["init_ts_ns"], entity.A_v["fini_ts_ns"] = inc[0]
+                elif len(inc) > 1:
+                    ambiguous_windows[etype] += 1
             if cb_info:
                 entity.A_v["cb_addr"] = cb_info["callback"]
                 f_A = {"label": cb_info["symbol"], "ptype": "cpu",
@@ -875,6 +914,10 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                 entity.Z_v.append(f.id_v)
                 functions[f.id_v] = f
 
+    n_win = sum(1 for f in functions.values() if f.A_v.get("init_ts_ns") is not None)
+    log(f"  Lifetime windows: {n_win}/{len(functions)} F with init_ts"
+        + (f"; ambiguous (recycled handle, static mapping kept): {dict(ambiguous_windows)}"
+           if ambiguous_windows else ""))
     n_cap = sum(1 for f in functions.values() if f.A_v.get("ipc_capable"))
     dl = collections.Counter(f.A_v.get("delivery") for f in functions.values() if f.A_v.get("ipc_capable"))
     if n_cap:
