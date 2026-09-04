@@ -16,7 +16,9 @@ set -e
 DEST=$HOME/fish_traces
 IMG=${IMG:-autoware-dev-trt-a1000-fishwait7:latest}
 FISH_SRC=/home/tue037807/fish_interfere
-STAMP=$(date +%Y%m%d_%H%M%S)
+RATE=${RATE:-0.5}          # ros2 bag play -r (the Aug-31 and Sep-4 campaigns ran at 0.5;
+                           # bag is 29.9 s → replay 60 s at 0.5, 30 s at 1.0)
+STAMP=$(date +%Y%m%d_%H%M%S)$( [ "$RATE" != 0.5 ] && echo "_r$RATE" )
 OUTROOT=$DEST/overhead_aw_$STAMP
 REPS=${REPS:-3}
 mkdir -p "$OUTROOT"
@@ -68,7 +70,7 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
         docker cp "$FISH_SRC" $NAME:/root/fish_interfere
     fi
     timeout 900 docker exec \
-        -e MODE=$MODE -e IDX=$IDX -e STAMP=$STAMP -e PROBE_FN="$PROBE_FN" \
+        -e MODE=$MODE -e IDX=$IDX -e STAMP=$STAMP -e RATE=$RATE -e PROBE_FN="$PROBE_FN" \
         $NAME bash -c '
         set -e
         export PYTHONUNBUFFERED=1
@@ -90,7 +92,7 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
             sed -i "s|^rmw_implementation *=.*|rmw_implementation = rmw_cyclonedds_cpp|" $INI
             sed -i "s|^cyclonedds_uri *=.*|cyclonedds_uri = |" $INI
             sed -i "s|^per_instance *=.*|per_instance = true|" $INI
-            sed -i "s|ros2 bag play ~/autoware_map/sample-rosbag -r 0.2|ros2 bag play ~/autoware_map/sample-rosbag -r 0.5|" $INI || true
+            sed -i "s|ros2 bag play ~/autoware_map/sample-rosbag -r 0.2|ros2 bag play ~/autoware_map/sample-rosbag -r $RATE|" $INI || true
         else
             export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
             unset CYCLONEDDS_URI
@@ -123,7 +125,7 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
             done
             echo "[ovh] stable at $N nodes (poll $i)"; echo "$N $i" > "$POUT/stable.txt"
             date +%s.%N > "$POUT/t_replay.txt"
-            ros2 bag play ~/autoware_map/sample-rosbag -r 0.5 -s sqlite3 \
+            ros2 bag play ~/autoware_map/sample-rosbag -r $RATE -s sqlite3 \
                 > "$POUT/replay.log" 2>&1
             date +%s.%N > "$POUT/t_replay_end.txt"
             sleep 20
