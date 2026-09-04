@@ -84,25 +84,16 @@ servis; unet 606/606, 33 servis), unresolved 0.
 | gantt = extract | ✓ | ✓ |
 
 ## SIRADAKI İŞ
-2. Filtre kararı: param-servis client'ları model'de kalır (doğru), viz'de
+1. Filtre kararı: param-servis client'ları model'de kalır (doğru), viz'de
    **F6 (parameter plumbing)** filtresiyle süzülür. SKIP_PARAMSERVICE
    model tarafında inaktif.
-3. Commit (client patch + rclpy patch + filter panel + fishwait8/9 script).
-4. Makine boşaltılıp TAM kampanya (client patch'li image'larla, 3-mode).
+2. Makine boşaltılıp TAM kampanya (client patch'li image'larla, 3-mode).
 
-## HENÜZ COMMIT EDİLMEMİŞ değişiklikler
-İlk commit `206ccf7`'den SONRA yapıldılar:
-- `fish_tracepoints/install_fish_tracepoints` (execute_client wrap + inner-wrap temizliği)
-- `postprocess/model_improved_pg.py` (cli entity/F)
-- `postprocess/fish_viz_server.py` (/filters route)
-- `postprocess/filter_panel.html` (YENİ — 10-filtre toy panel)
-- `scripts/cb_overhead_extract.py` (cli etiketi)
-- `scripts/build_fishwait8.sh` (YENİ)
-- `scripts/autoware_runs/run_overhead_modes.sh` (MODES env desteği)
-→ gantt CTE fix'i yapıldıktan SONRA hepsini birlikte commit etmek mantıklı.
+## Commit durumu
+Hepsi commit'lendi: `206ccf7` (kampanya/paper) → `e0640da` (client spans
+rclcpp+rclpy, handle-reuse-safe gantt, filter panel, fishwait8/9 script).
 
 ## Not
-- Viz server :8783 ayakta (yeni kod, /filters dahil).
-- Örnek session'lar PG'de ingest+model edildi (AW), gantt_spans build
-  edildi (1.42M span) — CTE fix'ten sonra AW gantt'ı yeniden build
-  gerekir (gantt_meta satırını silip tekrar tetikle, ya da nocache).
+- Viz server :8783 yeni kodla ayakta (/filters dahil).
+- Her iki örnek session PG'de: ingest + model + gantt (zaman-kapsamlı)
+  güncel. fishwait8 kullanılmıyor (fishwait9 onun yerini aldı).
