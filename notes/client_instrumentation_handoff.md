@@ -103,6 +103,26 @@ Doğrulama (AW fish_20260904_190606, unet fish_20260904_191700):
 | gantt cli span = extract | 1564 = 1564 (388 servis) | 610 = 610 (33 servis) |
 | unresolved | 0 | 0 |
 
+### fini tutarlılık denetimi (handle bazında sıra: init→fini→init…)
+| kind | AW init/fini | init'siz fini | fini'siz re-init | unet init/fini |
+|---|---|---|---|---|
+| client | 1059/996 | 0 | 0 | 140/140 |
+| service | 1213/690 | 0 | 0 | 222/222 |
+| subscription | 1074/639 | 0 | 0 | 66/53 |
+| timer | 1822/1771 | 2 | 0 | 394/394 |
+| node | 240/134 | 2 | 0 | 65/50 |
+| publisher | 1251/527 | **136** | **20** | 175/145 (50 / 22) |
+
+Publisher anomalisi = `/rosout`: rcl, rosout publisher'ını stack'teki
+geçici `rcl_publisher_t`'ye init edip hash map'e değerle kopyalıyor →
+init adresi her node'da aynı stack adresi (20 "re-init"), fini adresi map
+kopyası (136 init'siz fini ≈ 134 node fini). Tracing hatası değil, rcl
+artefaktı; `/rosout` zaten F1 ile süzülüyor. Node handle geri dönüşümü
+(`_fish_params` faz1/faz2 aynı adres) client'ları iki node'a yapıştırıyordu
+(unet cli 160 ≠ 140 init) → client→node bağlama zaman-kapsamlı yapıldı
+(`init_ts_ns` node'da; client init'inden önceki en son node init'i
+kazanır): unet cli=140 ✓, gantt 610=610 korundu.
+
 ## SIRADAKI İŞ
 1. Filtre kararı: param-servis client'ları model'de kalır (doğru), viz'de
    **F6 (parameter plumbing)** filtresiyle süzülür. SKIP_PARAMSERVICE

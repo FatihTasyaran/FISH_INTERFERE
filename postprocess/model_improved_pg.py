@@ -264,6 +264,10 @@ def identify_executors(session_id: str):
                 "label": nie["payload"]["node_name"],
                 "full_name": full_name,
                 "node_handle": nie["payload"]["node_handle"],
+                # node handles are recycled too (a helper node destroyed and
+                # re-created lands on the same address) — children created
+                # later resolve to the node whose init precedes them
+                "init_ts_ns": int(nie["ts_ns"]),
                 "publishers": {},
             }
             if ex.A_v["label"] == "temp":
@@ -411,6 +415,18 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
         fini = next((t for t in fini_by_handle.get(ch, []) if t > t0), None)
         clients_by_node.setdefault(nh, []).append((ch, srv, t0, fini))
 
+    node_inits_by_handle: dict[str, list[int]] = {}
+    for n in nodes.values():
+        if n.A_v.get("init_ts_ns") is not None:
+            node_inits_by_handle.setdefault(n.A_v["node_handle"], []).append(n.A_v["init_ts_ns"])
+    for v in node_inits_by_handle.values():
+        v.sort()
+
+    def _owning_node_init(nh: str, t: int):
+        """Init ts of the node vertex (sharing handle nh) alive at time t."""
+        cands = [x for x in node_inits_by_handle.get(nh, []) if x <= t]
+        return cands[-1] if cands else None
+
     for node_id, node in nodes.items():
         full_name = node.A_v["full_name"]
         node_handle = node.A_v["node_handle"]
@@ -508,6 +524,9 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
         for client_handle, srv_name, init_ts, fini_ts in clients_by_node.get(node_handle, []):
             if SKIP_PARAMSERVICE and _is_param_service(srv_name):
                 continue
+            if node.A_v.get("init_ts_ns") is not None and \
+                    _owning_node_init(node_handle, init_ts) != node.A_v["init_ts_ns"]:
+                continue   # belongs to another incarnation of this handle
             e_A = {
                 "label": srv_name, "etype": "cli",
                 # rcl client handle IS the cb_addr: the executor.cpp
