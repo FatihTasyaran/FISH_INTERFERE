@@ -7,7 +7,7 @@ import glob
 import json
 import os
 
-ROOT = os.path.expanduser('~/fish_traces/overhead_isaac')
+ROOT = os.path.expanduser(os.environ.get('FISH_OVH_ROOT', '~/fish_traces/overhead_isaac'))
 BENCHES = ['apriltag', 'bi3d', 'bi3d_freespace', 'dnn_image_encoder', 'dope',
            'ess', 'image_proc', 'nvblox', 'segformer', 'stereo_image_proc',
            'tensor_rt', 'unet', 'visual_slam']

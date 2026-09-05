@@ -154,8 +154,29 @@ def analyze_side(d):
     r["concat_pipeline_ms"] = med(series(diag, "concatenate_data", "Pipeline latency (ms)"))
     r["centerpoint_proc_ms"] = med(series(diag, "processing_time_status", "processing_time_ms",
                                           sane=lambda v: v > 0))
-    r["total_latency_ms"] = med(series(diag, "pipeline_latency_monitor", "Total Latency (ms)"))
+    # pipeline_latency_monitor: Total Latency is a PARTIAL sum whenever a
+    # stage has not reported yet ("uninitialized_inputs"); with the tracker
+    # missing it sits at a ~257 ms floor. A plain median over all ticks is
+    # therefore contaminated (v5 P-core campaign: 49-56% of traced-run ticks
+    # at the floor → a fake "improvement"). Use only ticks where the tracker
+    # has reported, and expose the fraction of tracker-missing ticks itself
+    # as a starvation indicator (post-startup).
+    lat_entries = []
+    for name, entries in diag.items():
+        if "pipeline_latency_monitor" in name:
+            lat_entries += entries
+    complete = [e for e in lat_entries
+                if "multi_object_tracker" not in str(e.get("uninitialized_inputs", ""))]
+    tot = [fnum(e, "Total Latency (ms)") for e in complete]
+    tot = [v for v in tot if v is not None and v > 0]
+    r["total_latency_ms"] = med(tot)
     r["mot_latency_ms"] = med(series(diag, "pipeline_latency_monitor", "multi_object_tracker"))
+    # All floor ticks turned out to precede the tracker's FIRST report (no
+    # mid-run starvation), so the useful indicator is the startup delay:
+    # monitor ticks (~1 Hz) until the tracker first reports.
+    first = next((i for i, e in enumerate(lat_entries)
+                  if "multi_object_tracker" not in str(e.get("uninitialized_inputs", ""))), None)
+    r["latency_tracker_startup_ticks"] = first
     r["hz"] = hz_medians(d)
     return r
 

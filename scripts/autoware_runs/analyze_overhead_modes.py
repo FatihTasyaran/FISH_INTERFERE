@@ -22,7 +22,8 @@ ROWS = [
     ("concat processing [ms]", "concat_proc_ms"),
     ("concat pipeline lat [ms]", "concat_pipeline_ms"),
     ("centerpoint proc [ms] (GPU)", "centerpoint_proc_ms"),
-    ("Total Latency [ms]", "total_latency_ms"),
+    ("Total Latency [ms] (tracker reported)", "total_latency_ms"),
+    ("tracker first report [ticks]", "latency_tracker_startup_ticks"),
     ("  multi_object_tracker [ms]", "mot_latency_ms"),
 ]
 
