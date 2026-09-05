@@ -124,6 +124,14 @@ run_one() {   # $1=bench $2=mode(warmup|base|lttng|nsys) $3=rep-index
             # zero trtexec calls in the Aug-30 campaign logs) and the
             # apt-get over a flaky Wi-Fi stalled runs 3–12 min, eating the
             # SMOKE_TIMEOUT budget. INSTALL_GPU_DEPS=1 restores the old path.
+            # trtexec IS needed by some benchmarks (dope/unet/segformer/tensor_rt
+            # build their TRT engine into /tmp at every run via model_converter).
+            # Offline path first: version-pinned .deb from the host apt_cache
+            # (fetched 2026-09-05, matches libnvinfer10 10.16.1.11+cuda13.2).
+            if [ ! -x /usr/src/tensorrt/bin/trtexec ]; then
+                DEB=\$(ls /host/apt_cache/libnvinfer-bin_*.deb 2>/dev/null | head -1)
+                [ -n \"\$DEB\" ] && dpkg -i \"\$DEB\" >/tmp/trtexec_dpkg.log 2>&1 || true
+            fi
             if [ \"$INSTALL_GPU_DEPS\" = 1 ] && [ ! -x /usr/src/tensorrt/bin/trtexec ]; then
                 NVINFER_VER=\$(dpkg-query -W -f='\${Version}' libnvinfer-dev 2>/dev/null || true)
                 if [ -n \"\$NVINFER_VER\" ]; then

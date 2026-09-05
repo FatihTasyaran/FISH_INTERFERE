@@ -9,7 +9,7 @@ DEST_ISAAC=$HOME/fish_traces/overhead_isaac_v5
 cd "$REPO"
 stamp() { echo "[campaign $(date +%F' '%T)] $*" | tee -a "$LOG"; }
 stat_block() { { echo "=== host_perf_mode status ($1) ==="; scripts/host_perf_mode.sh status; } | tee -a "$LOG"; }
-stamp "RESTART (v5b): Isaac remaining 10 benches, apt dep step disabled, SMOKE_TIMEOUT=1200"
+stamp "RESTART (v5c): Isaac from dope (9 benches), trtexec from local apt_cache .deb (offline dpkg), SMOKE_TIMEOUT=1200"
 DEST_BASE=$DEST_ISAAC REPS=3 CUDA_EVT=0 SMOKE_TIMEOUT=1200 \
   bash scripts/overhead_sweep_v4.sh dnn_image_encoder dope ess image_proc nvblox segformer \
     stereo_image_proc tensor_rt unet visual_slam 2>&1 | tee -a "$LOG" | grep -E '^\[v4'
