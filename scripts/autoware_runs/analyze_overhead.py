@@ -150,6 +150,14 @@ def analyze_side(d):
                     startup += 1
     r["tsm_violations_postinit"] = viol
     r["tsm_notreceived_startup"] = startup
+    # Throughput proxies: the bag replay is identical in every run (top lidar
+    # = 288 frames / 29.9 s), so diagnostic ticks that fire per processed
+    # message count processed frames. concatenate_data publishes one status
+    # per output cloud (baseline: 288-290 = every frame), lidar_centerpoint
+    # one per inference. Fewer ticks in a traced run = dropped frames — the
+    # Autoware analogue of ros2_benchmark's NUM_MISSED_FRAMES.
+    r["concat_outputs"] = sum(len(v) for k, v in diag.items() if "concatenate_data" in k)
+    r["centerpoint_infer"] = sum(len(v) for k, v in diag.items() if "processing_time_status" in k)
     r["concat_proc_ms"] = med(series(diag, "concatenate_data", "Processing time (ms)"))
     r["concat_pipeline_ms"] = med(series(diag, "concatenate_data", "Pipeline latency (ms)"))
     r["centerpoint_proc_ms"] = med(series(diag, "processing_time_status", "processing_time_ms",

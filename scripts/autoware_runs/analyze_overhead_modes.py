@@ -19,6 +19,8 @@ ROWS = [
     ("obstacle pc rate [Hz]", "rate_obstacle_pc"),
     ("tsm NotReceived (startup)", "tsm_notreceived_startup"),
     ("tsm violations (post-init)", "tsm_violations_postinit"),
+    ("concat outputs / replay (bag: 288 frames)", "concat_outputs"),
+    ("centerpoint inferences / replay", "centerpoint_infer"),
     ("concat processing [ms]", "concat_proc_ms"),
     ("concat pipeline lat [ms]", "concat_pipeline_ms"),
     ("centerpoint proc [ms] (GPU)", "centerpoint_proc_ms"),
