@@ -25,6 +25,7 @@
 set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SMOKE_TIMEOUT=${SMOKE_TIMEOUT:-900}
+INSTALL_GPU_DEPS=${INSTALL_GPU_DEPS:-0}   # see the in-container comment
 FISH_NSYS_DRAIN=${FISH_NSYS_DRAIN:-60}
 DEST_BASE=${DEST_BASE:-$HOME/fish_traces/overhead_isaac}
 TRT_CACHE_HOST=${TRT_CACHE_HOST:-/home/tue037807/trt_cache_v3}
@@ -117,15 +118,20 @@ run_one() {   # $1=bench $2=mode(warmup|base|lttng|nsys) $3=rep-index
                 sleep 2
               done > /root/fish_traces/cpu.log 2>/dev/null ) &
 
-            # trtexec / dcgm runtime deps (as in v3; wip images may lack them)
-            if [ ! -x /usr/src/tensorrt/bin/trtexec ]; then
+            # trtexec / dcgm runtime deps (as in v3; wip images may lack them).
+            # OFF by default since 2026-09-05: neither FISH nor the benchmarks
+            # need them at run time (TRT engines are baked into the images —
+            # zero trtexec calls in the Aug-30 campaign logs) and the
+            # apt-get over a flaky Wi-Fi stalled runs 3–12 min, eating the
+            # SMOKE_TIMEOUT budget. INSTALL_GPU_DEPS=1 restores the old path.
+            if [ \"$INSTALL_GPU_DEPS\" = 1 ] && [ ! -x /usr/src/tensorrt/bin/trtexec ]; then
                 NVINFER_VER=\$(dpkg-query -W -f='\${Version}' libnvinfer-dev 2>/dev/null || true)
                 if [ -n \"\$NVINFER_VER\" ]; then
                     apt-get update >/tmp/apt_update.log 2>&1 || true
                     apt-get install -y \"libnvinfer-bin=\$NVINFER_VER\" >/tmp/trtexec.log 2>&1 || true
                 fi
             fi
-            if [ ! -f /usr/lib/x86_64-linux-gnu/libdcgm.so.3 ] && [ -f /host/apt_cache/datacenter-gpu-manager_3.3.9_amd64.deb ]; then
+            if [ \"$INSTALL_GPU_DEPS\" = 1 ] && [ ! -f /usr/lib/x86_64-linux-gnu/libdcgm.so.3 ] && [ -f /host/apt_cache/datacenter-gpu-manager_3.3.9_amd64.deb ]; then
                 dpkg -i /host/apt_cache/datacenter-gpu-manager_3.3.9_amd64.deb >/tmp/dcgm.log 2>&1 || true
             fi
 
