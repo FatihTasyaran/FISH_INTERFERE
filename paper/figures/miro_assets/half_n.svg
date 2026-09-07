@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="130" viewBox="0 0 300 130">
+  <defs><clipPath id="c"><ellipse cx="150" cy="65" rx="146" ry="61"/></clipPath></defs>
+  <g clip-path="url(#c)">
+    <rect x="0" y="0" width="150" height="130" fill="#adf0c7"/>
+    <rect x="150" y="0" width="150" height="130" fill="#ff6464"/>
+  </g>
+  <ellipse cx="150" cy="65" rx="146" ry="61" fill="none" stroke="#1a1a1a" stroke-width="3"/>
+  <text x="150" y="80" font-family="Helvetica,Arial" font-size="46" text-anchor="middle" fill="#1a1a1a">N</text>
+</svg>

@@ -89,7 +89,13 @@ start_session() {
 
         echo "[FISH] Starting trace session: \$SESSION"
         echo "[FISH] Output: \$SESSION_DIR/"
-        lttng-sessiond --daemonize 2>/dev/null
+        rm -rf "\$FISH_SESSION_DIR_FILE.stopping" 2>/dev/null || true   # stale stop lock from a previous session
+        # Observer CPU set (host_perf_mode.sh split): sessiond → consumerd
+        # inherit the affinity; the app's own tracepoint/ring-buffer work stays
+        # on the app threads regardless. Empty = unpinned (default).
+        _obs() { if [[ -n "\$FISH_OBS_CPUS" ]]; then taskset -c "\$FISH_OBS_CPUS" "\$@"; else "\$@"; fi; }
+        [[ -n "\$FISH_OBS_CPUS" ]] && echo "[FISH] observer cpus: \$FISH_OBS_CPUS (sessiond/consumerd, daemon, snapshot)"
+        _obs lttng-sessiond --daemonize 2>/dev/null
 
         # Optional per-instance publish/take events ([trace] per_instance in
         # fish_settings.ini) — appended to the baked whitelist at session
@@ -106,6 +112,7 @@ PYPI
             echo "[FISH] per_instance=true → adding \$EXTRA_EVENTS"
         fi
         echo "\$EXTRA_EVENTS" > "\$SESSION_DIR/fishlog/extra_events.txt"
+        [[ "\$EXTRA_EVENTS" == *rmw_take* ]] && echo "filter ros2:rmw_take: taken == 1" >> "\$SESSION_DIR/fishlog/extra_events.txt"
 
         if [[ -n "\$EXTRA_EVENTS" ]]; then
             # per_instance mode ≈ 2x event rate; the boot storm (node init,
@@ -133,7 +140,16 @@ PYPI
             lttng enable-channel -u -s "\$SESSION" fish_ch \\
                 --subbuf-size "\$FISH_SUBBUF_SIZE" --num-subbuf "\$FISH_NUM_SUBBUF" >/dev/null
             for ev in $EVENTS \$EXTRA_EVENTS; do
-                lttng enable-event -u -s "\$SESSION" -c fish_ch "\$ev" >/dev/null 2>&1
+                if [[ "\$ev" == "ros2:rmw_take" ]]; then
+                    # rmw_take fires on every executor poll; taken=0 polls carry no
+                    # message (no source_timestamp, nothing to pair) and were ~half
+                    # of all events in the v5 Autoware traces. Drop them at the
+                    # tracepoint (LTTng payload filter) — the model only consumes
+                    # taken=1 rows (measure_flows, join_analysis). 2026-09-05.
+                    lttng enable-event -u -s "\$SESSION" -c fish_ch "\$ev" --filter 'taken == 1' >/dev/null 2>&1
+                else
+                    lttng enable-event -u -s "\$SESSION" -c fish_ch "\$ev" >/dev/null 2>&1
+                fi
             done
             lttng add-context -u -s "\$SESSION" -c fish_ch -t vpid -t vtid -t procname >/dev/null
             lttng start "\$SESSION" >/dev/null
@@ -155,19 +171,57 @@ PYPI
         echo "[FISH] Trace session started"
 
         # Auto-start GPU daemon (also starts live collectors)
-        PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.cli gpu daemon start 2>/dev/null
+        PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH _obs python3 -m fish.cli gpu daemon start 2>/dev/null
     fi
 }
 
 stop_session() {
     SESSION_DIR=\$(cat \$FISH_SESSION_DIR_FILE 2>/dev/null)
 
+    # 0. Idempotent: the daemon (auto_stop after the replay) and the wrapper
+    # (SIGTERM trap) both call stop; the second caller must WAIT for the first
+    # instead of running a second shutdown snapshot + trace stop in parallel
+    # (2026-09-05 split campaign: two concurrent snapshots, 600 s shutdown).
+    if ! mkdir "\$FISH_SESSION_DIR_FILE.stopping" 2>/dev/null; then
+        _owner=\$(cat "\$FISH_SESSION_DIR_FILE.stopping/pid" 2>/dev/null)
+        if [[ -n "\$_owner" ]] && ! kill -0 "\$_owner" 2>/dev/null; then
+            # the stop that took the lock died (2026-09-06: killed by its own
+            # parent, the daemon) — take over instead of waiting 900 s for nothing
+            echo "[FISH] stale stop lock (owner \$_owner gone) — taking over the stop"
+            rm -rf "\$FISH_SESSION_DIR_FILE.stopping"
+            mkdir "\$FISH_SESSION_DIR_FILE.stopping" 2>/dev/null || return 0
+        else
+            echo "[FISH] stop already in progress — waiting for it to finish"
+            for _i in \$(seq 1 900); do
+                [[ -d "\$FISH_SESSION_DIR_FILE.stopping" ]] || break
+                _owner=\$(cat "\$FISH_SESSION_DIR_FILE.stopping/pid" 2>/dev/null)
+                if [[ -n "\$_owner" ]] && ! kill -0 "\$_owner" 2>/dev/null; then
+                    echo "[FISH] stop owner \$_owner died mid-stop — taking over"
+                    rm -rf "\$FISH_SESSION_DIR_FILE.stopping"; mkdir "\$FISH_SESSION_DIR_FILE.stopping" 2>/dev/null && break
+                fi
+                sleep 1
+            done
+            [[ -f "\$FISH_SESSION_DIR_FILE.stopping/pid" ]] && return 0   # someone else is stopping
+            [[ -d "\$FISH_SESSION_DIR_FILE.stopping" ]] || return 0      # the other stop finished
+        fi
+    fi
+    echo \$\$ > "\$FISH_SESSION_DIR_FILE.stopping/pid"
+    trap 'rm -rf "\$FISH_SESSION_DIR_FILE.stopping" 2>/dev/null' RETURN
+
     # 1. Shutdown snapshot (ps_tree + component_list — needs live processes)
     echo "[FISH] Taking shutdown snapshot..."
-    PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.cli snapshot 2>/dev/null
+    _obs() { if [[ -n "\$FISH_OBS_CPUS" ]]; then taskset -c "\$FISH_OBS_CPUS" "\$@"; else "\$@"; fi; }
+    PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH _obs python3 -m fish.cli snapshot 2>/dev/null
 
-    # 2. Stop daemon (stops live collectors + flushes nsys reports)
-    PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.cli gpu daemon stop 2>/dev/null
+    # 2. Stop daemon (stops live collectors + flushes nsys reports).
+    #    Skipped when the daemon itself runs this stop (auto-stop after the
+    #    replay, FISH_STOP_FROM_DAEMON=1): it already stopped collectors and
+    #    nsys, and signalling it here kills this very script (see gpu.py).
+    if [[ -z "\$FISH_STOP_FROM_DAEMON" ]]; then
+        PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.cli gpu daemon stop 2>/dev/null
+    else
+        echo "[FISH] stop called by the daemon — daemon stop step skipped"
+    fi
 
     # 2b. Belt-and-suspenders drain — two signals decide we're done:
     #     (a) no nsys/qdstrm post-process processes still running, OR
@@ -274,18 +328,24 @@ stop_session() {
     echo "[FISH] Stopping trace session..."
     SESSION=\$(cat \$FISH_SESSION_NAME_FILE 2>/dev/null)
     if [[ -n "\$SESSION" ]]; then
-        lttng stop "\$SESSION" 2>/dev/null
-        lttng destroy "\$SESSION" 2>/dev/null
+        lttng stop "\$SESSION" 2>&1 | tee "\$SESSION_DIR/fishlog/lttng_stop.txt" | grep -i "discard" || true
+        lttng destroy "\$SESSION" 2>&1 | tee -a "\$SESSION_DIR/fishlog/lttng_stop.txt" | grep -i "discard" || true
     fi
     # Discard report: LTTng ring-buffer overflows silently drop events; make
     # every session declare its own loss (probe-effect / completeness line).
-    if [[ -n "\$SESSION_DIR" ]] && command -v babeltrace2 >/dev/null 2>&1; then
+    # FISH_EVENT_COUNT=0 defers the (slow: one full babeltrace pass) count —
+    # campaigns count offline; the discard warning still comes from lttng stop.
+    if [[ "\${FISH_EVENT_COUNT:-1}" == "0" && -n "\$SESSION_DIR" ]]; then
+        NDISC=\$(grep -oiE '[0-9]+ events? were discarded' "\$SESSION_DIR/fishlog/lttng_stop.txt" 2>/dev/null | awk '{s+=\$1} END{print s+0}')
+        echo "total_discarded_events=\$NDISC" > "\$SESSION_DIR/fishlog/discards.txt"
+        echo "total_events=deferred" >> "\$SESSION_DIR/fishlog/discards.txt"
+        echo "[FISH] LTTng events: deferred (FISH_EVENT_COUNT=0), discarded (lttng stop): \$NDISC"
+    elif [[ -n "\$SESSION_DIR" ]] && command -v babeltrace2 >/dev/null 2>&1; then
         TRACE_ROOT=\$(find "\$SESSION_DIR/ros2" -name metadata -printf '%h\\n' 2>/dev/null | head -1)
         if [[ -n "\$TRACE_ROOT" ]]; then
-            babeltrace2 "\$TRACE_ROOT" 2>&1 >/dev/null | grep -i "discarded" \\
-                > "\$SESSION_DIR/fishlog/discards.txt" || true
+            # single pass: events on stdout (counted), discard warnings on stderr
+            NEV=\$(babeltrace2 "\$TRACE_ROOT" 2> "\$SESSION_DIR/fishlog/discards.txt" | wc -l)
             NDISC=\$(grep -oE 'discarded [0-9]+' "\$SESSION_DIR/fishlog/discards.txt" | awk '{s+=\$2} END{print s+0}')
-            NEV=\$(babeltrace2 "\$TRACE_ROOT" 2>/dev/null | wc -l)
             echo "total_discarded_events=\$NDISC" >> "\$SESSION_DIR/fishlog/discards.txt"
             echo "total_events=\$NEV" >> "\$SESSION_DIR/fishlog/discards.txt"
             echo "[FISH] LTTng events: \$NEV, discarded: \$NDISC (fishlog/discards.txt)"

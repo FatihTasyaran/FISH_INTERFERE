@@ -163,6 +163,100 @@ def check_pid_has_cuda(pid: int) -> list[str]:
         return []
 
 
+def _cpus_from_env(var: str) -> set:
+    """Parse a cpuset string like '0,2,4-6' from the environment; empty = unset."""
+    out = set()
+    for part in os.environ.get(var, "").replace(" ", "").split(","):
+        if not part:
+            continue
+        a, _, b = part.partition("-")
+        out.update(range(int(a), int(b or a) + 1))
+    return out
+
+
+def _preexec_app_cpus():
+    """preexec_fn for children that belong to the APPLICATION side (bag replay,
+    nsys relaunch): the daemon itself may be pinned to the observer set
+    (FISH_OBS_CPUS) and children would inherit it. FISH_APP_CPUS empty = no-op."""
+    cpus = _cpus_from_env("FISH_APP_CPUS")
+    if cpus:
+        try:
+            os.sched_setaffinity(0, cpus)
+        except OSError:
+            pass
+
+
+def pid_has_cuda_context(pid: int) -> bool:
+    """True if the process holds an open fd on a /dev/nvidia* device, i.e. it
+    has actually created a CUDA context. Mapping libcuda/libcudart/libnvinfer
+    (check_pid_has_cuda) only proves linkage: in the v5 Autoware campaign
+    (2026-09-05) shape_estimation and detection_by_tracker were relaunched
+    under nsys on that basis and their nsys reports contain no CUDA activity
+    at all (notes/aw_phases_provenance.md §7)."""
+    try:
+        for fd in os.listdir(f"/proc/{pid}/fd"):
+            try:
+                if os.readlink(f"/proc/{pid}/fd/{fd}").startswith("/dev/nvidia"):
+                    return True
+            except OSError:
+                continue
+    except (PermissionError, FileNotFoundError, ProcessLookupError):
+        pass
+    return False
+
+
+def ancestor_is_nsys(pid: int, max_depth: int = 6) -> Optional[int]:
+    """PID of the nearest ancestor that is an `nsys` process, or None.
+
+    launch_wrap starts GPU nodes/containers as children of `nsys profile`
+    (ExecuteProcess prefix), so the wrapped process's OWN cmdline never
+    contains nsys — only the parent's does. The old check looked at the
+    process's own cmdline and therefore killed launch-wrapped standalone
+    nodes a second time (v5 nsys runs, 2026-09-05: detection_by_tracker
+    and shape_estimation; the re-launched copies never produced events)."""
+    cur = pid
+    for _ in range(max_depth):
+        try:
+            with open(f"/proc/{cur}/stat", "r") as f:
+                stat = f.read()
+            ppid = int(stat[stat.rindex(")") + 2:].split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+        if ppid <= 1:
+            return None
+        cmd = read_cmdline(ppid)
+        if cmd and "nsys" in os.path.basename(cmd.split()[0]):
+            return ppid
+        cur = ppid
+    return None
+
+
+def ancestor_is_launch(pid: int, max_depth: int = 8) -> Optional[int]:
+    """PID of the nearest ancestor that is a `ros2 launch` / fish.launch_wrap
+    process, or None. Processes started by the launch system are launch_wrap's
+    responsibility: it wraps the ones launch_inspect classified as GPU nodes at
+    execute-time, and deliberately leaves the others unwrapped. The daemon's
+    kill+relaunch path is for processes started OUTSIDE the launch tree
+    (`ros2 run`, manual starts). 2026-09-05 split campaign: the daemon
+    relaunched shape_estimation (launch child, CUDA context but no GPU work)
+    a second time in a different way than launch_wrap would have."""
+    cur = pid
+    for _ in range(max_depth):
+        try:
+            with open(f"/proc/{cur}/stat", "r") as f:
+                stat = f.read()
+            ppid = int(stat[stat.rindex(")") + 2:].split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+        if ppid <= 1:
+            return None
+        cmd = read_cmdline(ppid)
+        if cmd and ("ros2 launch" in cmd or "fish.launch_wrap" in cmd or "launch_test" in cmd):
+            return ppid
+        cur = ppid
+    return None
+
+
 def read_cmdline(pid: int) -> str:
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
@@ -301,41 +395,23 @@ def build_nsys_command(
     short_name = extract_short_name(original_cmd)
     output_path = os.path.join(nsys_dir, f"nsys_{short_name}_{timestamp}")
 
-    nsys_cmd = ["nsys", "profile"]
-    nsys_cmd.append(f"--trace={settings.get('nsys', 'trace')}")
-    nsys_cmd.append(f"--cuda-memory-usage={settings.get('nsys', 'cuda_memory_usage')}")
-    nsys_cmd.append(f"--cudabacktrace={settings.get('nsys', 'cudabacktrace')}")
-    nsys_cmd.append(f"--python-backtrace={settings.get('nsys', 'python_backtrace')}")
-    nsys_cmd.append(f"--python-sampling={settings.get('nsys', 'python_sampling')}")
-    nsys_cmd.append(f"--pytorch={settings.get('nsys', 'pytorch')}")
-    nsys_cmd.append(f"--sample={settings.get('nsys', 'sample')}")
-    nsys_cmd.append(f"--cpuctxsw={settings.get('nsys', 'cpuctxsw')}")
-    nsys_cmd.append(f"--export={settings.get('nsys', 'export')}")
-    # Optional: --cuda-event-trace for deterministic event→stream correlation
-    try:
-        cet = settings.get("nsys", "cuda_event_trace")
-        if cet and cet.lower() not in ("", "false", "0", "no"):
-            nsys_cmd.append(f"--cuda-event-trace={cet}")
-    except Exception:
-        pass  # key missing in older settings — keep old behaviour
-    # Optional: --cuda-graph-trace=node preserves per-kernel granularity
-    # when a workload uses cudaGraphLaunch. Default is graph (collapse).
-    try:
-        cgt = settings.get("nsys", "cuda_graph_trace")
-        if cgt:
-            nsys_cmd.append(f"--cuda-graph-trace={cgt}")
-    except Exception:
-        pass
-    # Optional: --cuda-trace-all-apis=true for completeness
-    try:
-        cta = settings.get("nsys", "cuda_trace_all_apis")
-        if cta and cta.lower() not in ("", "false", "0", "no"):
-            nsys_cmd.append(f"--cuda-trace-all-apis={cta}")
-    except Exception:
-        pass
-    nsys_cmd.append("--force-overwrite=true")
-    nsys_cmd.append("--stats=true")
-    nsys_cmd.append("--show-output=true")
+    # Same base flag set as launch_wrap (python/fish/nsys_flags.py) so both
+    # wrapping paths observe the system identically. The settings-driven
+    # full profile (--sample=process-tree, --cudabacktrace, --python-*,
+    # --cuda-memory-usage, --stats) is now opt-in (FISH_NSYS_STANDALONE_FULL
+    # / [nsys] standalone_full). v5 campaign (2026-09-05): nodes relaunched
+    # with the full profile produced no LTTng events; the same relaunch with
+    # the minimal profile (split nsys_1) was fully traced. A component_container
+    # test did not reproduce the loss, so the triggering flag is not isolated.
+    try:  # package import (fish.*) or script-dir import, whichever applies
+        from fish.nsys_flags import (base_nsys_flags, standalone_extra_flags,
+                                     standalone_full_requested)
+    except ImportError:
+        from nsys_flags import (base_nsys_flags, standalone_extra_flags,
+                                standalone_full_requested)
+    nsys_cmd = base_nsys_flags()
+    if standalone_full_requested(settings):
+        nsys_cmd.extend(standalone_extra_flags(settings))
     nsys_cmd.append(f"--output={output_path}")
 
     if extra_flags:
@@ -361,7 +437,7 @@ def relaunch_with_nsys(
     nsys_cmd = build_nsys_command(process.cmdline, extra_flags=extra_flags)
     print(f"[FISH] Executing: {' '.join(nsys_cmd)}")
     try:
-        proc = subprocess.Popen(nsys_cmd)
+        proc = subprocess.Popen(nsys_cmd, preexec_fn=_preexec_app_cpus)
         print(f"[FISH] nsys launched (PID {proc.pid})")
         if logger:
             logger.log_resurrect(process.pid, proc.pid, process.process_name, process.cmdline)
@@ -1537,16 +1613,33 @@ def _handle_standalone_gpu_process(
         logger.log_daemon(f"standalone_nsys_disabled pid={pid}")
         return
 
-    # Check if already wrapped by launch_wrap (nsys in cmdline)
+    # Check if already wrapped by launch_wrap: nsys in the process's own
+    # cmdline (prefix form) OR an nsys ancestor (the usual case: the node
+    # is nsys's child and its own cmdline is just the node binary).
+    launch_parent = ancestor_is_launch(pid)
+    if launch_parent is not None and ancestor_is_nsys(pid) is None:
+        print(
+            f"[FISH] GPU node PID={pid} {proc_info['process_name']} — started by "
+            f"the launch system (PID {launch_parent}) and left unwrapped by "
+            f"launch_wrap; daemon does not relaunch launch-owned processes"
+        )
+        logger.log_daemon(
+            f"standalone_launch_owned_skip pid={pid} "
+            f"name={proc_info['process_name']} launch_parent={launch_parent}"
+        )
+        return
+
     already_wrapped = "nsys" in cmdline.split()[:3] if cmdline else False
-    if already_wrapped:
+    nsys_parent = ancestor_is_nsys(pid)
+    if already_wrapped or nsys_parent is not None:
         print(
             f"[FISH] GPU node PID={pid} {proc_info['process_name']} — "
-            f"already nsys-wrapped (launch_wrap), skipping kill"
+            f"already nsys-wrapped (launch_wrap"
+            f"{f', nsys PID {nsys_parent}' if nsys_parent else ''}), skipping kill"
         )
         logger.log_daemon(
             f"standalone_launch_wrap_skip pid={pid} "
-            f"name={proc_info['process_name']}"
+            f"name={proc_info['process_name']} nsys_parent={nsys_parent}"
         )
         return
 
@@ -1575,7 +1668,8 @@ def _handle_gpu_process(proc_info: dict, known_pids: set[int],
     if _is_container(proc_info["process_name"], proc_info["cmdline"]):
         pid = proc_info["pid"]
         cmdline = proc_info["cmdline"]
-        already_wrapped = "nsys" in cmdline.split()[:2] if cmdline else False
+        already_wrapped = ("nsys" in cmdline.split()[:2] if cmdline else False) \
+            or ancestor_is_nsys(pid) is not None
         status = "already nsys-wrapped" if already_wrapped else "unwrapped"
         print(
             f"[FISH] GPU container PID={pid} — skipped by daemon "
@@ -1610,6 +1704,13 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
 
     logger = FishLogger()
     logger.log_daemon("started")
+    obs = _cpus_from_env("FISH_OBS_CPUS")
+    if obs:
+        try:
+            os.sched_setaffinity(0, obs)
+            print(f"[FISH] Daemon pinned to observer cpus {sorted(obs)}")
+        except OSError as e:
+            print(f"[FISH] WARNING: could not pin daemon to {sorted(obs)}: {e}")
     print(f"[FISH] Daemon started (poll={poll_interval}s, settle={settle_time}s)")
 
     known_pids: set[int] = set()
@@ -1671,6 +1772,7 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
             with open(replay_log, "w") as rlog:
                 replay_proc = subprocess.run(
                     replay_cmd, shell=True, stdout=rlog, stderr=rlog,
+                    preexec_fn=_preexec_app_cpus,   # replay is APPLICATION side
                 )
             _write_signal("replay_complete", logger)
             print(f"[FISH] Replay finished (exit={replay_proc.returncode})")
@@ -1692,9 +1794,16 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
                 collector_started = False
             graceful_stop_nsys(nsys_children, logger)
             # Trigger trace session stop via script
+            # FISH_STOP_FROM_DAEMON=1: the stop script must NOT run "daemon stop"
+            # (it would SIGTERM this very process while it waits here; the
+            # SystemExit raised in the handler makes subprocess.run() kill the
+            # stop script mid-way → stale .stopping lock, LTTng never stopped —
+            # 2026-09-06 Autoware lttng runs). Collectors and nsys are already
+            # stopped above; the daemon exits right after this call.
             subprocess.run(
                 ["/opt/ros/humble/fish/scripts/trace_session.sh", "stop"],
                 capture_output=True,
+                env={**os.environ, "FISH_STOP_FROM_DAEMON": "1"},
             )
             logger.log_daemon("stopped")
             try:
@@ -1768,6 +1877,16 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
                 if cmdline:
                     proc_info["cmdline"] = cmdline
                 proc_info["cuda_libs"] = check_pid_has_cuda(pid)
+
+                if proc_info["cuda_libs"] and not pid_has_cuda_context(pid):
+                    # linked against CUDA libs but no device context after
+                    # settle: treat as a CPU node (no kill/relaunch)
+                    print(f"[FISH] PID {pid} {proc_info['process_name']}: CUDA libs "
+                          f"mapped ({','.join(proc_info['cuda_libs'])}) but no "
+                          f"/dev/nvidia* fd — CPU node (LTTng only)")
+                    logger.log_daemon(f"cuda_libs_no_context pid={pid} "
+                                      f"{proc_info['process_name']}")
+                    proc_info["cuda_libs"] = []
 
                 if proc_info["cuda_libs"]:
                     had_gpu = True

@@ -1,0 +1,147 @@
+% Model section of the FISH WiP paper — drafted 2026-09-07 with Claude Fable 5.1 (Anthropic)
+\section{The FISH Model}\label{sec:model}
+
+FISH is a hierarchical graph $G=(V,E)$ together with an expansion
+operator $\mathcal{X}$. Containment is encoded in the vertices, so $E$
+carries only \emph{interaction} edges. Every vertex is a tuple
+$v=(t_v,\mathit{id}_v,A_v,Z_v,\mathit{ns}_v)$: its type, a unique
+identifier, an attribute tuple, the set of its children in the next
+layer, and its ROS~2 namespace. The types induce the ordered hierarchy
+$\langle H,EX,N,E,F\rangle$ (host, executor, node, entity, callback) with
+layer indices $\ell:\{H,EX,N,E,F\}\to\{0,\dots,4\}$; the sets
+$\{Z_v:\ell(t_v)=\ell\}$ partition $V_{\ell+1}$. A node belongs to the
+executor vertex of the process that created it, since every trace record
+carries the pid that emitted it, and an entity belongs to the callback
+group, hence to the executor object, that dispatches it. The attributes are
+\[
+A_v=\begin{cases}
+(\mathit{hostname}) & t_v=H,\\
+(\mathit{pid},\ \mathit{mode}\in\{ST,MT\},\ \mathit{threads}) & t_v=EX,\\
+(\mathit{label}) & t_v=N,\\
+(\mathit{label},\ \mathit{etype},\ \mathit{aspects}) & t_v=E,\\
+(\mathit{label},\ \mathit{cb},\ \mathit{phase},\ \mathit{oort}) & t_v=F,
+\end{cases}
+\]
+with $\mathit{etype}\in\{\mathit{tmr},\mathit{sub},\mathit{serv},\mathit{cli},\mathit{wait}\}$.
+Here $\mathit{aspects}$ lists the topics and services an entity's
+callbacks publish to or consume from, recovered from the link events of
+Section~\ref{sec:methodology}; $\mathit{cb}$ is the callback identity;
+$\mathit{phase}\in\{\mathit{init},\mathit{data}\}$ separates callbacks
+that only ran before the periodic pipeline started from those that ran
+after it; and $\mathit{oort}$ flags an \emph{out-of-ROS thread}: a thread
+outside the ROS~2 launch tree that exchanges data with ROS~2 nodes over
+topics (e.g. a TensorRT worker), observed at the callback layer only.
+Namespaces are not a layer: $\mathit{ns}_v$ is the node's ROS~2
+namespace, inherited by its entities and callbacks and set-valued for an
+executor that serves several namespaces. They only induce a grouping
+that presents the user-level abstraction of the architecture: a
+depth-one prefix (e.g. \texttt{/perception}) groups the executors
+serving it, and a deeper prefix (e.g. \texttt{/perception/tracking})
+groups the executors and nodes below it; entities and callbacks follow
+their node, and edges between groups are lifted to the group boundary
+as between layers.
+
+\emph{a) Edges and expansion:} an interaction edge is a tuple
+$e=(u,v,\tau,\mu)$ with endpoints $u,v\in V_4$, a type
+$\tau\in\mathcal{T}$ and a payload $\mu$ (topic or service, message
+type, and the per-instance measurements of its occurrences). Edges are
+established between entities and their callbacks, so $G_3$ and $G_4$
+carry the same edges; upward, a vertex inherits every edge between one
+of its children and a child of another vertex, whatever its type, so
+that with $\pi=p^{\,4-\ell}$
+\[
+E_\ell=\bigl\{\bigl(\pi(u),\pi(v),\{(\tau,\mu):(u,v,\tau,\mu)\in E_4\}\bigr)
+: \pi(u)\neq\pi(v)\bigr\}
+\]
+and a higher-layer edge is the set of the callback-layer edges it
+aggregates. $\mathcal{X}$ is the inverse step: it replaces a vertex by
+its children and re-attaches every incident edge to the child endpoints
+that carry it,
+\begin{align*}
+\mathcal{X}_v(G) &= \bigl(V\setminus\{v\}\cup Z_v,\ E'\bigr),\\
+E' &= \{(a',b',\tau,\mu):(a,b,\tau,\mu)\in E,\ a'\in\sigma_v(a),\ b'\in\sigma_v(b)\},
+\end{align*}
+with $\sigma_v(u)=Z_v$ if $u=v$ and $\{u\}$ otherwise. Below the
+callback layer, a callback that submits GPU work owns a typed DAG
+(Section~\ref{sec:model}c); its incoming edges attach to the entry of
+that DAG and its outgoing edges leave from its exit.
+
+\emph{b) Interaction edges:} $\mathcal{T}$ holds the types
+$\mathit{msg}$, $\mathit{dep}$, $\mathit{join}$, $\mathit{state}$,
+$\mathit{polled}$ and $\mathit{gxf}$, and every edge may carry the flag
+$\mathit{external}$.
+Let $\mathrm{pub}(f)$ be the topics callback $f$ publishes and
+$\mathrm{sub}(T)$ the callbacks of subscriptions to topic $T$. Then
+$(f,g,\mathit{msg})\in E_4$ iff $\exists T\in\mathrm{pub}(f):g\in\mathrm{sub}(T)$;
+whether the delivery is intra-process or through DDS is an attribute of
+$g$, not a different edge. A service call yields a $\mathit{dep}$ pair:
+a request edge from the calling callback $f$ to the serving callback $g$
+and a response edge from $g$ back to the continuation of $f$ that
+handles the reply. Two edge types are \emph{structural inferences} that
+recover in-memory hand-offs no ROS layer exposes. If two or more
+subscription callbacks of the same node publish the same data topic,
+the output is produced by whichever input completes the set: those
+callbacks are the completers of a \emph{join} group, which further
+contains the node's other subscriptions of the same message type and
+the timers that also published the output (the timeout path); members
+are tied to the first completer by $\mathit{join}$ edges. The signature
+alone does not separate a join from a node that merely forwards whichever
+input arrives, so the group is classified from per-instance data: in a
+join the completing execution of a callback is an order of magnitude
+longer than the deposit-only executions of the same callback (in
+Autoware's concatenation node 9.7\,ms against 0.03\,ms) and the output
+rate follows the slowest input instead of their sum. Sample-and-hold reads are modelled by $\mathit{state}$ and
+$\mathit{polled}$ edges: if a node has subscription callbacks that
+consume a data topic but publish none ($S$) and callbacks that publish
+data ($P$), every $(s,p)\in S\times P$ with $s$ outside any join group
+receives a $\mathit{state}$ edge, inferred, meaning $p$ reads the latest
+value deposited by $s$; when that read is observed as a message take
+inside $p$'s execution, the edge is a $\mathit{polled}$ edge instead.
+Both carry the measured data age rather than a hop latency. $\mathit{gxf}$ edges are the GXF-internal hops of NITROS
+graphs, every ingress of a codelet group feeding every egress. Finally,
+an untraced endpoint (a topic with traced subscribers but no traced
+publisher, or vice versa) and every out-of-ROS thread are represented
+by an external vertex; the edges into and out of it are marked
+$\mathit{external}$, and when lifted the vertex becomes an external
+entity of that layer, which is how a composed system meets its
+environment.
+
+\emph{c) GPU sub-model:} a callback $f$ that submits GPU work owns a set
+of typed DAGs, one per distinct \emph{signature} observed over all its
+invocations, where an invocation is one execution window of $f$ that
+contains CUDA runtime calls. A typed DAG $D_f^k=(N,A)$ has host calls
+($\mathit{cpu}$), kernels ($\mathit{sm}$) and copies ($\mathit{ce}$) as
+nodes, and $\mathit{launch}$ (a host call to the work it produced, by
+correlation id), $\mathit{cpu\_order}$ (consecutive host calls) and
+$\mathit{stream\_fifo}$ (consecutive work on one stream) as edges; its
+signature is its node sequence. Over this set FISH classifies shapes
+and phases (the dominant steady shape against initialisation, warm-up
+and transient variants) and derives the callback's \emph{conditional
+graph}: the common backbone of all signatures with the observed
+branches and their probabilities, which is the input-dependent
+structure a GPU-aware analysis has to bound.
+
+\emph{d) Correctness:} correctness is stated, and checked, on the graph
+as extracted, before any grouping or filtering is applied. Let $\chi$ map every vertex-creating ROS~2 API call to
+the trace records it must emit and the vertices it must create: a node
+constructor yields $1N+7E+7F$, because it also creates the six parameter
+services and the time-source subscription, whereas
+\texttt{create\_service} yields $1E+1F$ and \texttt{create\_publisher}
+yields no vertex at all, only a publish aspect on its caller. $\chi$ is
+tabulated once for the ROS~2 API and for the wrapper libraries that call
+it. For a run, FISH locates the sources of every binary its traced
+processes mapped, scans them for API calls and sums the expected records
+and vertices; correctness is then the two-phase containment
+\[
+\chi_r(A)\subseteq\mathcal{R}\ \ \text{(C1)},\qquad
+\chi_v(A)\subseteq V\ \ \text{(C2)},
+\]
+where $A$ is the set of executed API calls, $\mathcal{R}$ the trace and
+$V$ the FISH graph: C1 is instrumentation completeness, every expected
+record is in the trace, and C2 is extraction completeness, every
+expected vertex is in the graph, checked node by node. The views used for presentation are lossy by design: each
+applies a declared filter predicate from a catalogue, so what a view
+omits is always attributable to a filter, never to the extraction. The single exclusion before extraction is by
+definition, not by filtering: a process that FISH killed and relaunched
+is an artefact of tracing rather than a part of the application, and its
+records are removed from $\mathcal{R}$.

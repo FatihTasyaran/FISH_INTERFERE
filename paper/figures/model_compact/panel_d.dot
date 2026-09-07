@@ -1,0 +1,50 @@
+digraph d {
+	graph [bgcolor=white,
+		nodesep=0.06,
+		rankdir=LR,
+		ranksep=0.14
+	];
+	node [fontname=Helvetica,
+		fontsize=7,
+		height=0.18,
+		margin="0.03,0.018",
+		shape=box,
+		style="rounded,filled"
+	];
+	edge [arrowsize=0.5,
+		fontname=Helvetica,
+		fontsize=6
+	];
+	subgraph cluster_bb {
+		graph [color="#1a5490",
+			fillcolor="#eef4fb",
+			fontsize=7,
+			label="backbone (common to all invocations)",
+			style="rounded,filled"
+		];
+		b0	[fillcolor="#bbdefb",
+			label="CPU:LK"];
+		b1	[fillcolor="#bbdefb",
+			label="SM:normalize"];
+		b0 -> b1	[color="#1976d2",
+			minlen=1];
+		b2	[fillcolor="#bbdefb",
+			label="CPU:SS"];
+		b1 -> b2	[color="#1976d2",
+			minlen=1];
+	}
+	x0	[color="#e08a1e",
+		fillcolor="#ffe0b2",
+		label="MALa, FRE"];
+	b0 -> x0	[color="#e08a1e",
+		label="48%",
+		minlen=2,
+		style=dashed];
+	x1	[color="#e08a1e",
+		fillcolor="#ffe0b2",
+		label=MALa];
+	b0 -> x1	[color="#e08a1e",
+		label="40%",
+		minlen=3,
+		style=dashed];
+}

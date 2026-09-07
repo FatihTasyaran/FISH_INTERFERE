@@ -25,6 +25,14 @@
 set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SMOKE_TIMEOUT=${SMOKE_TIMEOUT:-900}
+# CPU split (host_perf_mode.sh split): FISH_APP_CPUS = launch_test + benchmark
+# graph + nsys, FISH_OBS_CPUS = LTTng daemons, FISH daemon/snapshot, probes.
+# Both empty (default) = no pinning. FISH_EVENT_COUNT=0 skips the in-container
+# babeltrace count at session stop (2026-09-05).
+FISH_APP_CPUS=${FISH_APP_CPUS:-}
+FISH_OBS_CPUS=${FISH_OBS_CPUS:-}
+FISH_EVENT_COUNT=${FISH_EVENT_COUNT:-0}
+CPUSET=""; [ -n "$FISH_APP_CPUS" ] && [ -n "$FISH_OBS_CPUS" ] && CPUSET="$FISH_APP_CPUS,$FISH_OBS_CPUS"
 INSTALL_GPU_DEPS=${INSTALL_GPU_DEPS:-0}   # see the in-container comment
 FISH_NSYS_DRAIN=${FISH_NSYS_DRAIN:-60}
 DEST_BASE=${DEST_BASE:-$HOME/fish_traces/overhead_isaac}
@@ -84,10 +92,11 @@ run_one() {   # $1=bench $2=mode(warmup|base|lttng|nsys) $3=rep-index
     case $MODE in
         lttng) FISH_ON=1; EXTRA_ENV=(-e FISH_NSYS_DISABLE=1) ;;
         nsys)  FISH_ON=1
-               # CUDA_EVT=0 → minimal nsys flags (no --cuda-event-trace);
+               # CUDA_EVT=1 → --cuda-event-trace=true (default 0 since 2026-09-06: the model
+               # never read CUPTI_ACTIVITY_KIND_CUDA_EVENT; suspect in the GXF stalls);
                # smoke 2026-08-30: with the flag the NITROS pipeline delivered
                # ZERO messages to the monitor (test failed after 220 s).
-               [ "${CUDA_EVT:-1}" = 1 ] && EXTRA_ENV=(-e FISH_CUDA_EVENT_TRACE=1) ;;
+               [ "${CUDA_EVT:-0}" = 1 ] && EXTRA_ENV=(-e FISH_CUDA_EVENT_TRACE=1) ;;
     esac
     log "----- $B [$MODE #$IDX] FISH=$FISH_ON -----"
     # Named container + forced removal after the run: `timeout` only kills the
@@ -96,7 +105,8 @@ run_one() {   # $1=bench $2=mode(warmup|base|lttng|nsys) $3=rep-index
     local CNAME="ovh-$B-$MODE-$IDX"
     docker rm -f "$CNAME" >/dev/null 2>&1 || true
     timeout "$SMOKE_TIMEOUT" docker run --rm --name "$CNAME" --gpus all --privileged --net host \
-        --shm-size=2g \
+        --shm-size=2g ${CPUSET:+--cpuset-cpus=$CPUSET} \
+        -e FISH_APP_CPUS="$FISH_APP_CPUS" -e FISH_OBS_CPUS="$FISH_OBS_CPUS" -e FISH_EVENT_COUNT="$FISH_EVENT_COUNT" \
         -v "$REPO_ROOT":/host/fish_src:ro \
         -v "$NGC_ASSETS":/host/isaac_assets:ro \
         -v "$R2B_DATASET":/host/r2bdataset:ro \
@@ -110,8 +120,12 @@ run_one() {   # $1=bench $2=mode(warmup|base|lttng|nsys) $3=rep-index
         "$IMG" bash -lc "
             set -e
             export PYTHONUNBUFFERED=1
+            echo \"cpuset: container=\$(cat /sys/fs/cgroup/cpuset.cpus.effective 2>/dev/null) app=\${FISH_APP_CPUS:-all} obs=\${FISH_OBS_CPUS:-all}\" > /root/fish_traces/cpuset.txt
+            APP_TS=\"\"; [ -n \"\$FISH_APP_CPUS\" ] && APP_TS=\"taskset -c \$FISH_APP_CPUS\"
+            # per-CPU-set busy probe (split runs; observer-pinned)
+            [ -n \"\$FISH_APP_CPUS\" ] && bash /host/fish_src/scripts/cpuset_probe.sh /root/fish_traces/cpuset.log &
             # cpu probe (identical in every mode)
-            ( set +e; while :; do
+            ( set +e; [ -n \"\$FISH_OBS_CPUS\" ] && taskset -pc \"\$FISH_OBS_CPUS\" \$BASHPID >/dev/null 2>&1; while :; do
                 printf '%s ' \$(date +%s.%N)
                 awk '{ i=index(\$0,\")\"); split(substr(\$0,i+2),a,\" \"); s+=a[12]+a[13]; c++ }
                      END{ printf \"%d %d\n\", s, c }' /proc/[0-9]*/stat 2>/dev/null || echo NA NA
@@ -128,9 +142,9 @@ run_one() {   # $1=bench $2=mode(warmup|base|lttng|nsys) $3=rep-index
             # build their TRT engine into /tmp at every run via model_converter).
             # Offline path first: version-pinned .deb from the host apt_cache
             # (fetched 2026-09-05, matches libnvinfer10 10.16.1.11+cuda13.2).
-            if [ ! -x /usr/src/tensorrt/bin/trtexec ]; then
-                DEB=\$(ls /host/apt_cache/libnvinfer-bin_*.deb 2>/dev/null | head -1)
-                [ -n \"\$DEB\" ] && dpkg -i \"\$DEB\" >/tmp/trtexec_dpkg.log 2>&1 || true
+            if [ ! -x /usr/src/tensorrt/bin/trtexec ] || ! ldconfig -p | grep -q libcudnn.so.9; then
+                dpkg -i /host/apt_cache/libcudnn9*.deb /host/apt_cache/libnvinfer-*.deb >/tmp/gpu_deps_dpkg.log 2>&1 || true
+                ldconfig 2>/dev/null || true
             fi
             if [ \"$INSTALL_GPU_DEPS\" = 1 ] && [ ! -x /usr/src/tensorrt/bin/trtexec ]; then
                 NVINFER_VER=\$(dpkg-query -W -f='\${Version}' libnvinfer-dev 2>/dev/null || true)
@@ -171,7 +185,7 @@ run_one() {   # $1=bench $2=mode(warmup|base|lttng|nsys) $3=rep-index
             rm -f /tmp/r2b-log-*
             date +%s.%N > /root/fish_traces/t_start.txt
             set +e
-            launch_test \"\$SCRIPT\"
+            \$APP_TS launch_test \"\$SCRIPT\"
             rc=\$?
             date +%s.%N > /root/fish_traces/t_end.txt
             cp /tmp/r2b-log-* /root/fish_traces/ 2>/dev/null

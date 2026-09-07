@@ -1,0 +1,49 @@
+digraph c {
+	graph [bgcolor=white,
+		nodesep=0.04,
+		rankdir=LR,
+		ranksep=0.08
+	];
+	node [fontname=Helvetica,
+		fontsize=7,
+		height=0.18,
+		margin="0.025,0.015",
+		style=filled
+	];
+	edge [arrowsize=0.4,
+		penwidth=0.8
+	];
+	subgraph cluster_s14 {
+		graph [color="#27ae60",
+			fontsize=7,
+			label="stream 14",
+			style=rounded
+		];
+		n2	[fillcolor="#a9dfbf",
+			label=normalize,
+			shape=ellipse];
+	}
+	n0	[fillcolor="#e8e8e8",
+		label=MALa,
+		shape=box];
+	n1	[fillcolor="#e8e8e8",
+		label=LK,
+		shape=box];
+	n0 -> n1	[color="#bbbbbb",
+		minlen=1,
+		penwidth=0.5];
+	n1 -> n2	[color="#2c3e50",
+		minlen=1];
+	n3	[fillcolor="#e8e8e8",
+		label=SS,
+		shape=box];
+	n1 -> n3	[color="#bbbbbb",
+		minlen=2,
+		penwidth=0.5];
+	n4	[fillcolor="#e8e8e8",
+		label=FRE,
+		shape=box];
+	n3 -> n4	[color="#bbbbbb",
+		minlen=1,
+		penwidth=0.5];
+}

@@ -11,11 +11,36 @@ Plus the external probes:
   - cpu.log: busiest 60 s window of container CPU (jiffies/s ÷ USER_HZ = cores)
   - hz_*.log (if present, pilot runs): ros2 topic hz cross-check
 
+PROVENANCE CAVEATS (v5 audit, 2026-09-05, notes/campaign_v5_incidents.md):
+  * diag.log is captured by `ros2 topic echo`, which cannot keep up with
+    ~60 diagnostic_updater publishers (QoS KEEP_LAST(1)): per-node loss vs the
+    LTTng rcl_publish count is 22-30 % for depth-10 publishers and 55-96 % for
+    depth-1 ones, timing-dependent. Hence NO COUNT derived from diag.log is a
+    throughput measure; only the VALUES (time-subsampled) are used, as medians.
+  * Header stamps are sim time (use_sim_time; the bag's /clock). Timers on the
+    sim clock do not fire before replay, so diag.log covers the replay window
+    only: bring-up is not in it, the observed startup is the pipeline warm-up
+    INSIDE the replay (centerpoint's first inference, tracker's first report).
+  * Phases per run (decided 2026-09-05, notes/aw_phases_provenance.md):
+      (1) init end   = first nonzero header stamp = first /clock (all sim
+                       timers fire on it; robust to probe loss: ~60 publishers)
+      (2) warm-up end = tracker's first report in pipeline_latency_monitor
+                       (= NDT activation + one traversal of the perception
+                       chain; matches the trace criterion "every regular
+                       callback executed once" within ~1 s)
+      (3) bag end    = last advancing stamp (the sim clock freezes)
+    Warm-up (1→2) is itself a metric; value metrics are medians over the
+    execution phase (2→3). FISH_AW_WINDOW="lo,hi" (sim s after (1)) overrides
+    the per-run window for robustness checks (e.g. a common window).
+
 usage: analyze_overhead.py <overhead_dir>   # containing traced/ + baseline/
 """
 import glob, os, re, statistics as st, sys
 
 USER_HZ = 100  # jiffies per second (x86 default)
+# pipeline_latency_monitor.param.yaml latency_offsets_ms: sensing 0, perception
+# 1.4, planning 50, control 15, vehicle interface 191 (sum = constant floor)
+LATENCY_OFFSETS_MS = 0.0 + 1.4 + 50.0 + 15.0 + 191.0
 
 
 def cpu_busiest_window(path, win=60.0):
@@ -39,6 +64,31 @@ def cpu_busiest_window(path, win=60.0):
     return best, len(pts)
 
 
+def cpuset_busiest_window(path, win=60.0):
+    """cpuset.log: '<ts> <app_busy> <obs_busy> <rest_busy>' jiffies from
+    /proc/stat per CPU set (split experiments). Returns (app_cores, obs_cores)
+    in the busiest 60 s window of the APP set."""
+    pts = []
+    for ln in open(path):
+        p = ln.split()
+        if len(p) >= 4 and p[1].isdigit():
+            pts.append((float(p[0]), int(p[1]), int(p[2])))
+    if len(pts) < 5:
+        return None, None
+    best = (0.0, 0.0)
+    i = 0
+    for j in range(1, len(pts)):
+        while pts[j][0] - pts[i][0] > win:
+            i += 1
+        dt = pts[j][0] - pts[i][0]
+        if dt >= win * 0.8:
+            a = (pts[j][1] - pts[i][1]) / dt / USER_HZ
+            o = (pts[j][2] - pts[i][2]) / dt / USER_HZ
+            if a > best[0]:
+                best = (a, o)
+    return best
+
+
 def parse_diag(path):
     """Split diag.log into per-status entries; return dict name -> list of {key: value}.
 
@@ -52,16 +102,26 @@ def parse_diag(path):
     """
     out = {}
     cur_name, cur = None, None
+    stamp, sec, in_hdr = None, None, False   # header.stamp (sim time, s)
 
     def flush():
         nonlocal cur_name, cur
         if cur_name is not None and cur is not None:
+            cur["_t"] = stamp
             out.setdefault(cur_name, []).append(cur)
         cur_name, cur = None, None
 
     for ln in open(path, errors="replace"):
         s = ln.strip()
-        if s.startswith("- level:"):
+        if s == "header:":
+            flush()
+            in_hdr, sec = True, None
+        elif in_hdr and s.startswith("sec:"):
+            sec = int(s.split(":")[1])
+        elif in_hdr and s.startswith("nanosec:"):
+            stamp = sec + int(s.split(":")[1]) * 1e-9
+            in_hdr = False
+        elif s.startswith("- level:"):
             flush()
             lv = s.split(":", 1)[1].strip().strip('"')
             cur = {"_level": {"\\0": 0, "\\x01": 1, "\\x02": 2, "\\x03": 3}.get(lv)}
@@ -88,15 +148,26 @@ def fnum(entry, key):
         return None
 
 
-def series(diag, name_sub, key, sane=None):
+def series(diag, name_sub, key, sane=None, inwin=None):
     vals = []
     for name, entries in diag.items():
         if name_sub in name:
             for e in entries:
+                if inwin is not None and not inwin(e):
+                    continue
                 v = fnum(e, key)
                 if v is not None and (sane is None or sane(v)):
                     vals.append(v)
     return vals
+
+
+def window_bounds():
+    """Override window: FISH_AW_WINDOW='lo,hi' in sim s after (1); None = per-run (2→3)."""
+    w = os.environ.get("FISH_AW_WINDOW", "")
+    if not w:
+        return None
+    lo, hi = w.split(",")
+    return float(lo), float(hi)
 
 
 def med(vals):
@@ -121,14 +192,39 @@ def analyze_side(d):
     cpu = os.path.join(d, "cpu.log")
     if os.path.exists(cpu):
         r["cpu_cores_peak60"], r["cpu_samples"] = cpu_busiest_window(cpu)
+    cs = os.path.join(d, "cpuset.log")
+    if os.path.exists(cs):
+        r["cpu_app_peak60"], r["cpu_obs_peak60"] = cpuset_busiest_window(cs)
     diag = parse_diag(os.path.join(d, "diag.log"))
     r["diag_entries"] = sum(len(v) for v in diag.values())
+    # sim-time execution window (see PROVENANCE CAVEATS)
+    stamps = [e["_t"] for v in diag.values() for e in v if e.get("_t")]
+    t0 = min(stamps) if stamps else 0.0          # (1)
+    t3 = (max(stamps) - t0) if stamps else 0.0   # (3), relative
+    r["replay_sim_span"] = t3
+
+    def rel(e):
+        return (e["_t"] - t0) if e.get("_t") else None
+    lat_entries = []
+    for name, entries in diag.items():
+        if "pipeline_latency_monitor" in name:
+            lat_entries += entries
+    t2 = min((rel(e) for e in lat_entries if rel(e) is not None and "multi_object_tracker"
+              not in str(e.get("uninitialized_inputs", ""))), default=None)   # (2)
+    r["warmup_s"] = t2
+    r["execution_s"] = (t3 - t2) if t2 is not None else None
+    ov = window_bounds()
+    lo, hi = ov if ov else ((t2 if t2 is not None else 0.0), t3)
+    r["window"] = (lo, hi)
+    inwin = lambda e: e.get("_t") is not None and lo <= e["_t"] - t0 < hi
+    r["ticks_in_window"] = sum(1 for v in diag.values() for e in v if inwin(e))
     # topic_state_monitor rates (sane: rate < 1000 Hz filters the uninit 100000 artefact)
     for label, sub in [("rate_objects", "object_recognition_objects"),
                        ("rate_obstacle_pc", "obstacle_segmentation_pointcloud"),
                        ("rate_trajectory", "scenario_planning_trajectory"),
                        ("rate_route", "mission_planning_route")]:
-        r[label] = med(series(diag, sub, "measured_rate", sane=lambda v: 0 < v < 1000))
+        r[label] = med(series(diag, sub, "measured_rate", sane=lambda v: 0 < v < 1000,
+                              inwin=inwin))
     # violations: Timeout/Error statuses on topic_state_monitors.
     # post-init = the monitor's topic already delivered a message
     # (last_message_time > 0). startup = bad ticks before the first message
@@ -150,41 +246,39 @@ def analyze_side(d):
                     startup += 1
     r["tsm_violations_postinit"] = viol
     r["tsm_notreceived_startup"] = startup
-    # Throughput proxies: the bag replay is identical in every run (top lidar
-    # = 288 frames / 29.9 s), so diagnostic ticks that fire per processed
-    # message count processed frames. concatenate_data publishes one status
-    # per output cloud (baseline: 288-290 = every frame), lidar_centerpoint
-    # one per inference. Fewer ticks in a traced run = dropped frames — the
-    # Autoware analogue of ros2_benchmark's NUM_MISSED_FRAMES.
-    r["concat_outputs"] = sum(len(v) for k, v in diag.items() if "concatenate_data" in k)
-    r["centerpoint_infer"] = sum(len(v) for k, v in diag.items() if "processing_time_status" in k)
-    r["concat_proc_ms"] = med(series(diag, "concatenate_data", "Processing time (ms)"))
-    r["concat_pipeline_ms"] = med(series(diag, "concatenate_data", "Pipeline latency (ms)"))
+    # Diagnostic tick COUNTS are not throughput (probe loss, see header):
+    # the former concat_outputs / centerpoint_infer metrics were removed.
+    # Value metrics over the execution window only:
+    r["concat_proc_ms"] = med(series(diag, "concatenate_data", "Processing time (ms)", inwin=inwin))
+    r["concat_pipeline_ms"] = med(series(diag, "concatenate_data", "Pipeline latency (ms)", inwin=inwin))
     r["centerpoint_proc_ms"] = med(series(diag, "processing_time_status", "processing_time_ms",
-                                          sane=lambda v: v > 0))
-    # pipeline_latency_monitor: Total Latency is a PARTIAL sum whenever a
-    # stage has not reported yet ("uninitialized_inputs"); with the tracker
-    # missing it sits at a ~257 ms floor. A plain median over all ticks is
-    # therefore contaminated (v5 P-core campaign: 49-56% of traced-run ticks
-    # at the floor → a fake "improvement"). Use only ticks where the tracker
-    # has reported, and expose the fraction of tracker-missing ticks itself
-    # as a starvation indicator (post-startup).
-    lat_entries = []
-    for name, entries in diag.items():
-        if "pipeline_latency_monitor" in name:
-            lat_entries += entries
-    complete = [e for e in lat_entries
-                if "multi_object_tracker" not in str(e.get("uninitialized_inputs", ""))]
+                                          sane=lambda v: v > 0, inwin=inwin))
+    # pipeline_latency_monitor (autoware_pipeline_latency_monitor, 10 Hz sim
+    # timer): Total Latency = time-ordered chain of the LATEST per-stage debug
+    # latencies (tracker meas_to_tracked_object_ms, merger and prediction
+    # processing_time_ms, planning, control) + constant offsets
+    # [0, 1.4, 50, 15, 191] ms = 257.4 ms. Stages without data are skipped
+    # (planning/control never report in a goal-less replay; before the
+    # tracker's first report the value sits at the 257.4 ms floor). No
+    # staleness check: once reported, a stage's last value persists.
+    complete = [e for e in lat_entries if inwin(e)
+                and "multi_object_tracker" not in str(e.get("uninitialized_inputs", ""))]
     tot = [fnum(e, "Total Latency (ms)") for e in complete]
     tot = [v for v in tot if v is not None and v > 0]
     r["total_latency_ms"] = med(tot)
-    r["mot_latency_ms"] = med(series(diag, "pipeline_latency_monitor", "multi_object_tracker"))
-    # All floor ticks turned out to precede the tracker's FIRST report (no
-    # mid-run starvation), so the useful indicator is the startup delay:
-    # monitor ticks (~1 Hz) until the tracker first reports.
-    first = next((i for i, e in enumerate(lat_entries)
-                  if "multi_object_tracker" not in str(e.get("uninitialized_inputs", ""))), None)
-    r["latency_tracker_startup_ticks"] = first
+    r["chain_latency_ms"] = (r["total_latency_ms"] - LATENCY_OFFSETS_MS) \
+        if r["total_latency_ms"] is not None else None
+    r["mot_latency_ms"] = med(series(diag, "pipeline_latency_monitor", "multi_object_tracker",
+                                     inwin=inwin))
+    # Warm-up milestones (sim s after (1)); timing measures, immune to probe
+    # loss up to one lost tick (0.1 s sim).
+    r["tracker_first_report_s"] = t2
+    nd = [rel(e) for name, entries in diag.items() if "ndt_scan_matcher" in name
+          for e in entries if rel(e) is not None and e.get("is_activated") == "True"]
+    r["ndt_activated_s"] = min(nd, default=None)
+    cp = [rel(e) for name, entries in diag.items() if "processing_time_status" in name
+          for e in entries if rel(e) is not None and (fnum(e, "processing_time_ms") or 0) > 0]
+    r["centerpoint_first_infer_s"] = min(cp, default=None)
     r["hz"] = hz_medians(d)
     return r
 
@@ -195,6 +289,8 @@ def main():
     B = analyze_side(os.path.join(root, "baseline"))
     rows = [
         ("CPU cores (busiest 60 s)", "cpu_cores_peak60", ""),
+        ("  app set cores (split runs)", "cpu_app_peak60", ""),
+        ("  observer set cores (split runs)", "cpu_obs_peak60", ""),
         ("objects rate [Hz]", "rate_objects", ""),
         ("obstacle pc rate [Hz]", "rate_obstacle_pc", ""),
         ("trajectory rate [Hz]", "rate_trajectory", ""),
@@ -203,8 +299,16 @@ def main():
         ("concat pipeline lat [ms]", "concat_pipeline_ms", ""),
         ("centerpoint proc [ms] (GPU)", "centerpoint_proc_ms", ""),
         ("Total Latency [ms]", "total_latency_ms", ""),
+        ("  chain = Total - 257.4 [ms]", "chain_latency_ms", ""),
         ("  └ multi_object_tracker [ms]", "mot_latency_ms", ""),
+        ("NDT activated [sim s]", "ndt_activated_s", ""),
+        ("centerpoint first infer [sim s]", "centerpoint_first_infer_s", ""),
+        ("warm-up (1->2) [sim s]", "warmup_s", ""),
+        ("execution (2->3) [sim s]", "execution_s", ""),
     ]
+    print(f"window (sim s after (1)): baseline [{B['window'][0]:.1f}, {B['window'][1]:.1f})  "
+          f"traced [{T['window'][0]:.1f}, {T['window'][1]:.1f})  "
+          f"ticks: baseline={B['ticks_in_window']} traced={T['ticks_in_window']}")
     print(f"{'metric':34s} {'baseline':>12s} {'traced':>12s} {'delta':>10s}")
     for label, key, unit in rows:
         b, t = B.get(key), T.get(key)

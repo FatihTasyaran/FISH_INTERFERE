@@ -11,22 +11,31 @@ usage: analyze_overhead_modes.py <overhead_aw_dir>
 import glob, os, statistics as st, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from analyze_overhead import analyze_side  # noqa: E402
+from analyze_overhead import analyze_side, window_bounds  # noqa: E402
 
+# Value metrics are medians over each run's execution phase (2→3): (1) first
+# /clock = first nonzero stamp, (2) tracker's first report, (3) bag end.
+# Warm-up (1→2) is a metric. FISH_AW_WINDOW="lo,hi" forces a common window
+# (robustness check). Diagnostic tick counts are NOT reported: the
+# ros2-topic-echo probe loses 22-96 % of /diagnostics (analyze_overhead.py).
 ROWS = [
     ("CPU cores (busiest 60 s)", "cpu_cores_peak60"),
+    ("  app-set cores (split runs)", "cpu_app_peak60"),
+    ("  observer-set cores (split runs)", "cpu_obs_peak60"),
     ("objects rate [Hz]", "rate_objects"),
     ("obstacle pc rate [Hz]", "rate_obstacle_pc"),
-    ("tsm NotReceived (startup)", "tsm_notreceived_startup"),
+    ("tsm NotReceived ticks (startup, probe-lossy)", "tsm_notreceived_startup"),
     ("tsm violations (post-init)", "tsm_violations_postinit"),
-    ("concat outputs / replay (bag: 288 frames)", "concat_outputs"),
-    ("centerpoint inferences / replay", "centerpoint_infer"),
     ("concat processing [ms]", "concat_proc_ms"),
     ("concat pipeline lat [ms]", "concat_pipeline_ms"),
     ("centerpoint proc [ms] (GPU)", "centerpoint_proc_ms"),
     ("Total Latency [ms] (tracker reported)", "total_latency_ms"),
-    ("tracker first report [ticks]", "latency_tracker_startup_ticks"),
+    ("  chain = Total - 257.4 offsets [ms]", "chain_latency_ms"),
     ("  multi_object_tracker [ms]", "mot_latency_ms"),
+    ("NDT activated [sim s]", "ndt_activated_s"),
+    ("centerpoint first inference [sim s]", "centerpoint_first_infer_s"),
+    ("warm-up (1->2) [sim s]", "warmup_s"),
+    ("execution (2->3) [sim s]", "execution_s"),
 ]
 
 
@@ -57,8 +66,11 @@ def main():
         return t
 
     n = {m: len(per_mode[m]) for m in per_mode}
+    ov = window_bounds()
+    win = f"common sim window [{ov[0]:g}, {ov[1]:g}) s" if ov else "each run's execution phase (2->3)"
     print(f"# Autoware three-mode overhead — {os.path.basename(root.rstrip('/'))} "
-          f"(reps: base={n['baseline']}, lttng={n['lttng']}, nsys={n['nsys']})\n")
+          f"(reps: base={n['baseline']}, lttng={n['lttng']}, nsys={n['nsys']}; "
+          f"values = medians over {win})\n")
     print(f"| metric | baseline | lttng-only (Δ) | lttng+nsys (Δ) |")
     print(f"|---|--:|--:|--:|")
     for label, key in ROWS:

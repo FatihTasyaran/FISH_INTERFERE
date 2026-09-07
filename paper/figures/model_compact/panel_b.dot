@@ -1,0 +1,21 @@
+digraph b {
+compound=true; rankdir=LR; bgcolor=white; nodesep=0.06; ranksep=0.16;
+node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=7, margin="0.04,0.02", height=0.20, fillcolor="#f4f4f4", color="#888888"];
+edge [fontname="Helvetica", fontsize=6, arrowsize=0.5];
+subgraph cluster_L1 { label="node layer"; fontname="Helvetica-Bold"; fontsize=7; style="rounded,filled"; fillcolor="#eef4fb"; color="#bbbbbb"; margin=4;
+  L1_279 [label="concat"];
+  L1_281 [label="centerpoint"];
+  L1_62 [label="ring"];
+  L1_71 [label="ring"];
+  L1_62 -> L1_279 [label="msg×1", color="#1f77b4", fontcolor="#1f77b4"];
+  L1_71 -> L1_279 [label="msg×1", color="#1f77b4", fontcolor="#1f77b4"];
+  L1_279 -> L1_281 [label="msg×2", color="#1f77b4", fontcolor="#1f77b4"];
+}
+subgraph cluster_L0 { label="process layer"; fontname="Helvetica-Bold"; fontsize=7; style="rounded,filled"; fillcolor="#f7f0fb"; color="#bbbbbb"; margin=4;
+  L0_274 [label="process 1695"];
+  L0_55 [label="process 790"];
+  L0_64 [label="process 797"];
+  L0_55 -> L0_274 [label="msg×1", color="#1f77b4", fontcolor="#1f77b4"];
+  L0_64 -> L0_274 [label="msg×1", color="#1f77b4", fontcolor="#1f77b4"];
+}
+}

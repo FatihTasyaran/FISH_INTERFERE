@@ -51,13 +51,25 @@ düz medyan "−12/−24% iyileşme" gibi sahte sonuç verdi. Taban tick'leri
 tamamen startup fazında (tracker ilk raporu 8 → 21–23 tick). Düzeltme:
 tracker raporlamış tick'lerin medyanı + "tracker first report [ticks]"
 metriği (`analyze_overhead.py`, 2f393a9).
+**Devamı (2026-09-05, notes/aw_phases_provenance.md):** "tick" birimi de
+yanlıştı — `ros2 topic echo` probe'u /diagnostics'in %22–96'sını kaybediyor
+(yayıncı QoS depth 1 → yazar tarafında üzerine yazma), dolayısıyla diag'dan
+türetilen HİÇBİR sayım (concat outputs, centerpoint inferences, tick
+sayıları) throughput değildir; sadece değerler (zaman-altörnekleme) ve
+header damgaları (sim zaman) kullanılır. Analiz artık koşu başına fazlara
+göre: (1) ilk /clock, (2) tracker ilk rapor, (3) bag sonu; warm-up (1→2)
+sim-saniye cinsinden metrik, değerler (2→3) medyanı. Total Latency'nin
+257.4 ms'lik sabit offset kısmı ayrıldı ("chain").
 
 ## Sonuç özeti (v5 vs Ağustos)
 Isaac fps Δ (lttng/nsys): dope −40/−49 (Ağ −16/−18), segformer −24/−23,
 unet −21/−37 (−21/−44), dnn_image_encoder −20/−21 (−11/−10), tensor_rt
 +1/−16 (−1/−4), image_proc −5/−12 (+3/−3); bi3d/nvblox/stereo/visual_slam
 ≤3%. Autoware (0.5): CPU +69/+58%, concat processing +180/+177%
-(Ağ +74/+76), Total Latency (tracker reported) +57/+36% (Ağ +7/+6),
-tracker startup 8 → 22.7/21 tick, tsm violation 0/0/0.
+(Ağ +74/+76), Total Latency (tracker reported) +57/+36% (Ağ +7/+6) —
+sabit 257.4 ms offset çıkarılınca zincir +160/+102%; warm-up (1→2)
+5.5 → 11.7/12.4 sim s (NDT aktivasyonu 3.7 → 9.9/10.1 s), tsm violation
+0/0/0. Diag sayımlarından türetilen frame-drop iddiaları GEÇERSİZ (probe
+kaybı); baseline throughput bu kampanyada ölçülemedi.
 **Ana bulgu:** overhead CPU başlığına bağlı — 20 thread + turbo'da boş
 çekirdeklere saklanan tracing işi, 6 sabit çekirdekte uygulamayla yarışıyor.

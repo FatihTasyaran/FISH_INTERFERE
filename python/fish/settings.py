@@ -35,6 +35,7 @@ def load_settings() -> configparser.ConfigParser:
     config.read_dict({
         "nsys": {
             "trace": "cuda,nvtx",
+            "standalone_full": "false",   # opt-in full profile for standalone GPU nodes (nsys_flags.py)
             "cuda_memory_usage": "true",
             "cudabacktrace": "kernel,memory,sync",
             "python_backtrace": "cuda",

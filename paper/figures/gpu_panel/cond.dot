@@ -1,0 +1,30 @@
+digraph cond {
+  rankdir=LR; bgcolor=white; nodesep=0.14; ranksep=0.30;
+  node [fontname="Helvetica", fontsize=10, style="filled,rounded", margin="0.07,0.04"];
+  edge [fontname="Helvetica", fontsize=9, arrowsize=0.7];
+
+  subgraph cluster_bb {
+    label="backbone — present in every invocation"; labelloc=t; fontname="Helvetica-Bold"; fontsize=10;
+    style="rounded,filled"; fillcolor="#eef4fb"; color="#1a5490"; margin=8;
+    b0 [shape=box,      fillcolor="#dfe9f5", label="CPU\ncudaMallocAsync"];
+    b1 [shape=box,      fillcolor="#dfe9f5", label="CPU\ncudaLaunchKernel"];
+    b2 [shape=ellipse,  fillcolor="#a9dfbf", label="SM\nnormalizeInvStdDevKernel"];
+    b3 [shape=box,      fillcolor="#dfe9f5", label="CPU\ncudaStreamSynchronize"];
+    b0 -> b1 [color="#1a5490", label="cpu_order"];
+    b1 -> b2 [color="#1a5490", label="launch"];
+    b1 -> b3 [color="#1a5490", label="cpu_order"];
+  }
+
+  v1 [shape=box,          fillcolor="#ffe0b2", color="#e08a1e", label="CPU\ncudaFree"];
+  v2 [shape=plaintext,    fillcolor=white,     label="(no extra ops)"];
+  v3 [shape=box,          fillcolor="#ffe0b2", color="#e08a1e", label="CPU cudaFree\n(no cudaMallocAsync)"];
+  v4 [shape=parallelogram,fillcolor="#f9d5a7", color="#e08a1e", label="CPU cudaMemcpy →\nCE memcpy_D2H → 2× cudaFree"];
+
+  b3 -> v1 [style=dashed, color="#e08a1e", label="48 %"];
+  b3 -> v2 [style=dashed, color="#bbbbbb", label="40 %"];
+  b3 -> v3 [style=dashed, color="#e08a1e", label="9 %"];
+  b3 -> v4 [style=dashed, color="#e08a1e", label="2 %"];
+
+  cap [shape=plaintext, label="NormalizeNode · sub:/r2b/tensor · 29 335 invocations · 9 shapes"];
+  { rank=sink; cap; }
+}

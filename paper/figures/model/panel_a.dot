@@ -1,0 +1,36 @@
+digraph a {
+rankdir=LR; bgcolor=white; splines=true; nodesep=0.06; ranksep=0.13;
+node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=7, margin="0.035,0.02", height=0.22, fillcolor="#f4f4f4", color="#888888"];
+edge [fontname="Helvetica", fontsize=7, arrowsize=0.5, penwidth=1.0];
+subgraph cluster_n0 { label="concat"; fontname="Helvetica-Bold"; fontsize=7; color="#cccccc"; style=rounded; margin=3;
+  f6061 [label="twist"];
+  f6063 [label="before_sync"];
+  f6064 [label="before_sync"];
+}
+subgraph cluster_n1 { label="distortion"; fontname="Helvetica-Bold"; fontsize=7; color="#cccccc"; style=rounded; margin=3;
+  f4241 [label="imu"];
+  f4242 [label="pc_ex"];
+}
+subgraph cluster_n2 { label="centerpoint"; fontname="Helvetica-Bold"; fontsize=7; color="#cccccc"; style=rounded; margin=3;
+  f6086 [label="pc", penwidth=1.6, color="#d62728"];
+}
+subgraph cluster_n3 { label="validator"; fontname="Helvetica-Bold"; fontsize=7; color="#cccccc"; style=rounded; margin=3;
+  f4667 [label="objects"];
+}
+subgraph cluster_n4 { label="ring(top)"; fontname="Helvetica-Bold"; fontsize=7; color="#cccccc"; style=rounded; margin=3;
+  f4251 [label="pc_ex"];
+}
+subgraph cluster_n5 { label="ring(left)"; fontname="Helvetica-Bold"; fontsize=7; color="#cccccc"; style=rounded; margin=3;
+  f4316 [label="pc_ex"];
+}
+f4241 -> f4242 [color="#2ca02c", style=dashed];
+f4242 -> f4251 [color="#1f77b4", style=solid];
+f4251 -> f6063 [color="#1f77b4", style=solid];
+f4316 -> f6064 [color="#1f77b4", style=solid];
+f6061 -> f6063 [color="#ff7f0e", style=dashed];
+f6061 -> f6064 [color="#ff7f0e", style=dashed];
+f6063 -> f6086 [color="#1f77b4", style=solid];
+f6064 -> f6086 [color="#1f77b4", style=solid];
+f6064 -> f6063 [color="#d62728", style=bold];
+f6086 -> f4667 [color="#1f77b4", style=solid];
+}

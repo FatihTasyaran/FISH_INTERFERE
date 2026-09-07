@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="166" height="126" viewBox="0 0 166 126">
+  <defs><clipPath id="c"><ellipse cx="83.0" cy="63.0" rx="81.5" ry="61.5"/></clipPath></defs>
+  <g clip-path="url(#c)">
+    <rect x="0" y="0" width="83.0" height="126" fill="#adf0c7"/>
+    <rect x="83.0" y="0" width="83.0" height="126" fill="#ff6464"/>
+  </g>
+  <ellipse cx="83.0" cy="63.0" rx="81.5" ry="61.5" fill="none" stroke="#1a1a1a" stroke-width="3"/>
+  <text x="83.0" y="81.5" font-family="Helvetica,Arial" font-size="52.9" text-anchor="middle" fill="#1a1a1a">EX</text>
+</svg>

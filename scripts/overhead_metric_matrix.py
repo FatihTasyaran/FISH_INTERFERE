@@ -25,10 +25,16 @@ def ev_rate(bench, mode):
         try:
             m = re.search(r'LTTng events: ([\d,]+)',
                           open(f'{d}/launch.log', errors='replace').read())
+            n = int(m.group(1).replace(',', '')) if m else None
+            if n is None:   # FISH_EVENT_COUNT=0 campaigns: count filled offline
+                for f in glob.glob(f'{d}/events_count.txt') + glob.glob(f'{d}/fish_*/fishlog/discards.txt'):   # (scripts/count_events_offline.sh)
+                    m2 = re.search(r'total_events=(\d+)', open(f).read())
+                    if m2:
+                        n = int(m2.group(1))
             t0 = float(open(f'{d}/t_start.txt').read())
             t1 = float(open(f'{d}/t_end.txt').read())
-            if m and t1 > t0:
-                rates.append(int(m.group(1).replace(',', '')) / (t1 - t0))
+            if n is not None and t1 > t0:
+                rates.append(n / (t1 - t0))
         except OSError:
             continue
     return sum(rates) / len(rates) if rates else None

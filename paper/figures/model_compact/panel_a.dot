@@ -1,0 +1,18 @@
+digraph a {
+rankdir=LR; bgcolor=white; splines=true; nodesep=0.06; ranksep=0.13;
+node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=7, margin="0.035,0.02", height=0.22, fillcolor="#f4f4f4", color="#888888"];
+edge [fontname="Helvetica", fontsize=7, arrowsize=0.5, penwidth=1.0];
+  f6064 [label="concat\nbefore_sync"];
+  f6061 [label="concat\ntwist"];
+  f6063 [label="concat\nbefore_sync"];
+  f6086 [label="centerpoint\npc", penwidth=1.6, color="#d62728"];
+  f4251 [label="ring(top)\npc_ex"];
+  f4316 [label="ring(left)\npc_ex"];
+f4251 -> f6063 [color="#1f77b4", style=solid];
+f4316 -> f6064 [color="#1f77b4", style=solid];
+f6061 -> f6063 [color="#ff7f0e", style=dashed];
+f6061 -> f6064 [color="#ff7f0e", style=dashed];
+f6063 -> f6086 [color="#1f77b4", style=solid];
+f6064 -> f6086 [color="#1f77b4", style=solid];
+f6064 -> f6063 [color="#d62728", style=bold];
+}

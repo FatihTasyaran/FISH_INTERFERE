@@ -53,23 +53,11 @@ FISH_SESSION_DIR_FILE = "/tmp/fish_session_dir"
 # (--sample=process-tree, --stats=true, --python-sampling=true,
 # --cuda-memory-usage, --cudabacktrace) because they are known to crash
 # nsys when wrapping multi-threaded component_container_mt processes.
-NSYS_FLAGS = [
-    "nsys", "profile",
-    "--trace=cuda,nvtx",
-    "--export=sqlite",
-    "--force-overwrite=true",
-]
-# All extra CUPTI flags are opt-in via env var — they slow down TRT
-# engine loading enough to break Autoware's launch-system service-call
-# timeouts on pointcloud_container. Yesterday's working run used only
-# the 4 flags above. Enable individually for paper-grade runs once
-# Autoware is stable.
-if os.environ.get("FISH_CUDA_EVENT_TRACE", "").lower() in ("1", "true", "yes"):
-    NSYS_FLAGS.append("--cuda-event-trace=true")
-if os.environ.get("FISH_CUDA_GRAPH_NODE", "").lower() in ("1", "true", "yes"):
-    NSYS_FLAGS.append("--cuda-graph-trace=node")
-if os.environ.get("FISH_CUDA_TRACE_ALL_APIS", "").lower() in ("1", "true", "yes"):
-    NSYS_FLAGS.append("--cuda-trace-all-apis=true")
+try:  # package import (fish.*) or script-dir import, whichever applies
+    from fish.nsys_flags import base_nsys_flags
+except ImportError:
+    from nsys_flags import base_nsys_flags
+NSYS_FLAGS = base_nsys_flags()
 
 
 def _get_session_dir() -> str:

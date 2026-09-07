@@ -5,7 +5,7 @@
 # the 2026-08-30 two-sided pilot):
 #   baseline xN — no FISH
 #   lttng    xN — FISH on, FISH_NSYS_DISABLE=1 (LTTng only, no CUPTI/nsys)
-#   nsys     xN — full FISH (LTTng + CUPTI + nsys; FISH_CUDA_EVENT_TRACE=1 —
+#   nsys     xN — full FISH (LTTng + CUPTI + nsys, lean profile since 2026-09-06; FISH_CUDA_EVENT_TRACE=1 was —
 #                 fine on Autoware through r29, the NITROS problem is
 #                 Isaac-specific: notes/cuda_event_trace_tradeoff.txt)
 # Probes per run (identical all modes): cpu.log sampler + ONE low-frequency
@@ -16,18 +16,32 @@ set -e
 DEST=$HOME/fish_traces
 IMG=${IMG:-autoware-dev-trt-a1000-fishwait7:latest}
 FISH_SRC=/home/tue037807/fish_interfere
+# CPU split (host_perf_mode.sh split): FISH_APP_CPUS = application + nsys
+# (launch tree, bag play), FISH_OBS_CPUS = observer (LTTng daemons, FISH
+# daemon/snapshot, probes). Both empty (default) = no pinning, whole container.
+FISH_APP_CPUS=${FISH_APP_CPUS:-}
+FISH_OBS_CPUS=${FISH_OBS_CPUS:-}
+CPUSET=""; [ -n "$FISH_APP_CPUS" ] && [ -n "$FISH_OBS_CPUS" ] && CPUSET="$FISH_APP_CPUS,$FISH_OBS_CPUS"
+# FISH_EVENT_COUNT=0 (default here): skip the in-container babeltrace event
+# count at session stop (minutes per run); counts are taken offline.
 RATE=${RATE:-0.5}          # ros2 bag play -r (the Aug-31 and Sep-4 campaigns ran at 0.5;
                            # bag is 29.9 s → replay 60 s at 0.5, 30 s at 1.0)
-STAMP=$(date +%Y%m%d_%H%M%S)$( [ "$RATE" != 0.5 ] && echo "_r$RATE" )
+STAMP=$(date +%Y%m%d_%H%M%S)
+# NOTE: not `$( [ ... ] && echo )` — under set -e that substitution returns 1
+# at rate 0.5 and the script exited silently (found 2026-09-05).
+if [ "$RATE" != 0.5 ]; then STAMP="${STAMP}_r$RATE"; fi
 OUTROOT=$DEST/overhead_aw_$STAMP
 REPS=${REPS:-3}
 mkdir -p "$OUTROOT"
+echo "[ovh] campaign → $OUTROOT (image=$IMG rate=$RATE reps=$REPS modes=${MODES:-baseline lttng nsys} app_cpus=${FISH_APP_CPUS:-all} obs_cpus=${FISH_OBS_CPUS:-all})"
 docker image inspect $IMG >/dev/null 2>&1 || { echo "[ovh] $IMG not built"; exit 2; }
 
 read -r -d '' PROBE_FN <<'EOF' || true
 probe_start() {
     POUT=$1; mkdir -p "$POUT"
+    OBS_TS=""; [ -n "$FISH_OBS_CPUS" ] && OBS_TS="taskset -c $FISH_OBS_CPUS"
     ( set +e
+      [ -n "$FISH_OBS_CPUS" ] && taskset -pc "$FISH_OBS_CPUS" $BASHPID >/dev/null 2>&1
       while :; do
         printf "%s " "$(date +%s.%N)"
         awk '{ i=index($0,")"); n=split(substr($0,i+2),a," "); s+=a[12]+a[13]; c++ }
@@ -35,12 +49,29 @@ probe_start() {
         sleep 2
       done > "$POUT/cpu.log" 2>/dev/null ) &
     echo $! > /tmp/probe_cpu_pid
-    setsid bash -c "while :; do /opt/ros/humble/bin/ros2 topic echo /diagnostics >> '$POUT/diag.log' 2>&1; sleep 5; done" &
+    # per-CPU-set busy jiffies from /proc/stat (user+nice+system+irq+softirq):
+    # app set | observer set | rest — the split experiment's primary CPU metric
+    if [ -n "$FISH_APP_CPUS" ]; then
+      ( set +e
+        taskset -pc "$FISH_OBS_CPUS" $BASHPID >/dev/null 2>&1
+        while :; do
+          printf "%s " "$(date +%s.%N)"
+          awk -v app="$FISH_APP_CPUS" -v obs="$FISH_OBS_CPUS" '
+            function inset(c, s,   n, i, parts, ab, a, b) { n = split(s, parts, ",");
+              for (i = 1; i <= n; i++) { if (index(parts[i], "-")) { split(parts[i], ab, "-"); a = ab[1]+0; b = ab[2]+0 } else { a = parts[i]+0; b = a }
+                if (c >= a && c <= b) return 1 } return 0 }
+            /^cpu[0-9]+ / { c = substr($1, 4)+0; busy = $2+$3+$4+$7+$8; if (inset(c, app)) A += busy; else if (inset(c, obs)) O += busy; else X += busy }
+            END { printf "%d %d %d\n", A, O, X }' /proc/stat
+          sleep 2
+        done > "$POUT/cpuset.log" 2>/dev/null ) &
+      echo $! > /tmp/probe_cpuset_pid
+    fi
+    $OBS_TS setsid bash -c "while :; do /opt/ros/humble/bin/ros2 topic echo /diagnostics >> '$POUT/diag.log' 2>&1; sleep 5; done" &
     echo $! > /tmp/probe_diag_pid
-    echo "[probe] started → $POUT"
+    echo "[probe] started → $POUT (obs cpus: ${FISH_OBS_CPUS:-all})"
 }
 probe_stop() {
-    for p in $(cat /tmp/probe_cpu_pid /tmp/probe_diag_pid 2>/dev/null); do
+    for p in $(cat /tmp/probe_cpu_pid /tmp/probe_cpuset_pid /tmp/probe_diag_pid 2>/dev/null); do
         kill -- -"$p" 2>/dev/null || kill "$p" 2>/dev/null
     done
     echo "[probe] stopped"
@@ -56,9 +87,10 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
     local FISH_ENV=()
     case $MODE in
         lttng) FISH_ENV=(-e FISH_ENABLED=1 -e FISH_NSYS_DISABLE=1) ;;
-        nsys)  FISH_ENV=(-e FISH_ENABLED=1 -e FISH_CUDA_EVENT_TRACE=1 -e FISH_NSYS_DRAIN=15) ;;
+        nsys)  FISH_ENV=(-e FISH_ENABLED=1 -e FISH_NSYS_DRAIN=15) ;;   # lean nsys profile (python/fish/nsys_flags.py); FISH_CUDA_EVENT_TRACE=1 was the v5/split setting
     esac
     docker run -d --gpus all --privileged --net host --shm-size=2g \
+        ${CPUSET:+--cpuset-cpus=$CPUSET} \
         --name $NAME \
         -v "$DEST:/root/fish_traces" \
         -v "$HOME/fish_provenance_ros:/opt/fish_provenance_ros:ro" \
@@ -69,8 +101,14 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
         docker exec $NAME rm -rf /root/fish_interfere
         docker cp "$FISH_SRC" $NAME:/root/fish_interfere
     fi
-    timeout 900 docker exec \
+    # 1800 s: replay ~150 s + FISH shutdown (snapshot, drain, lttng stop) up to
+    # ~600 s + second stop from the SIGTERM trap. 900 s killed lttng #1 on
+    # 2026-09-06 (yesterday's traced runs ended at ~860 s) and, under set -e,
+    # aborted the whole 3x3; the trace was lost (never stopped).
+    local RC=0
+    timeout 1800 docker exec \
         -e MODE=$MODE -e IDX=$IDX -e STAMP=$STAMP -e RATE=$RATE -e PROBE_FN="$PROBE_FN" \
+        -e FISH_APP_CPUS="$FISH_APP_CPUS" -e FISH_OBS_CPUS="$FISH_OBS_CPUS" -e FISH_EVENT_COUNT="${FISH_EVENT_COUNT:-0}" \
         $NAME bash -c '
         set -e
         export PYTHONUNBUFFERED=1
@@ -79,6 +117,8 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
         source /opt/ros/humble/setup.bash
         source /opt/autoware/setup.bash
         env | grep -E "RMW|CYCLONE|FISH" > "$POUT/env.txt" || true
+        APP_TS=""; [ -n "$FISH_APP_CPUS" ] && APP_TS="taskset -c $FISH_APP_CPUS"
+        echo "cpuset: container=$(cat /sys/fs/cgroup/cpuset.cpus.effective 2>/dev/null) app=${FISH_APP_CPUS:-all} obs=${FISH_OBS_CPUS:-all}" > "$POUT/cpuset.txt"
 
         if [ "$MODE" != baseline ]; then
             source /root/trace_overlay_ws/install/setup.bash
@@ -102,15 +142,56 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
         date +%s.%N > "$POUT/t_launch.txt"
         set +e
         if [ "$MODE" != baseline ]; then
-            timeout 420 ros2 launch autoware_launch logging_simulator.launch.xml \
+            # The FISH wrapper starts the replay itself and writes
+            # /tmp/fish_replay_complete when `ros2 bag play` returns; it does
+            # NOT end the launch. v5 let the launch run into `timeout 420`,
+            # leaving a 267 s idle tail (sim clock frozen) between bag end and
+            # destroy. Now: bag end + 20 s → SIGTERM (what timeout sent; the
+            # wrapper traps it and stops/drains the trace) — symmetric with
+            # the baseline branch.
+            rm -f /tmp/fish_replay_complete
+            timeout 1500 $APP_TS ros2 launch autoware_launch logging_simulator.launch.xml \
                 map_path:=/root/autoware_map/sample-map-rosbag \
                 vehicle_model:=sample_vehicle sensor_model:=sample_sensor_kit rviz:=false \
-                > "$POUT/launch.log" 2>&1
-            echo "[ovh] launch rc=$? (timeout=natural end)"
+                > "$POUT/launch.log" 2>&1 &
+            LPID=$!
+            for i in $(seq 1 400); do
+                [ -e /tmp/fish_replay_complete ] && break
+                kill -0 $LPID 2>/dev/null || break
+                sleep 1
+            done
+            date +%s.%N > "$POUT/t_replay_end.txt"
+            echo "[ovh] replay_complete after ${i}s (signal=$([ -e /tmp/fish_replay_complete ] && echo yes || echo no))"
+            # The daemon auto-stops the trace at replay end (snapshot of ~225
+            # nodes, daemon stop, nsys drain, lttng stop). Wait for that to
+            # finish BEFORE the SIGTERM: on 2026-09-06 the SIGTERM 20 s after
+            # replay end made the snapshot chase dying nodes (6 s timeouts x
+            # 130 unreachable nodes) and the run overran the outer timeout.
+            # Markers: fishlog/lttng_stop.txt appears at lttng stop; the
+            # session-dir file is removed at the very end of the stop.
+            SDIR=$(cat /tmp/fish_session_dir 2>/dev/null)
+            for j in $(seq 1 720); do
+                [ -n "$SDIR" ] && [ -e "$SDIR/fishlog/lttng_stop.txt" ] && break
+                [ -e /tmp/fish_session_dir ] || break
+                kill -0 $LPID 2>/dev/null || break
+                sleep 1
+            done
+            echo "[ovh] trace stop marker after ${j}s (lttng_stop.txt=$([ -n "$SDIR" ] && [ -e "$SDIR/fishlog/lttng_stop.txt" ] && echo yes || echo no))"
+            sleep 5
+            kill -TERM $LPID 2>/dev/null
+            # FISH wrapper shutdown (snapshot of ~225 nodes, daemon stop, nsys
+            # drain, lttng stop + event count) takes 100-300 s, longer on
+            # E-cores. A 120 s cap here (2026-09-05, first split run) let the
+            # script continue and docker rm -f killed the container before
+            # lttng stop: the whole trace was lost. Wait up to 900 s.
+            # (no apostrophes here: this block is inside a single-quoted bash -c)
+            for i in $(seq 1 900); do kill -0 $LPID 2>/dev/null || break; sleep 1; done
+            if kill -0 $LPID 2>/dev/null; then echo "[ovh] WARNING: launch still alive 900s after SIGTERM — trace may be incomplete"; fi
+            echo "[ovh] launch ended ${i}s after SIGTERM"
             sleep 25
             ls -td /root/fish_traces/fish_2026* 2>/dev/null | head -1 > "$POUT/session.txt"
         else
-            timeout 420 ros2 launch autoware_launch logging_simulator.launch.xml \
+            timeout 420 $APP_TS ros2 launch autoware_launch logging_simulator.launch.xml \
                 map_path:=/root/autoware_map/sample-map-rosbag \
                 vehicle_model:=sample_vehicle sensor_model:=sample_sensor_kit rviz:=false \
                 > "$POUT/launch.log" 2>&1 &
@@ -125,7 +206,7 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
             done
             echo "[ovh] stable at $N nodes (poll $i)"; echo "$N $i" > "$POUT/stable.txt"
             date +%s.%N > "$POUT/t_replay.txt"
-            ros2 bag play ~/autoware_map/sample-rosbag -r $RATE -s sqlite3 \
+            $APP_TS ros2 bag play ~/autoware_map/sample-rosbag -r $RATE -s sqlite3 \
                 > "$POUT/replay.log" 2>&1
             date +%s.%N > "$POUT/t_replay_end.txt"
             sleep 20
@@ -133,8 +214,8 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
         fi
         probe_stop
         echo "[ovh] $MODE #$IDX done"
-    '
-    echo "[ovh] $MODE #$IDX exec rc=$?"
+    ' || RC=$?
+    echo "[ovh] $MODE #$IDX exec rc=$RC"
     docker rm -f $NAME >/dev/null 2>&1 || true
 }
 

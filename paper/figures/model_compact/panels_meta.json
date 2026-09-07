@@ -1,0 +1,17 @@
+{
+ "session": "fish_20260830_224846",
+ "anchor": "0x7E7F512E9BB0",
+ "node": "NormalizeNode",
+ "entity": "sub:/r2b/tensor",
+ "n_invocations": 29335,
+ "n_shapes": 9,
+ "dominant": {
+  "phase": "STEADY",
+  "count": 14207,
+  "nodes": 5,
+  "pe": {
+   "CPU": 4,
+   "SM": 1
+  }
+ }
+}
