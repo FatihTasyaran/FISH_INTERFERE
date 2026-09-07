@@ -16,3 +16,8 @@ tempo_data/
 # fish_graph.json is regenerable from PG via graph_store_pg.export_json
 /fish_graph.json
 postprocess/fish_graph.json
+
+# Generated DAG galleries (regenerable from PG: postprocess/dag_signatures.py,
+# dag_conditional.py, dag_index.py).  NOTE: paper/dag_gallery/old_fish_20260427_165116
+# holds the April-2026 originals, whose session is no longer in PG — archive, do not delete.
+paper/dag_gallery/

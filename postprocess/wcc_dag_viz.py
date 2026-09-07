@@ -27,6 +27,11 @@ import sys
 from collections import defaultdict
 
 import networkx as nx
+try:
+    from fish_viz_server import topic_class as _topic_class
+except Exception:
+    def _topic_class(t):
+        return "infra" if t in ("/clock", "/parameter_events", "/tf", "/tf_static", "/rosout") or "/diagnostics" in t or "/debug/" in t else "data"
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pg_store
@@ -134,7 +139,7 @@ def _fmt_ns(ns: float) -> str:
     return f"{ns/1e9:.2f}s"
 
 
-def build_wccs(graph_json: dict, *, allowed_phases: set[str]):
+def build_wccs(graph_json: dict, *, allowed_phases: set[str], data_only=False):
     F_all = {n["id"]: n for n in graph_json["nodes"] if n["type"] == "F"}
     E = {n["id"]: n for n in graph_json["nodes"] if n["type"] == "E"}
     N = {n["id"]: n for n in graph_json["nodes"] if n["type"] == "N"}
@@ -150,6 +155,16 @@ def build_wccs(graph_json: dict, *, allowed_phases: set[str]):
     # Filter F's by allowed phases (default: data only).
     F = {fid: f for fid, f in F_all.items()
          if f.get("phase", "unknown") in allowed_phases}
+    # --data-only (2026-09-06): FISH tasks are WCCs over DATA edges only.
+    # Without this, /clock, /parameter_events and /diagnostics glue the whole
+    # application into one component (Autoware: one 525-vertex "task").
+    if data_only:
+        import re as _re
+        TOOLING = _re.compile(r'^/(_ros2cli|_fish|launch_ros|rviz|rqt|transform_listener_impl)')
+        def _node_label(fid):
+            e = F_to_E.get(fid); n = E_to_N.get(e) if e is not None else None
+            return (N.get(n, {}).get("label") or N.get(n, {}).get("full_name") or "") if n is not None else ""
+        F = {fid: f for fid, f in F.items() if not TOOLING.match(_node_label(fid) or "")}
 
     G = nx.DiGraph()
     for fid in F:
@@ -157,6 +172,11 @@ def build_wccs(graph_json: dict, *, allowed_phases: set[str]):
     edge_attrs = {}
     for e in graph_json["edges"]:
         if e.get("level") == "L3" and e["source"] in F and e["target"] in F:
+            if data_only:
+                if e.get("nature") in ("state",):
+                    continue
+                if _topic_class(e.get("topic") or e.get("service", "")) == "infra":
+                    continue
             G.add_edge(e["source"], e["target"])
             edge_attrs[(e["source"], e["target"])] = {
                 "topic": e.get("topic") or e.get("service", ""),
@@ -312,6 +332,8 @@ def main():
                     help="Output directory (default: wcc_dag_out)")
     ap.add_argument("--min-size", type=int, default=2,
                     help="Skip WCCs with fewer than N F vertices (default: 2)")
+    ap.add_argument("--data-only", action="store_true",
+                    help="FISH-task definition: drop infra topics (/clock, /parameter_events, /diagnostics, tf, debug), state edges and tooling nodes before the WCC decomposition")
     ap.add_argument("--include-init", action="store_true",
                     help="Include F vertices whose phase is 'init' (handshake / one-shot boot work). "
                          "Default: drop them — only callbacks that fired after their executor's first "
@@ -334,7 +356,7 @@ def main():
     cb_stats = fetch_cb_stats(args.session)
     print(f"[wcc_dag_viz]   {len(cb_stats)} distinct callbacks with timing")
 
-    F, E, N, F_to_E, E_to_N, G, edge_attrs, wccs = build_wccs(gj, allowed_phases=allowed)
+    F, E, N, F_to_E, E_to_N, G, edge_attrs, wccs = build_wccs(gj, allowed_phases=allowed, data_only=args.data_only)
     print(f"[wcc_dag_viz] phase filter: keeping {sorted(allowed)}; "
           f"{len(F)} F vertices, {G.number_of_edges()} L3 edges after filter")
     print(f"[wcc_dag_viz] {len(wccs)} WCCs total; "
