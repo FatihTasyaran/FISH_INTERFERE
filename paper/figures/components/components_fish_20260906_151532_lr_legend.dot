@@ -1,0 +1,23 @@
+digraph legend {
+  rankdir=TB; bgcolor="white";
+  graph [fontname="Helvetica" fontsize=22 nodesep=0.18 ranksep=0.30];
+  node [shape=plaintext fontname="Helvetica" fontsize=22 fontcolor="#222222"];
+  edge [arrowsize=0.9];
+  a0 [label=""; shape=point; width=0.02; color="white"];
+  b0 [label=""; shape=point; width=0.02; color="white"];
+  t0 [label="  trigger — a message that starts work in the receiver"];
+  a0 -> b0 [color="#222222", penwidth=3];
+  b0 -> t0 [style=invis];
+  {rank=same; a0; b0; t0;}
+  a1 [label=""; shape=point; width=0.02; color="white"];
+  b1 [label=""; shape=point; width=0.02; color="white"];
+  t1 [label="  sampled — the receiver reads the latest value (sample-and-hold)"];
+  a1 -> b1 [color="#e07b00", penwidth=3 style=dashed arrowhead=onormal];
+  b1 -> t1 [style=invis];
+  {rank=same; a1; b1; t1;}
+  t0 -> a1 [style=invis];
+  w [label="  edge width ∝ number of messages"];
+  t1 -> w [style=invis];
+  boxlabel [label="edges", fontname="Helvetica-Bold"];
+  boxlabel -> a0 [style=invis];
+}

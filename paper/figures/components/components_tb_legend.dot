@@ -1,0 +1,11 @@
+digraph legend {
+  rankdir=LR; bgcolor="white";
+  graph [fontname="Helvetica" fontsize=22 nodesep=0.15 ranksep=0.25];
+  node [shape=plaintext fontname="Helvetica" fontsize=22 fontcolor="#222222"];
+  a [label=""; shape=point; width=0.02; color="white"];
+  b [label=""; shape=point; width=0.02; color="white"];
+  t [label="  augmented edge w.r.t. number of elements"];
+  a -> b [color="#333333", penwidth=4];
+  b -> t [style=invis];
+  {rank=same; a; b; t;}
+}

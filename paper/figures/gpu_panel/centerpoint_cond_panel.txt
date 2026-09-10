@@ -1,0 +1,9 @@
+lidar_centerpoint ← sub:/sensing/lidar/concatenated/pointcloud
+invocations=228  signatures=2  |skeleton|=8
+
+sig           class      phase             inv    seq  onskel    ins  skel%
+2ca083480aa2  dominant   UNKNOWN           218    206       8    198   3.9%
+1323c9a27e24  variant    STEADY             10      8       8      0 100.0%
+
+skeleton sequence:
+  CPU:cudaMAL CPU:cudaMC CE:MC_H2D CPU:cudaMS SM:memset_fill CPU:cudaMS SM:memset_fill CPU:cudaFRE

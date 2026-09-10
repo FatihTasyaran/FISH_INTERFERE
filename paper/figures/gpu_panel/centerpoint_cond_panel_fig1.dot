@@ -1,0 +1,105 @@
+digraph skeleton {
+  rankdir=LR;
+  node [shape=box, style="filled,rounded", fontname="Helvetica", fontsize=8, margin="0.05,0.02"];
+  edge [fontname="Helvetica", fontsize=7];
+  label="lidar_centerpoint ← sub:/sensing/lidar/concatenated/pointcloud — 228 inv, 2 sigs (1 dominant, 1 variant), |skel|=8 over 2 productive sigs · fig1: backbone + collapsed branches"; labelloc=t; labeljust=l; fontsize=10;
+  graph [nodesep=0.15, ranksep=0.30];
+
+  subgraph cluster_skel {
+    label="skeleton (common to all invocations)";
+    style="filled,rounded"; fillcolor="#F0F7FF";
+    fontname="Helvetica-Bold"; fontsize=9;
+    sk0 [label="0
+CPU:cudaMAL", fillcolor="#BBDEFB", tooltip="CPU:cudaMAL"];
+    sk1 [label="1
+CPU:cudaMC", fillcolor="#BBDEFB", tooltip="CPU:cudaMC"];
+    sk2 [label="2
+CE:MC_H2D", fillcolor="#BBDEFB", tooltip="CE:MC_H2D"];
+    sk3 [label="3-6
+CPU:cudaMS
+SM:memset_fill
+×2", fillcolor="#BBDEFB", tooltip="CPU:cudaMS
+SM:memset_fill  (repeated 2x)"];
+    sk4 [label="7
+CPU:cudaFRE", fillcolor="#BBDEFB", tooltip="CPU:cudaFRE"];
+    d8 [shape=diamond, style=filled, label="", width=0.34, height=0.30, fixedsize=true, fillcolor="#FFFFFF", color="#1976D2", penwidth=1.5, tooltip="decision at backbone position 8: 2 alternatives, 228 invocations reach it"];
+  }
+  br0 [label="branch ×218
+[198n]
+CPU:cudaMS
+SM:memset_fill
+CPU:cudaMS
+SM:memset_fill
+… +194", fillcolor="#2E7D32", fontcolor="white", tooltip="insertion block (198 tokens):
+  CPU:cudaMS
+  SM:memset_fill
+  CPU:cudaMS
+  SM:memset_fill
+  CPU:cudaMS
+  SM:memset_fill
+  CPU:cudaMS
+  SM:memset_fill
+  CPU:cudaMS
+  SM:memset_fill
+  CPU:cudaMS
+  SM:memset_fill
+  CPU:cudaMS
+  SM:memset_fill
+  CPU:cudaMS
+  SM:memset_fill
+  CPU:cudaSS
+  CPU:cudaMC
+  CE:MC_H2D
+  CPU:cudaSS
+  CPU:cudaLK
+  SM:generateSweepPoints_kernel
+  CPU:cudaMC
+  CE:MC_H2D
+  CPU:cudaSS
+  CPU:cudaLK
+  SM:generateSweepPoints_kernel
+  CPU:cudaLK
+  SM:shufflePoints_kernel
+  CPU:cudaLK
+  SM:generateVoxels_random_kernel
+  CPU:cudaLK
+  SM:generateBaseFeatures_kernel
+  CPU:cudaLK
+  SM:generateFeatures_kernel
+  CPU:cudaSS
+  CPU:cudaStreamIsCapturing
+  CPU:cuLaunchKernelEx
+  SM:sm80_xmma_gemm_f32f32_f32f32_f32_nn_n_tilesize64x32x8_stage3_warpsize1x2x1_ff
+  CPU:cuLaunchKernel
+  SM:__myl_TraResMulAddResMovTraRelMax_0xd0e079eeead438a09395fc3b8f270c44
+  CPU:cuLaunchKernel
+  SM:__myl_RepCon_0xcc1d91fa4ff42539f847aa7fcc5b0eea
+  CPU:cuLaunchKernelEx
+  SM:sm86_xmma_gemm_f32f32_tf32f32_f32_tn_n_tilesize256x64x32_stage2_warpsize4x1x1
+  CPU:cuLaunchKernel
+  SM:__myl_TraResMulAddResMovTraRelMax_0xa3836533d13a3257bf8cb2e511b91e5e
+  CPU:cudaLK
+  SM:scatterFeatures_kernel
+  CPU:cudaLK
+  SM:nchwTonhwc
+  CPU:cuLaunchKernelEx
+  SM:sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x64x
+  CPU:cuLaunchKernelEx
+  SM:sm75_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x64x
+  CPU:cuLaunchKernelEx
+  SM:sm75_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x64x
+  CPU:cuLaunchKernelEx
+  SM:sm75_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x64x
+  CPU:cuLaunchKernelEx
+  … +138 more
+taken by: 2ca083480aa2 [dominant] x218"];
+  sk0 -> sk1 [color="#1976D2", penwidth=2,];
+  sk1 -> sk2 [color="#1976D2", penwidth=2,];
+  sk2 -> sk3 [color="#1976D2", penwidth=2,];
+  sk3 -> sk4 [color="#1976D2", penwidth=2,];
+  exit [shape=point, width=0.06, color="#1976D2"];
+  sk4 -> d8 [color="#1976D2", penwidth=2, arrowhead=none];
+  d8 -> exit [color="#1976D2", penwidth=2,];
+  d8 -> br0 [color="#2E7D32", style=dashed,];
+  br0 -> exit [color="#2E7D32", style=dashed];
+}

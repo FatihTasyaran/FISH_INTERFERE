@@ -21,3 +21,10 @@ postprocess/fish_graph.json
 # dag_conditional.py, dag_index.py).  NOTE: paper/dag_gallery/old_fish_20260427_165116
 # holds the April-2026 originals, whose session is no longer in PG — archive, do not delete.
 paper/dag_gallery/
+
+# Generated per-session view renders (regenerable from PG: postprocess/session_views.py).
+# 42 MB of PNG/SVG, one 20 MB hierarchy render — same policy as paper/dag_gallery/.
+paper/figures/views/
+
+# Editor/ad-hoc backups
+*.bak

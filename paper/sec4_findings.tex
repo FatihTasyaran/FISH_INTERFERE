@@ -1,0 +1,88 @@
+\section{Preliminary Findings}
+\label{sec:findings}
+
+% Autoware overhead, execution phase (2->3), campaign overhead_aw_20260909_002310
+% Table 1: upper line = mean over the three runs (delta vs baseline);
+%          lower line = their range.
+% Table 2: the occupancy-grid distribution, pooled over each mode's three runs.
+\begin{table}[t]
+\centering
+\footnotesize
+\caption{What the instrumentation costs Autoware, on the values Autoware's own
+nodes report, in the steady state of a 30\,s rosbag replay: mean over three runs
+on the upper line, with the delta against the baseline, and their range over the
+three runs on the lower line. The last two rows are the diagnostics that would
+report a failure: no centerpoint cycle was missed and no topic state monitor
+left \textsc{ok} in any of the nine runs.}
+\label{tab:overhead-aw}
+\begin{tabular}{@{}lrrr@{}}
+\hline
+ & baseline & LTTng & LTTng+nsys \\ \hline
+\begin{tabular}[c]{@{}l@{}}centerpoint\\ (GPU) [ms]\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}23.9\\ \scriptsize 23.7--24.2\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}25.4 (+6.3\%)\\ \scriptsize 25.3--25.5\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}26.2 (+9.8\%)\\ \scriptsize 25.8--26.8\end{tabular} \\ \hline
+\begin{tabular}[c]{@{}l@{}}concatenate data\\ (GPU) [ms]\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}14.7\\ \scriptsize 11.5--16.8\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}18.2 (+23.4\%)\\ \scriptsize 16.4--19.8\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}18.9 (+28.5\%)\\ \scriptsize 18.6--19.3\end{tabular} \\ \hline
+\begin{tabular}[c]{@{}l@{}}occupancy grid\\ (GPU) [ms]\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}3.95\\ \scriptsize 3.94--3.96\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}3.35 (--15.2\%)\\ \scriptsize 3.23--3.41\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}3.59 (--9.0\%)\\ \scriptsize 3.52--3.64\end{tabular} \\ \hline
+\begin{tabular}[c]{@{}l@{}}detected objects\\ rate [Hz]\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}9.94\\ \scriptsize 9.91--9.97\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}9.98 (+0.4\%)\\ \scriptsize 9.81--10.19\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}9.99 (+0.6\%)\\ \scriptsize 9.89--10.05\end{tabular} \\ \hline
+\begin{tabular}[c]{@{}l@{}}end-to-end\\ latency [ms]\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}408\\ \scriptsize 406--410\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}444 (+8.7\%)\\ \scriptsize 441--446\end{tabular}
+  & \begin{tabular}[c]{@{}r@{}}452 (+10.6\%)\\ \scriptsize 442--461\end{tabular} \\ \hline
+\begin{tabular}[c]{@{}l@{}}\textbf{centerpoint missed}\\ \textbf{cycles [ms]}\end{tabular} & \textbf{0} & \textbf{0} & \textbf{0} \\ \hline
+\begin{tabular}[c]{@{}l@{}}\textbf{topic state monitor}\\ \textbf{violations}\end{tabular} & \textbf{0} & \textbf{0} & \textbf{0} \\ \hline
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\footnotesize
+\caption{The occupancy-grid callback, pooled over the three runs of each mode in
+the steady state.}
+\label{tab:occgrid}
+\begin{tabular}{@{}lrrrrrrr@{}}
+\hline
+ & $n$ & min & p10 & \textbf{p50} & p90 & p99 & max \\ \hline
+baseline    & 638 & 2.36 & 2.81 & \textbf{3.69} & 5.00 &  8.86 & 10.65 \\ \hline
+LTTng       & 562 & 2.32 & 2.55 & \textbf{2.75} & 5.08 &  9.80 & 20.80 \\ \hline
+LTTng+nsys  & 556 & 2.45 & 2.58 & \textbf{2.79} & 5.76 & 10.23 & 50.85 \\ \hline
+\end{tabular}
+\end{table}
+
+\noindent
+\textbf{Setup:}
+Autoware Universe runs on ROS~2 Humble on an Intel i7-12700H --- six
+performance and eight efficiency cores --- with an NVIDIA RTX~A1000. The input
+is Autoware's sample map and sample rosbag, thirty seconds of recorded driving
+replayed at half speed. Turbo and SMT are disabled so that frequency scaling and
+thermal drift do not enter the comparison, and a cgroup gives the six
+performance cores to the application and six efficiency cores to the tracing
+daemons: on a hybrid processor the scheduler is otherwise free to migrate a
+callback onto an efficiency core, and the observer would compete for the very
+cores it is measuring. Each of the three modes --- untraced, LTTng, LTTng with
+\texttt{nsys} --- is repeated three times, and every value reported here is
+taken from the steady-state phase of Section~\ref{sec:method}.
+
+\noindent
+\textbf{Cost:}
+Table~\ref{tab:overhead-aw} reports what the instrumentation costs on the values
+Autoware's own nodes publish. End-to-end latency grows by 8.7\,\% under LTTng
+and 10.6\,\% with GPU profiling on top, and the ranges over the three runs do
+not overlap the baseline, so the difference is not run-to-run noise. The GPU
+inference the model exists to describe is the least affected. What does not move
+is the work done: the perception pipeline keeps producing detected objects at
+the same rate, no centerpoint cycle is missed, and no topic state monitor leaves
+\textsc{ok} in any of the nine runs, so the added latency stays below what
+Autoware's own supervision treats as a fault. Run without the core partition the
+same two diagnostics stay at zero and end-to-end latency costs 7.7\,\% and
+7.9\,\% instead, the application being free to spread over every core it finds.
+Table~\ref{tab:occgrid} gives the distribution behind the one metric that falls.
