@@ -2311,7 +2311,13 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
     # Join membership ties (see detect_joins): undirected in meaning, stored
     # as one L3 edge per member pair (member → completer/first f), nature=
     # "join", NOT a message hop. Keeps a join's inputs in one FT.
-    join_count = 0
+    #
+    # One pair of callbacks can be tied by several of the node's join groups
+    # (gyro_odometer synchronises the same two callbacks on four topics).  The
+    # tie is the same tie, so it is one edge — but it carries every topic that
+    # produced it, otherwise whichever group was written last would name the
+    # edge on its own.
+    join_ties: dict[tuple, list] = {}
     for n_id, node in nodes.items():
         for topic, f_list in (node.A_v.get("joins") or {}).items():
             fl = [f for f in f_list if f in functions]
@@ -2322,11 +2328,15 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
             for f in fl:
                 if f == anchor_f:
                     continue
-                G.add_edge(f, anchor_f, rel="comm", level="L3", nature="join",
-                           topic=topic, join_group=topic, intra_node=True)
-                join_count += 1
-    if join_count:
-        log(f"  Join ties: {join_count} L3 edges (nature=join)")
+                join_ties.setdefault((f, anchor_f), []).append(topic)
+    for (f, anchor_f), topics in join_ties.items():
+        G.add_edge(f, anchor_f, rel="comm", level="L3", nature="join",
+                   topic=topics[0], topics=topics, join_group=topics[0],
+                   join_groups=topics, intra_node=True)
+    if join_ties:
+        n_groups = sum(len(t) for t in join_ties.values())
+        log(f"  Join ties: {len(join_ties)} L3 edges (nature=join) "
+            f"over {n_groups} join groups")
 
     # State links (detect_state_links / detect_polled_subs): sample-and-hold reads
     # inside a node — NOT precedence; FT grouping ignores nature='state'.
@@ -2452,43 +2462,86 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
         log(f"  NITROS intra-node: {nitros_groups_with_edges} groups, "
             f"{nitros_l3_count} L3 edges added")
 
-    # L1 aggregation
-    node_pairs = {}
-    for u, v, data in G.edges(data=True):
-        if data.get("level") != "L2" or data.get("rel") != "comm":
-            continue
-        src_n = entity_to_node.get(u, u if u in nodes else None)
-        dst_n = entity_to_node.get(v, v if v in nodes else None)
-        if src_n and dst_n and src_n != dst_n:
-            node_pairs.setdefault((src_n, dst_n), []).append(data)
-    l1_count = 0
-    for (sn, dn), edges in node_pairs.items():
-        topics = [e.get("topic", e.get("service", "?")) for e in edges]
-        G.add_edge(sn, dn, rel="comm", level="L1",
-                   comm_count=len(edges), topics=topics)
-        l1_count += 1
-    log(f"  L1 aggregated: {l1_count}")
-
-    # L0 aggregation
+    # ──────────────────────────────────────────────────────────────────
+    # Lifting.  Every interaction now sits at the callback layer: msg and dep
+    # were declared at the entity layer and copied down, join/state/gxf_internal
+    # were built there directly.  The coarser layers are the union of what is
+    # underneath, exactly as the model defines it:
+    #
+    #     E(u,v) = U_{a in Z*_u, b in Z*_v} E(a,b)
+    #
+    # so each layer is derived from L3, never from the layer below it — a
+    # cascade would drop any interaction that has no counterpart one layer up
+    # (which is how join and state edges used to stop at L3).  Self-pairs are
+    # kept: a node that talks to itself is a self-loop carrying those
+    # interactions, not an absence of them.  Consumers that do not want to draw
+    # them can filter on u == v.
+    func_to_entity = {}
+    for e_id, e in entities.items():
+        for f_id in e.Z_v:
+            func_to_entity[f_id] = e_id
     node_to_exec = {}
     for ex in executors.values():
         for n_id in ex.Z_v:
             node_to_exec[n_id] = ex.id_v
-    exec_pairs = {}
-    for u, v, data in G.edges(data=True):
-        if data.get("level") != "L1":
-            continue
-        se = node_to_exec.get(u)
-        de = node_to_exec.get(v)
-        if se and de and se != de:
-            exec_pairs.setdefault((se, de), []).append(data)
-    l0_count = 0
-    for (se, de), edges in exec_pairs.items():
-        total = sum(e.get("comm_count", 1) for e in edges)
-        G.add_edge(se, de, rel="comm", level="L0",
-                   tau="InterP", comm_count=total)
-        l0_count += 1
-    log(f"  L0 aggregated: {l0_count}")
+
+    def _ancestor(f_id, layer):
+        """The vertex containing callback `f_id` at the requested layer."""
+        e_id = func_to_entity.get(f_id)
+        if layer == "L2" or e_id is None:
+            return e_id
+        n_id = entity_to_node.get(e_id)
+        if layer == "L1" or n_id is None:
+            return n_id
+        return node_to_exec.get(n_id)
+
+    l3_edges = [(u, v, d) for u, v, d in G.edges(data=True)
+                if d.get("rel") == "comm" and d.get("level") == "L3"]
+
+    def _lift(layer):
+        """Group the callback-layer edges by the pair of vertices containing
+        them, and write one edge per pair carrying the whole set."""
+        pairs, unattached = {}, 0
+        for u, v, d in l3_edges:
+            su, sv = _ancestor(u, layer), _ancestor(v, layer)
+            if su is None or sv is None:
+                # an external peer has no node and no executor of its own; its
+                # interactions exist at the entity layer and stop there
+                unattached += 1
+                continue
+            pairs.setdefault((su, sv), []).append(d)
+        written = kept = 0
+        for (su, sv), members in pairs.items():
+            if layer == "L2" and G.has_edge(su, sv) and \
+                    G[su][sv].get("level") == "L2":
+                # msg and dep were declared here at init and carry their own
+                # attributes (topic, msg_type, external, rate); the lift only
+                # confirms them
+                kept += 1
+                continue
+            natures = sorted({m.get("nature", "?") for m in members})
+            labels = [m.get("topic", m.get("service", "?")) for m in members]
+            attrs = {"rel": "comm", "level": layer,
+                     "comm_count": len(members),
+                     "natures": natures,
+                     "topics": labels}
+            if layer == "L2" and len(natures) == 1:
+                # the entity layer keeps the single-interaction shape the
+                # declared edges have, so consumers can read it uniformly
+                attrs["nature"] = natures[0]
+                attrs["topic"] = labels[0]
+            if layer == "L0":
+                attrs["tau"] = "InterP"
+            G.add_edge(su, sv, **attrs)
+            written += 1
+        return written, kept, unattached, sum(1 for u, v in pairs if u == v)
+
+    for layer, name in (("L2", "entity"), ("L1", "node"), ("L0", "executor")):
+        written, kept, unattached, selfp = _lift(layer)
+        log(f"  lifted to {name} ({layer}): {written} new, {kept} already "
+            f"declared, {selfp} self-pairs, {unattached} skipped (no {name})")
+    l1_count = sum(1 for _, _, d in G.edges(data=True) if d.get("level") == "L1")
+    l0_count = sum(1 for _, _, d in G.edges(data=True) if d.get("level") == "L0")
     log(f"  Total horizontal: {l2_count + l3_count + l1_count + l0_count}")
     return G
 
