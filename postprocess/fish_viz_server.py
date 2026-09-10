@@ -37,6 +37,9 @@ def _serve_file(handler, path, ct):
     handler.send_header('Content-Type', ct)
     handler.send_header('Content-Length', str(len(body)))
     handler.send_header('Access-Control-Allow-Origin', '*')
+    # the viewers are edited while the server runs; a cached copy would keep
+    # serving yesterday's JavaScript after a reload
+    handler.send_header('Cache-Control', 'no-store, must-revalidate')
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -2192,7 +2195,7 @@ def _dot_escape(s: str) -> str:
     return s.replace('\\', '\\\\').replace('"', '\\"')
 
 
-def _wcc_to_dot(wcc: dict) -> str:
+def _wcc_to_dot(wcc: dict, rankdir: str = 'TB') -> str:
     """Render one WCC's nodes+edges into Graphviz DOT source.
 
     Each F vertex becomes a 2-line labelled box (line 1: '[etype] ent_label',
@@ -2224,7 +2227,7 @@ def _wcc_to_dot(wcc: dict) -> str:
 
     out = []
     out.append('digraph wcc {')
-    out.append('  rankdir=TB;')
+    out.append(f'  rankdir={rankdir};')
     out.append('  newrank=true;')  # critical for clustered graphs — without this,
                                    # dot raises "init_rank" on big multi-cluster DAGs
     out.append('  graph [fontname="Helvetica" fontsize=11 nodesep=0.30 ranksep=0.55 '
@@ -2583,6 +2586,11 @@ def _serve_wcc_svg(handler, qs):
     # rendered — rendering all ~60 graphs took ~40 s per filter change.
     only = qs.get('only', [None])[0]
     render_all = (qs.get('render_all', ['0'])[0] == '1')
+    # ?rankdir=LR lays the chain out left-to-right — the shape a wide figure
+    # panel wants; TB stays the default for browsing.
+    rankdir = (qs.get('rankdir', ['TB'])[0] or 'TB').upper()
+    if rankdir not in ('TB', 'LR', 'BT', 'RL'):
+        rankdir = 'TB'
     rendered = []
     all_entries = out_wccs + _namespace_views(fnodes, edges, neighbors=neighbors, isolated=isolated, depth=ns_depth, infra_mode=infra_mode)
     for pos, w in enumerate(all_entries):
@@ -2591,12 +2599,12 @@ def _serve_wcc_svg(handler, qs):
             svg = None
         else:
             try:
-                svg = _render_dot_to_svg(_wcc_to_dot(w))
+                svg = _render_dot_to_svg(_wcc_to_dot(w, rankdir))
             except Exception as e:
                 # retry without the join rank pins (Graphviz init_rank on dense views)
                 try:
                     w2 = dict(w); w2['_no_join_rank'] = True
-                    svg = _render_dot_to_svg(_wcc_to_dot(w2))
+                    svg = _render_dot_to_svg(_wcc_to_dot(w2, rankdir))
                 except Exception as e2:
                     svg = f"<!-- render failed: {e2} -->"
         # nodes_meta: id → full metadata so client can hover/lookup
@@ -2833,7 +2841,8 @@ def _serve_gantt_data(handler, qs):
     # Full (unwindowed, unfiltered) responses are cached on disk: encoding 1.4 M
     # spans to JSON costs ~10 s in Python; the file streams in < 1 s.
     cache_path = None
-    if not pid_filter and not qs.get('t0') and not qs.get('t1'):
+    if (not pid_filter and not qs.get('t0') and not qs.get('t1')
+            and (qs.get('pids') or [''])[0] != '1'):
         cache_dir = os.environ.get('FISH_GANTT_CACHE', os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'), 'fish_gantt'))
         cache_path = os.path.join(cache_dir, f"{sid}__{scope}__{fmt}.json".replace('/', '_'))
         if os.path.exists(cache_path) and (qs.get('nocache', ['0'])[0] != '1'):
@@ -2851,6 +2860,24 @@ def _serve_gantt_data(handler, qs):
         conn.autocommit = True
         cur = conn.cursor()
         meta = _ensure_gantt_spans(cur, sid, scope)
+        if (qs.get('pids') or [''])[0] == '1':
+            # cheap preflight: how many spans per process, so a viewer can load
+            # one process instead of a whole 1.4 M-span session
+            cur.execute("""SELECT pid, count(*) n FROM gantt_spans
+                           WHERE session_id=%s AND scope=%s GROUP BY pid ORDER BY n DESC""",
+                        (sid, scope))
+            body = json.dumps({'pid_counts': [[r['pid'], r['n']] for r in cur.fetchall()],
+                               'n_spans': int(meta['n_spans'] or 0),
+                               't0_min': int(meta['t0_min'] or 0),
+                               't1_max': int(meta['t1_max'] or 0)}).encode()
+            handler.send_response(200)
+            handler.send_header('Content-Type', 'application/json')
+            handler.send_header('Content-Length', str(len(body)))
+            handler.send_header('Access-Control-Allow-Origin', '*')
+            handler.send_header('Cache-Control', 'no-store')
+            handler.end_headers()
+            handler.wfile.write(body)
+            return
         t0_min = int(meta['t0_min'] or 0); t1_max = int(meta['t1_max'] or 0)
         gpu_submitter_cbs = list(meta.get('gpu_submitter_cbs') or [])
         w0 = int(qs['t0'][0]) if qs.get('t0') else None
@@ -2859,7 +2886,13 @@ def _serve_gantt_data(handler, qs):
         max_spans = int((qs.get('max_spans') or ['40000'])[0])
         where = "session_id=%s AND scope=%s"; params = [sid, scope]
         if pid_filter:
-            where += " AND pid=%s"; params.append(int(pid_filter))
+            # a comma list selects several processes at once (e.g. the three
+            # executors of the paper's figure); a single value keeps the old form
+            pl = [int(x) for x in str(pid_filter).split(',') if x.strip()]
+            if len(pl) == 1:
+                where += " AND pid=%s"; params.append(pl[0])
+            elif pl:
+                where += " AND pid = ANY(%s)"; params.append(pl)
         if w0 is not None and w1 is not None:
             where += " AND t1_ns >= %s AND t0_ns <= %s"; params += [w0, w1]
         mode = 'spans'

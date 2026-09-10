@@ -141,7 +141,7 @@ def classify(shapes, kept_ids, dom_id, bb, cover):
     return out
 
 
-def analyse(shapes, max_backbone=400):
+def analyse(shapes, max_backbone=400, drop_degenerate=True):
     """Skeleton analysis.  The backbone is the LCS over the productive
     signatures only; *every* drawable signature is then aligned to it, so rare
     and INIT-phase runs still appear (coloured by their class).  Probabilities
@@ -158,7 +158,7 @@ def analyse(shapes, max_backbone=400):
     # otherwise collapse the LCS to their own length.
     prod = [i for i, s in enumerate(drawable) if s.get('phase') != 'INIT'] or list(range(len(drawable)))
     dom_len = max(len(seqs[i]) for i in prod)
-    kept_ids = [i for i in prod if len(seqs[i]) >= 0.5 * dom_len] or prod
+    kept_ids = ([i for i in prod if len(seqs[i]) >= 0.5 * dom_len] or prod) if drop_degenerate else list(prod)
     kept_ids.sort(key=lambda i: -cnts[i])
     bb = seqs[kept_ids[0]]
     for i in kept_ids[1:]:
@@ -218,7 +218,7 @@ def legend(classes_used):
     return L
 
 
-def figure(bb, A, title, base, probabilities):
+def figure(bb, A, title, base, probabilities, show_legend=True):
     """Backbone chain; wherever invocations diverge, a diamond decision node
     carries the alternatives, so a probability never labels one of several
     edges leaving the same operation node.  Branch blocks are filled with the
@@ -302,7 +302,8 @@ def figure(bb, A, title, base, probabilities):
     if len(bb) in at:                                  # epilogue: decision after the last node
         L.append(f'  exit [shape=point, width=0.06, color="{SKEL_EDGE}"];')
         decision(len(bb), f'sk{len(sup)-1}', 'exit')
-    L += legend(used)
+    if show_legend:
+        L += legend(used)
     L.append('}')
     return render('\n'.join(L), base)
 
@@ -324,6 +325,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('session'); ap.add_argument('--scope', default='__main__')
     ap.add_argument('-o', '--outdir', default=None); ap.add_argument('--max-backbone', type=int, default=400)
+    ap.add_argument('--anchor', default=None, help='only this callback anchor (e.g. 0x796A25ED7560)')
+    ap.add_argument('--sigs', type=int, default=0, help='keep only the N most frequent signatures')
+    ap.add_argument('--base', default=None, help='output file stem (single-callback mode)')
+    ap.add_argument('--sig-list', default=None, help='comma-separated signature prefixes to keep')
+    ap.add_argument('--no-legend', action='store_true', help='omit the in-figure legend')
+    ap.add_argument('--keep-degenerate', action='store_true',
+                    help='let short signatures shape the backbone too (implied by --sigs/--sig-list)')
     a = ap.parse_args()
     out = a.outdir or os.path.join('paper', 'dag_gallery', a.session + '_conditional')
     os.makedirs(out, exist_ok=True)
@@ -333,23 +341,32 @@ def main():
                    WHERE session_id=%s AND scope=%s ORDER BY n_invocations DESC""", (a.session, a.scope))
     blocks_html = []
     for r in cur.fetchall():
+        if a.anchor and str(r['anchor']).lower() != a.anchor.lower():
+            continue
         shapes = r['dags'] if isinstance(r['dags'], list) else json.loads(r['dags'])
-        A = analyse(shapes, a.max_backbone)
+        if a.sig_list:                   # explicit signatures, in the given order
+            want = [w.strip() for w in a.sig_list.split(',') if w.strip()]
+            shapes = [s for w in want for s in shapes if str(s.get('signature') or '').startswith(w)]
+        elif a.sigs:                     # keep the N most frequent drawable signatures
+            shapes = sorted([s for s in shapes if s.get('nodes') and not s.get('truncated')],
+                            key=lambda s: -int(s.get('count') or 0))[:a.sigs]
+        A = analyse(shapes, a.max_backbone,
+                    drop_degenerate=not (a.keep_degenerate or a.sigs or a.sig_list))
         if not A or not A['drawable_skeleton']:
             continue
         bb, n_all = A['bb'], A['n_all']
         by_cls = collections.Counter(d['cls'] for d in A['sigs'])
         nick = (f"{r['node']} ← {r['entity']}" if r['entity'] else r['node']) or f"thread {r['anchor']}"
-        tag = f"{r['anchor_type']}_{str(r['anchor']).replace('0x','').lower()}"
+        tag = a.base or f"{r['anchor_type']}_{str(r['anchor']).replace('0x','').lower()}"
         base = (f"{nick} — {n_all} inv, {len(A['sigs'])} sigs "
                 f"({', '.join(f'{n} {c}' for c, n in by_cls.most_common())}), "
                 f"|skel|={len(bb)} over {len(A['kept_ids'])} productive sigs")
         print(f"{nick}: {len(A['sigs'])} signatures, backbone {len(bb)}, "
               f"{len(A['blocks'])} branch block(s), classes {dict(by_cls)}")
         f1 = figure(bb, A, base + ' · fig1: backbone + collapsed branches',
-                    os.path.join(out, f'{tag}_fig1'), probabilities=False)
+                    os.path.join(out, f'{tag}_fig1'), probabilities=False, show_legend=not a.no_legend)
         f2 = figure(bb, A, base + ' · fig2: conditional graph (decision nodes, conditional shares)',
-                    os.path.join(out, f'{tag}_fig2'), probabilities=True)
+                    os.path.join(out, f'{tag}_fig2'), probabilities=True, show_legend=not a.no_legend)
         sig_table(A, nick, os.path.join(out, f'{tag}.txt'))
         figs = ''.join(
             f'<div class="fig"><div class="cap">{html.escape(c)} · <a href="{tag}_fig{i}.svg">svg</a></div>'

@@ -20,10 +20,10 @@ body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;ove
 #stage-inner{transform-origin:0 0;transition:transform .08s ease-out}
 #stage-inner svg{display:block}
 
-#legend{position:fixed;bottom:10px;right:10px;z-index:10;background:rgba(255,255,255,.96);padding:8px 12px;border-radius:6px;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.1);line-height:1.6}
-.legend-box{display:inline-block;width:14px;height:11px;margin-right:4px;vertical-align:middle;border:1.5px solid #888;border-radius:2px}
+#legend{position:fixed;bottom:10px;right:10px;z-index:10;background:rgba(255,255,255,.97);padding:11px 15px;border-radius:6px;font-size:15px;box-shadow:0 1px 5px rgba(0,0,0,.14);line-height:1.75}
+.legend-box{display:inline-block;width:19px;height:14px;margin-right:6px;vertical-align:middle;border:2px solid #888;border-radius:2px}
 
-#hint{position:fixed;bottom:10px;left:10px;z-index:10;background:rgba(255,255,255,.95);padding:6px 12px;border-radius:6px;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.1);color:#555}
+#hint{position:fixed;bottom:10px;left:10px;z-index:10;background:rgba(255,255,255,.95);padding:8px 14px;border-radius:6px;font-size:14px;box-shadow:0 1px 4px rgba(0,0,0,.1);color:#555}
 
 /* Highlight hovered node */
 .wcc-hover ellipse, .wcc-hover polygon, .wcc-hover path{filter:brightness(1.05)}
@@ -87,20 +87,23 @@ body{margin:0;font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;ove
 
 <div id="legend">
   <div><span class="legend-box" style="background:#bfe1f5"></span>sub
-       <span class="legend-box" style="background:#f5d6bf;margin-left:6px"></span>serv
-       <span class="legend-box" style="background:#f5bfbf;margin-left:6px"></span>tmr
-       <span class="legend-box" style="background:#fff2a3;margin-left:6px"></span>waitable
-       <span class="legend-box" style="background:#dddddd;margin-left:6px"></span>ext</div>
-  <div style="margin-top:3px">
+       <span class="legend-box" style="background:#f5d6bf;margin-left:8px"></span>serv
+       <span class="legend-box" style="background:#f5bfbf;margin-left:8px"></span>tmr
+       <span class="legend-box" style="background:#fff2a3;margin-left:8px"></span>waitable
+       <span class="legend-box" style="background:#dddddd;margin-left:8px"></span>ext</div>
+  <div style="margin-top:4px">
        <span class="legend-box" style="background:#fff;border-color:#d62728;border-width:3px"></span>GPU
-       <span style="margin-left:14px;color:#2ca02c">━━</span> GXF intra-node
-       <span style="margin-left:8px;color:#222">━━</span> trigger hop (receiver continues the chain)
-       <span style="margin-left:8px;color:#8c8c8c">──</span> delivery hop (receiver only deposits / is polled / leaf)</div>
-  <div style="margin-top:3px">
-       <span style="color:#e07b00">──▷</span> polled read (observed, age p50)
-       <span style="margin-left:8px;color:#e07b00">┄┄▷</span> inferred state read (age p50)
-       <span style="margin-left:8px;color:#1f77b4">┈┈</span> join tie
-       <span style="margin-left:8px;color:#bbb">┄┄</span> infra</div>
+       <span class="legend-box" style="background:#fff;border-style:dashed;margin-left:12px"></span>intra-process delivery
+       <span class="legend-box" style="background:#fff;border-style:dashed;border-color:#ccc;margin-left:12px"></span>other namespace</div>
+  <div style="margin-top:4px">
+       <span style="color:#2ca02c">━━</span> GXF intra-node
+       <span style="margin-left:10px;color:#222">━━</span> trigger hop
+       <span style="margin-left:10px;color:#8c8c8c">──</span> delivery hop</div>
+  <div style="margin-top:4px">
+       <span style="color:#e07b00">──▷</span> polled read
+       <span style="margin-left:10px;color:#e07b00">┄┄▷</span> inferred state read
+       <span style="margin-left:10px;color:#1f77b4">┈┈</span> join tie
+       <span style="margin-left:10px;color:#bbb">┄┄</span> infra</div>
 </div>
 
 <div id="hint">scroll = zoom · drag = pan · hover node = details</div>
@@ -297,7 +300,10 @@ async function loadSession(){
   document.getElementById('summary').textContent = 'loading…';
   try {
     const prevSel = document.getElementById('wccSelect').value;   // keep selection across filter changes
-    _lastQuery = `session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}&infra=${infra}&ext=${ext}&neighbors=${nb}&isolated=${iso}&ns_depth=${nsd}&node=${nodeF}&topic=${topicF}`;
+    // ?rankdir=LR in the page URL flows the chain left-to-right (wide figures)
+    const rankdir = (params.get('rankdir') || '').toUpperCase();
+    _lastQuery = `session=${encodeURIComponent(sid)}&include_init=${incInit}&include_zero_exec=${incZero}&include_unknown=${incUnk}&infra=${infra}&ext=${ext}&neighbors=${nb}&isolated=${iso}&ns_depth=${nsd}&node=${nodeF}&topic=${topicF}`
+                 + (rankdir ? `&rankdir=${rankdir}` : '');
     _svgCache.clear();
     const firstOnly = prevSel ? `&only=${encodeURIComponent(prevSel)}` : '';
     const r = await fetch(`/api/wcc-svg?${_lastQuery}${firstOnly}`, {signal});

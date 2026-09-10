@@ -167,9 +167,23 @@
 const qs = new URLSearchParams(window.location.search);
 const session_id = qs.get('session_id') || qs.get('session') || '';
 const scope = qs.get('scope') || '__main__';
+// ?pid=N narrows the fetch server-side: a whole Autoware session is ~70 MB of
+// spans, one process ~2 MB, which is the difference between a tab that loads
+// and a tab the browser kills.
+const pidParam = (qs.get('pid') || '').trim();
+// Server-side windowing: instead of shipping every span to the browser, the
+// server aggregates the visible window (density strips when it holds more than
+// max_spans, real spans once zoomed in).  A full Autoware session is 70 MB /
+// 1.4 M spans as spans, 6.7 MB / 123 k bins as density — and every executor
+// stays visible.  ?client=1 forces the old load-everything behaviour.
+const forceClient = qs.get('client') === '1';
+const forceServer = qs.get('server') === '1';
+let serverMode = false, LANES = [], serverBins = null, binMeta = null;
+let winT0 = null, winT1 = null;          // absolute ns of the fetched window
 document.title = `FISH gantt — ${session_id}`;
 
-const gurl = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}&fmt=v2`;
+const gbase = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}&fmt=v2`;
+let gurl = gbase + (pidParam ? `&pid=${encodeURIComponent(pidParam)}` : '');
 const curl = `/api/causal?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
 const turl = `/api/taskset?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
 
@@ -210,6 +224,18 @@ if (!session_id) {
     try { return JSON.parse(txt); }
     catch (e) { throw new Error(`${label} returned non-JSON (first 200 chars): ${txt.slice(0, 200)}`); }
   });
+  const preflight = (pidParam && !forceServer) ? Promise.resolve(null)
+      : fetchJson(gbase + '&pids=1', 'pids').then(pc => {
+          window.__pidCounts = pc.pid_counts || [];
+          if (!forceClient && ((pc.n_spans || 0) > 300000 || forceServer)) {
+            serverMode = true;
+            winT0 = pc.t0_min; winT1 = pc.t1_max;
+            const px = Math.max(600, Math.round((document.getElementById('chart-wrap') || {}).clientWidth || 1600));
+            gurl = gbase + `&t0=${winT0}&t1=${winT1}&px=${px}&max_spans=40000`;
+          }
+          return pc;
+        }).catch(_ => null);
+  preflight.then(() =>
   Promise.all([fetchJsonProgress(gurl, 'gantt'), fetchJson(curl, 'causal'), fetchJson(turl, 'taskset').catch(_=>null)])
     .then(([gantt, causal, ts]) => {
       gpuSubmitterCbs = new Set(gantt.gpu_submitter_cbs || []);
@@ -217,7 +243,7 @@ if (!session_id) {
       setLoad('building index…', 1, `${(gantt.n_spans||0).toLocaleString()} spans`);
       setTimeout(() => { render(gantt, causal); hideLoad(); }, 0);
     })
-    .catch(err => document.body.innerHTML = `<div id="empty">Error: ${err.message || err}</div>`);
+    .catch(err => document.body.innerHTML = `<div id="empty">Error: ${err.message || err}</div>`));
 }
 
 function render(raw, causal) {
@@ -226,13 +252,20 @@ function render(raw, causal) {
   // smaller payload than v1 for 1.4 M spans; decode here once.
   const D = raw.dicts || null;
   const dec = (k, v) => (D ? D[k][v] : v);
-  const spans = raw.spans.map((a, idx) => ({
+  LANES = raw.lanes || [];
+  if (raw.mode === 'density') {
+    serverBins = raw.bins || [];
+    binMeta = {w0: raw.w0_ns, w1: raw.w1_ns, bw: raw.bucket_ns, total: raw.n_spans_total};
+    raw = Object.assign({}, raw, {spans: [], dicts: null});
+  }
+  let spans = (raw.spans || []).map((a, idx) => ({
     id: idx,
     pid: a[0], vtid: a[1], t0: a[2], t1: a[3],
     node: dec('node', a[4]), entity: dec('entity', a[5]), etype: dec('etype', a[6]),
     symbol: dec('symbol', a[7]), cb_addr: dec('cb_addr', a[8]),
   }));
   const t0_min = raw.t0_min_ns;
+  const sessT1 = raw.t1_max_ns || (raw.t0_min_ns + 1);
 
   document.getElementById('stats').textContent =
     `${spans.length} spans · ${causal.n_pubs} pubs / ${causal.n_topics} topics`;
@@ -287,11 +320,20 @@ function render(raw, causal) {
 
   // Spans sorted by start within each vtid (for "next callback start ≥ t" lookups)
   const spansByVtid = new Map();
-  for (const s of spans) {
-    if (!spansByVtid.has(s.vtid)) spansByVtid.set(s.vtid, []);
-    spansByVtid.get(s.vtid).push(s);
+  const laneMaxDur = new Map();
+  function indexSpans() {
+    spansByVtid.clear(); laneMaxDur.clear();
+    for (const s of spans) {
+      if (!spansByVtid.has(s.vtid)) spansByVtid.set(s.vtid, []);
+      spansByVtid.get(s.vtid).push(s);
+    }
+    for (const [v, arr] of spansByVtid) {
+      arr.sort((a, b) => a.t0 - b.t0);
+      let m = 0; for (const s of arr) if (s.t1 - s.t0 > m) m = s.t1 - s.t0;
+      laneMaxDur.set(v, m);
+    }
   }
-  for (const v of spansByVtid.values()) v.sort((a, b) => a.t0 - b.t0);
+  indexSpans();
 
   // Span lookup: which span contains a given (vtid, ts)?
   function spanAt(vtid, tsRel) {
@@ -424,21 +466,35 @@ function render(raw, causal) {
   }
 
   // ---------- UI ----------
-  const pids = [...new Set(spans.map(s => s.pid))].sort((a,b)=>a-b);
+  const cntByPid = new Map();                     // one pass, not one scan per pid
+  for (const s of spans) cntByPid.set(s.pid, (cntByPid.get(s.pid) || 0) + 1);
+  const loaded = new Set(cntByPid.keys());
+  const all = (window.__pidCounts || []).map(([p, n]) => [+p, n]);
+  const pids = (all.length ? all : [...cntByPid.entries()].sort((a,b)=>b[1]-a[1]));
   const pidSel = document.getElementById('pid-select');
-  pids.forEach(p => {
-    const cnt = spans.filter(s => s.pid===p).length;
+  const oneProc = !!((pidParam && !pidParam.includes(',')) || window.__autoPid);
+  pids.sort((a,b)=>a[0]-b[0]).forEach(([p, n]) => {
     const o = document.createElement('option');
-    o.value = p; o.textContent = `pid ${p}  (${cnt} spans)`;
+    o.value = p;
+    o.textContent = `pid ${p}  (${cntByPid.get(p) ?? n} spans)` + (loaded.has(p) ? '' : ' ↻');
     pidSel.appendChild(o);
   });
+  if (oneProc) {                                  // loading another process refetches
+    pidSel.onchange = () => {
+      const q = new URLSearchParams(window.location.search);
+      if (pidSel.value) q.set('pid', pidSel.value); else q.delete('pid');
+      window.location.search = q.toString();
+    };
+  }
   // Default to (all) — the layer tree on the left is the primary navigation;
   // narrowing to a single pid is opt-in via the dropdown.
-  pidSel.value = '';
-  pidSel.onchange = () => { traceState = null; draw(); };
+  pidSel.value = (pidParam && !pidParam.includes(',')) ? pidParam : (window.__autoPid || '');
+  if (!oneProc) pidSel.onchange = () => { traceState = null; draw(); if (serverMode) fetchWindowNow(); };
 
   // Color: ROS node
-  const nodes = [...new Set(spans.map(s => s.node))].sort();
+  const nodes = [...new Set([...spans.map(s => s.node),
+                             ...LANES.map(l => l[3]),
+                             ...((serverBins || []).map(b => b[5]))])].filter(Boolean).sort();
   const palette = d3.schemeTableau10.concat(d3.schemeSet3, d3.schemePaired);
   const colorFor = new Map(nodes.map((n,i) => [n, palette[i % palette.length]]));
   const muted = new Set();   // kept for spansInView(); no UI mutes any more
@@ -603,6 +659,51 @@ function render(raw, causal) {
   let traceState = null;   // {anchor, up:{visited,edges}, down:{visited,edges}}
 
   let _zoomRaf = 0;
+  // Server-mode window fetching: after the view settles, ask the server for the
+  // visible range.  It answers with real spans when the window holds fewer than
+  // max_spans, and with density columns otherwise — so the browser never holds
+  // more than one screenful of data.
+  let _winTimer = 0, _winAbort = null, _winSeq = 0;
+  function fetchWindow() {
+    if (!serverMode) return;
+    const [x0, x1] = xZoomed.domain();
+    if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0) return;
+    const a0 = Math.round(t0_min + x0), a1 = Math.round(t0_min + x1);
+    const px = Math.max(600, Math.round(xZoomed.range()[1] - xZoomed.range()[0]));
+    const url = gbase + `&t0=${a0}&t1=${a1}&px=${px}&max_spans=40000`
+              + (curPidFilter !== null ? `&pid=${curPidFilter}` : '');
+    if (_winAbort) _winAbort.abort();
+    _winAbort = new AbortController();
+    const seq = ++_winSeq;
+    const st = document.getElementById('stats');
+    if (st) st.textContent = 'loading window…';
+    fetch(url, {signal: _winAbort.signal}).then(r => r.json()).then(j => {
+      if (seq !== _winSeq) return;                 // a newer request won
+      if (j.mode === 'density') {
+        serverBins = j.bins || [];
+        binMeta = {w0: j.w0_ns, w1: j.w1_ns, bw: j.bucket_ns, total: j.n_spans_total};
+        spans = [];
+      } else {
+        const D2 = j.dicts || null, dec2 = (k, v) => (D2 ? D2[k][v] : v);
+        spans = (j.spans || []).map((a, idx) => ({
+          id: idx, pid: a[0], vtid: a[1], t0: a[2], t1: a[3],
+          node: dec2('node', a[4]), entity: dec2('entity', a[5]), etype: dec2('etype', a[6]),
+          symbol: dec2('symbol', a[7]), cb_addr: dec2('cb_addr', a[8]),
+        }));
+        serverBins = null; binMeta = {total: j.n_spans_total};
+        indexSpans();
+        for (const s of spans) if (!colorFor.has(s.node))
+          colorFor.set(s.node, palette[colorFor.size % palette.length]);
+      }
+      redrawBars(); redrawArrows();
+    }).catch(e => { if (e.name !== 'AbortError' && st) st.textContent = 'window fetch failed: ' + e.message; });
+  }
+  window.fetchWindowNow = () => fetchWindow();
+  function scheduleWindow() {
+    if (!serverMode) return;
+    clearTimeout(_winTimer);
+    _winTimer = setTimeout(fetchWindow, 250);
+  }
   const zoom = d3.zoom().scaleExtent([1, 100000]).on('zoom', ev => {
     xZoomed = ev.transform.rescaleX(xScale);
     // coalesce bursts of zoom events into one redraw per animation frame
@@ -611,6 +712,7 @@ function render(raw, causal) {
       _zoomRaf = 0;
       redrawBars(); redrawArrows(); redrawHyperperiods();
       gMain.select('.x-axis').call(d3.axisTop(xZoomed).tickFormat(d => `${(d/1e6).toFixed(2)}ms`));
+      scheduleWindow();
     });
   });
 
@@ -619,7 +721,7 @@ function render(raw, causal) {
     const pidV = pidSel.value;
     curPidFilter = pidV ? +pidV : null;
     curSpans = pidV ? spans.filter(s => s.pid===+pidV) : spans;
-    if (!curSpans.length) { svg.append('text').attr('x', 40).attr('y', 40).text('No spans'); return; }
+    if (!curSpans.length && !serverMode) { svg.append('text').attr('x', 40).attr('y', 40).text('No spans'); return; }
     // Group vtids by their parent pid, then sort lanes by (pid, vtid).
     // For lane labels we want the *container* identity (stable per pid), not
     // the per-callback node. A MultiThreadedExecutor pool services callbacks
@@ -630,6 +732,15 @@ function render(raw, causal) {
     // fall back to just the pid number.
     // Populate the render()-scoped maps so layer-tree callbacks can read them.
     vtidToPid.clear(); pidContainerName.clear(); pidAnyName.clear(); vtidToProcName.clear();
+    // In server mode the lane inventory is authoritative: every thread of every
+    // process is a lane, whether or not the current window loaded any of its
+    // spans.  [pid, vtid, n_total, dominant_node]
+    for (const [lpid, lvtid, , lnode] of (serverMode ? LANES : [])) {
+      if (curPidFilter !== null && lpid !== curPidFilter) continue;
+      if (!vtidToPid.has(lvtid)) vtidToPid.set(lvtid, lpid);
+      if (!pidContainerName.has(lpid) && lnode && lnode.startsWith('cnt_')) pidContainerName.set(lpid, lnode);
+      if (!pidAnyName.has(lpid) && lnode && lnode !== '(unknown)' && !lnode.startsWith('cnt_')) pidAnyName.set(lpid, lnode);
+    }
     for (const s of curSpans) {
       if (!vtidToPid.has(s.vtid)) vtidToPid.set(s.vtid, s.pid);
       if (!pidContainerName.has(s.pid) && s.node && s.node.startsWith('cnt_')) {
@@ -676,8 +787,12 @@ function render(raw, causal) {
 
     svg.attr('width', w).attr('height', svgH);
 
+    // In server mode the loaded window may hold no spans at all (density only),
+    // so the time axis comes from the session bounds the server reported.
+    const dom0 = serverMode ? 0 : d3.min(curSpans, s => s.t0);
+    const dom1 = serverMode ? (sessT1 - t0_min) : d3.max(curSpans, s => s.t1);
     xScale = d3.scaleLinear()
-      .domain([d3.min(curSpans, s => s.t0), d3.max(curSpans, s => s.t1)])
+      .domain([Number.isFinite(dom0) ? dom0 : 0, Number.isFinite(dom1) && dom1 > dom0 ? dom1 : (dom0 + 1)])
       .range([margin.left, w - margin.right]);
     xZoomed = xScale;
     yScale = d3.scaleBand().domain(curVtids).range([margin.top, margin.top + totalLanesH]).padding(0.1);
@@ -924,8 +1039,6 @@ function render(raw, causal) {
   // Per-lane index for fast "spans overlapping [x0,x1]" queries: spans sorted
   // by t0 (spansByVtid) + the longest span per lane, so a binary search on
   // t0 >= x0 - maxDur finds the first candidate without scanning 1.4 M spans.
-  const laneMaxDur = new Map();
-  for (const [v, arr] of spansByVtid) { let m = 0; for (const s of arr) if (s.t1 - s.t0 > m) m = s.t1 - s.t0; laneMaxDur.set(v, m); }
   function spansInView(x0, x1) {
     const out = [];
     for (const v of curVtids) {
@@ -948,8 +1061,42 @@ function render(raw, causal) {
   function redrawBars() {
     gBars.selectAll('rect').remove();
     const [x0, x1] = xZoomed.domain();
-    const inView = spansInView(x0, x1);
     const stat = document.getElementById('stats');
+    if (serverBins) {                       // server-aggregated window
+      const t0off = binMeta.w0 - t0_min, bw = binMeta.bw;
+      const rects = [];
+      for (const [bpid, bvtid, b, n, busy, node] of serverBins) {
+        if (curPidFilter !== null && bpid !== curPidFilter) continue;
+        if (yScale(bvtid) === undefined) continue;
+        const t0b = t0off + b * bw;
+        if (t0b > x1 || t0b + bw < x0) continue;
+        rects.push({vtid: bvtid, t0: t0b, t1: t0b + bw, n, node,
+                    frac: Math.min(1, busy / bw), busy});
+      }
+      const wpx = Math.max(1, (xZoomed(x0 + bw) - xZoomed(x0)));
+      gBars.selectAll('rect').data(rects).enter().append('rect')
+        .attr('class', 'bar density')
+        .attr('x', d => xZoomed(d.t0)).attr('y', d => yScale(d.vtid))
+        .attr('width', Math.max(1, wpx)).attr('height', yScale.bandwidth())
+        .attr('fill', d => colorFor.get(d.node) || '#999')
+        .attr('opacity', d => 0.55 + 0.45 * d.frac)
+        .on('mousemove', (ev, d) => {
+          tooltip.style('display', 'block').style('left', (ev.clientX + 12) + 'px')
+            .style('top', (ev.clientY + 12) + 'px')
+            .html(`<b>density</b> — server-aggregated, zoom in for individual callbacks<br>` +
+                  `<span class="k">vtid:</span> ${d.vtid} &nbsp; <span class="k">callbacks:</span> ${d.n}<br>` +
+                  `<span class="k">window:</span> t₀+${(d.t0/1e6).toFixed(1)}–${(d.t1/1e6).toFixed(1)} ms<br>` +
+                  `<span class="k">busy:</span> ${(d.frac*100).toFixed(0)} % &nbsp; ` +
+                  `<span class="k">node:</span> ${d.node || '?'}`);
+        })
+        .on('mouseleave', () => tooltip.style('display', 'none'))
+        .on('dblclick', (ev, d) => { ev.stopPropagation(); zoomToRange(d.t0, d.t1); });
+      if (stat) stat.textContent =
+        `${(binMeta.total || 0).toLocaleString()} spans in session · server density ` +
+        `(${rects.length} columns, ${(bw/1e6).toFixed(1)} ms each — zoom in for bars)`;
+      return;
+    }
+    const inView = spansInView(x0, x1);
     if (inView.length > MAX_RECTS) {
       const wpx = Math.max(1, Math.round(xZoomed.range()[1] - xZoomed.range()[0]));
       const bw = (x1 - x0) / wpx;

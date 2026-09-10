@@ -44,7 +44,8 @@ def render(shape, title, base):
     band = {st: STREAM_FILL[k % len(STREAM_FILL)] for k, st in enumerate(sorted(streams))}
     for st in sorted(streams):
         L.append(f'  subgraph cluster_s{st} {{')
-        L.append(f'    label="stream {st}"; style="filled,rounded"; fillcolor="{band[st]}"; '
+        L.append(f'    label="stream {st}"; labelloc=t; labeljust=l; '
+                 f'style="filled,rounded"; fillcolor="{band[st]}"; '
                  f'fontname="Helvetica-Bold"; fontsize=9; color="#bbbbbb";')
         L.append(f'    {" ".join("n%d;" % i for i in streams[st])}')
         L.append('  }')

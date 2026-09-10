@@ -164,9 +164,13 @@
 const qs = new URLSearchParams(window.location.search);
 const session_id = qs.get('session_id') || qs.get('session') || '';
 const scope = qs.get('scope') || '__main__';
+// ?pid=N narrows the fetch server-side.  A whole Autoware session is 1.4 M
+// spans (~70 MB, and minutes of index building); one process is ~2 MB.
+const pidParam = (qs.get('pid') || '').trim();
 document.title = `FISH gantt-cb — ${session_id}`;
 
-const gurl = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}&fmt=v2`;
+const gbase = `/api/gantt?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}&fmt=v2`;
+let gurl = gbase + (pidParam ? `&pid=${encodeURIComponent(pidParam)}` : '');
 const curl = `/api/causal?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
 const turl = `/api/taskset?session_id=${encodeURIComponent(session_id)}&scope=${encodeURIComponent(scope)}`;
 
@@ -207,6 +211,16 @@ if (!session_id) {
     try { return JSON.parse(txt); }
     catch (e) { throw new Error(`${label} returned non-JSON (first 200 chars): ${txt.slice(0, 200)}`); }
   });
+  const preflight = pidParam ? Promise.resolve(null)
+      : fetchJson(gbase + '&pids=1', 'pids').then(pc => {
+          window.__pidCounts = pc.pid_counts || [];
+          if ((pc.n_spans || 0) > 300000 && window.__pidCounts.length) {
+            window.__autoPid = String(window.__pidCounts[0][0]);
+            gurl = gbase + `&pid=${window.__autoPid}`;
+          }
+          return pc;
+        }).catch(_ => null);
+  preflight.then(() =>
   Promise.all([fetchJsonProgress(gurl, 'gantt'), fetchJson(curl, 'causal'), fetchJson(turl, 'taskset').catch(_=>null)])
     .then(([gantt, causal, ts]) => {
       gpuSubmitterCbs = new Set(gantt.gpu_submitter_cbs || []);
@@ -214,7 +228,7 @@ if (!session_id) {
       setLoad('building index…', 1, `${(gantt.n_spans||0).toLocaleString()} spans`);
       setTimeout(() => { render(gantt, causal); hideLoad(); }, 0);
     })
-    .catch(err => document.body.innerHTML = `<div id="empty">Error: ${err.message || err}</div>`);
+    .catch(err => document.body.innerHTML = `<div id="empty">Error: ${err.message || err}</div>`));
 }
 
 function render(raw, causal) {
@@ -419,18 +433,30 @@ function render(raw, causal) {
   }
 
   // ---------- UI ----------
-  const pids = [...new Set(spans.map(s => s.pid))].sort((a,b)=>a-b);
+  const cntByPid = new Map();                     // one pass, not one scan per pid
+  for (const s of spans) cntByPid.set(s.pid, (cntByPid.get(s.pid) || 0) + 1);
+  const loaded = new Set(cntByPid.keys());
+  const all = (window.__pidCounts || []).map(([p, n]) => [+p, n]);
+  const pids = (all.length ? all : [...cntByPid.entries()].sort((a,b)=>b[1]-a[1]));
   const pidSel = document.getElementById('pid-select');
-  pids.forEach(p => {
-    const cnt = spans.filter(s => s.pid===p).length;
+  const oneProc = !!((pidParam && !pidParam.includes(',')) || window.__autoPid);
+  pids.sort((a,b)=>a[0]-b[0]).forEach(([p, n]) => {
     const o = document.createElement('option');
-    o.value = p; o.textContent = `pid ${p}  (${cnt} spans)`;
+    o.value = p;
+    o.textContent = `pid ${p}  (${cntByPid.get(p) ?? n} spans)` + (loaded.has(p) ? '' : ' ↻');
     pidSel.appendChild(o);
   });
+  if (oneProc) {                                  // loading another process refetches
+    pidSel.onchange = () => {
+      const q = new URLSearchParams(window.location.search);
+      if (pidSel.value) q.set('pid', pidSel.value); else q.delete('pid');
+      window.location.search = q.toString();
+    };
+  }
   // Default to (all) — the layer tree on the left is the primary navigation;
   // narrowing to a single pid is opt-in via the dropdown.
-  pidSel.value = '';
-  pidSel.onchange = () => { traceState = null; draw(); };
+  pidSel.value = (pidParam && !pidParam.includes(',')) ? pidParam : (window.__autoPid || '');
+  if (!oneProc) pidSel.onchange = () => { traceState = null; draw(); };
 
   // Color: ROS node. Red/pink reserved for GPU-submitter mark — keep this
   // palette red-free (Tableau10 + Set3 + Paired minus reds = 28 colors).
@@ -700,10 +726,29 @@ function render(raw, causal) {
       info.ex_label = labelForPid(info.pid);
     }
 
-    // ── Sort cb_addrs by (executor → node → entity → cb_addr) ──
+    // ── Sort cb_addrs by (executor → GPU submitters first → node → entity) ──
+    // The GPU-submitting callbacks lead their executor's block, so one screenshot
+    // shows several executors *and* their GPU work.  ?gpufirst=0 restores the
+    // plain alphabetical order within an executor.
+    const gpuFirst = (qs.get('gpufirst') || '1') !== '0';
+    const isGpuCb = (cb) => gpuSubmitterCbs.has(cb);
+    // executors that submit GPU work lead the chart, so the GPU rows sit at the
+    // very top of the first block and the other executors follow underneath
+    const pidHasGpu = new Set();
+    for (const [cb, info] of cbInfo) if (isGpuCb(cb)) pidHasGpu.add(info.pid);
     curCbs = [...cbInfo.keys()].sort((a, b) => {
       const A = cbInfo.get(a), B = cbInfo.get(b);
-      if (A.pid !== B.pid) return A.pid - B.pid;
+      if (A.pid !== B.pid) {
+        if (gpuFirst) {
+          const pa = pidHasGpu.has(A.pid) ? 0 : 1, pb = pidHasGpu.has(B.pid) ? 0 : 1;
+          if (pa !== pb) return pa - pb;
+        }
+        return A.pid - B.pid;
+      }
+      if (gpuFirst) {
+        const ga = isGpuCb(a) ? 0 : 1, gb = isGpuCb(b) ? 0 : 1;
+        if (ga !== gb) return ga - gb;
+      }
       if (A.node !== B.node) return (A.node || '').localeCompare(B.node || '');
       if (A.entity !== B.entity) return (A.entity || '').localeCompare(B.entity || '');
       return a.localeCompare(b);
@@ -1243,6 +1288,11 @@ function render(raw, causal) {
   hpTmrLabel.onmouseleave = _hideTooltip;
 
   const gpuLabel = document.getElementById('gpu-marker-label');
+  // ?gpu=1 turns the GPU-submitter markers on at load (screenshot views)
+  if ((qs.get('gpu') || '') === '1') {
+    const t = document.getElementById('gpu-marker-toggle');
+    if (t) { t.checked = true; gpuMarkerOn = true; }
+  }
   document.getElementById('gpu-marker-toggle').onchange = (ev) => {
     gpuMarkerOn = ev.target.checked;
     redrawBars();
