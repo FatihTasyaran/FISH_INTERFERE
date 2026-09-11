@@ -32,8 +32,12 @@ STAMP=$(date +%Y%m%d_%H%M%S)
 if [ "$RATE" != 0.5 ]; then STAMP="${STAMP}_r$RATE"; fi
 OUTROOT=$DEST/overhead_aw_$STAMP
 REPS=${REPS:-3}
+# per-message events (ros2:rmw_take, ros2:rcl_publish) — the two highest-volume
+# tracepoints, ~40 % of all events.  false gives a lighter trace with the same
+# callback chain, i.e. a second dose point for perturbation experiments.
+FISH_PER_INSTANCE=${FISH_PER_INSTANCE:-true}
 mkdir -p "$OUTROOT"
-echo "[ovh] campaign → $OUTROOT (image=$IMG rate=$RATE reps=$REPS modes=${MODES:-baseline lttng nsys} app_cpus=${FISH_APP_CPUS:-all} obs_cpus=${FISH_OBS_CPUS:-all})"
+echo "[ovh] campaign → $OUTROOT (image=$IMG rate=$RATE reps=$REPS modes=${MODES:-baseline lttng nsys} per_instance=$FISH_PER_INSTANCE app_cpus=${FISH_APP_CPUS:-all} obs_cpus=${FISH_OBS_CPUS:-all})"
 docker image inspect $IMG >/dev/null 2>&1 || { echo "[ovh] $IMG not built"; exit 2; }
 
 read -r -d '' PROBE_FN <<'EOF' || true
@@ -131,7 +135,7 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
             INI=/opt/ros/humble/fish/fish_settings.ini
             sed -i "s|^rmw_implementation *=.*|rmw_implementation = rmw_cyclonedds_cpp|" $INI
             sed -i "s|^cyclonedds_uri *=.*|cyclonedds_uri = |" $INI
-            sed -i "s|^per_instance *=.*|per_instance = true|" $INI
+            sed -i "s|^per_instance *=.*|per_instance = $FISH_PER_INSTANCE|" $INI
             sed -i "s|ros2 bag play ~/autoware_map/sample-rosbag -r 0.2|ros2 bag play ~/autoware_map/sample-rosbag -r $RATE|" $INI || true
         else
             export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
