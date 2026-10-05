@@ -49,6 +49,9 @@ else
     echo "[FISH] WARNING: config/fish_settings.ini not found, using defaults"
 fi
 
+# --- Tracing tiers (config/tiers/*.txt → $FISH_ROOT/tiers) ---
+mkdir -p $FISH_ROOT/tiers && cp "$CONFIG_DIR"/tiers/*.txt $FISH_ROOT/tiers/ 2>/dev/null || true
+
 # --- Copy DDS vendor configs (e.g. cyclonedds_autoware.xml) ---
 # Referenced from fish_settings.ini [ros] cyclonedds_uri; the ros2 wrapper
 # exports CYCLONEDDS_URI=file://$FISH_ROOT/<name> when appropriate.
@@ -100,17 +103,32 @@ start_session() {
         # Optional per-instance publish/take events ([trace] per_instance in
         # fish_settings.ini) — appended to the baked whitelist at session
         # start so a measurement run needs no rebuild.
+        # Tracing tier (config/tiers/README.md): FISH_TRACE_TIER=min|default|max picks the per-instance
+        # event set; unset → 'default' when [trace] per_instance = true, else 'min' (backwards compatible).
         EXTRA_EVENTS=""
-        if python3 - <<'PYPI' 2>/dev/null
+        TIER="\${FISH_TRACE_TIER:-}"
+        if [[ -z "\$TIER" ]]; then
+            if python3 - <<'PYPI' 2>/dev/null
 import configparser, sys
 c = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
 c.read("/opt/ros/humble/fish/fish_settings.ini")
 sys.exit(0 if c.getboolean("trace", "per_instance", fallback=False) else 1)
 PYPI
-        then
-            EXTRA_EVENTS="ros2:rcl_publish ros2:rmw_take"   # rmw_take = per-take with rmw_subscription_handle + DDS source_timestamp (message-flow pairing); rcl_take/rclcpp_* dropped as duplicates
-            echo "[FISH] per_instance=true → adding \$EXTRA_EVENTS"
+            then TIER=default; else TIER=min; fi
         fi
+        if [[ -f "\$FISH_ROOT/tiers/\$TIER.txt" ]]; then
+            EXTRA_EVENTS=\$(grep -v '^#' "\$FISH_ROOT/tiers/\$TIER.txt" | grep -v '^$' | tr '\\n' ' ')
+        else
+            echo "[FISH] WARNING: unknown tier '\$TIER' (no \$FISH_ROOT/tiers/\$TIER.txt) → no per-instance events"; TIER=min
+        fi
+        # FISH_EXTRA_EVENTS (2026-10-05): further UST events for this session, space or comma separated (e.g. the
+        # fishwait24 state-link probes ros2:fish_msg_retain,ros2:fish_msg_release,ros2:fish_msg_type,…) — an
+        # experiment knob; events that prove their worth move into a tier file.
+        if [[ -n "\${FISH_EXTRA_EVENTS:-}" ]]; then
+            EXTRA_EVENTS="\$EXTRA_EVENTS \$(echo "\$FISH_EXTRA_EVENTS" | tr ',' ' ')"
+        fi
+        echo "[FISH] tracing tier \$TIER → per-instance events: \${EXTRA_EVENTS:-none}"
+        echo "\$TIER" > "\$SESSION_DIR/fishlog/tier.txt"
         echo "\$EXTRA_EVENTS" > "\$SESSION_DIR/fishlog/extra_events.txt"
         [[ "\$EXTRA_EVENTS" == *rmw_take* ]] && echo "filter ros2:rmw_take: taken == 1" >> "\$SESSION_DIR/fishlog/extra_events.txt"
 
@@ -139,7 +157,17 @@ PYPI
             lttng create "\$SESSION" --output="\$SESSION_DIR/ros2/\$SESSION" >/dev/null
             lttng enable-channel -u -s "\$SESSION" fish_ch \\
                 --subbuf-size "\$FISH_SUBBUF_SIZE" --num-subbuf "\$FISH_NUM_SUBBUF" >/dev/null
-            for ev in $EVENTS \$EXTRA_EVENTS; do
+            EV_LIST="$EVENTS \$EXTRA_EVENTS"
+            if [[ "\${FISH_KERNEL_SCHED:-0}" == 1 && "\$TIER" != max ]]; then
+                # With the kernel session, sched_switch (executor thread sleeping outside a
+                # callback = rcl_wait) and sched_waking (its wake-up = release, with the waker)
+                # cover what the per-spin UST executor events would add; drop them to save
+                # ~3x callback_start in volume. Without the kernel session they are the
+                # fallback for release instants (2026-10-03, A0.1).
+                EV_LIST=\$(echo "\$EV_LIST" | tr ' ' '\n' | grep -v '^ros2:rclcpp_executor_' | tr '\n' ' ')
+                echo "[FISH] kernel session on → UST executor events (wait_for_work/get_next_ready/execute) not enabled"
+            fi
+            for ev in \$EV_LIST; do
                 if [[ "\$ev" == "ros2:rmw_take" ]]; then
                     # rmw_take fires on every executor poll; taken=0 polls carry no
                     # message (no source_timestamp, nothing to pair) and were ~half
@@ -166,6 +194,42 @@ PYPI
                 --path \"\$SESSION_DIR/ros2\" \\
                 -u $EVENTS" 2>&1 &
             echo \$! > /tmp/fish_trace_pid
+        fi
+
+        # Optional kernel session (FISH_KERNEL_SCHED=1): sched_switch gives each
+        # callback window its on-CPU / preempted / blocked split; sched_waking names
+        # the thread that wakes another (OpenMP/pthread helpers of a callback, the
+        # driver thread that ends a GPU wait). Separate session
+        # writing to kernel/, so the ros2/ ingest never sees it. vtid/vpid contexts
+        # carry the container-namespace ids the UST trace uses, on the same clock.
+        # Needs lttng-modules loaded on the host and /lib/modules in the container.
+        # FISH_GOMP_UPROBE=0 (default; the lttng kernel uprobe ABI refused every --userspace-probe on this host 2026-10-03,
+        # the LD_PRELOAD shim below replaces it): kernel uprobe on libgomp's GOMP_parallel —
+        # one event per OpenMP parallel region start, in the master thread's context (≈50/s in
+        # Autoware: NDT 5 regions per scan; also path_optimizer, costmap_generator, yolox ...).
+        # ksched_split uses it to count regions per callback and to attribute the pool threads'
+        # on-CPU time inside the window (spinning helpers included) to that callback.
+        # FISH_KERNEL_FUTEX=1 (default, 2026-10-03, A0.4): futex syscall entry/exit — a thread
+        # that blocks on a contended mutex/condvar enters the kernel here, an uncontended
+        # lock never does, so this is exactly the lock-blocking we want (ksched_split
+        # 'lock_wait' inside callback windows) at a fraction of the user-level lock events.
+        rm -f /tmp/fish_ksession_name
+        if [[ "\${FISH_KERNEL_SCHED:-0}" == 1 ]]; then
+            KSESSION="\${SESSION}_k"
+            if lttng create "\$KSESSION" --output="\$SESSION_DIR/kernel" >/dev/null 2>&1 \\
+               && lttng enable-channel -k -s "\$KSESSION" ksched --subbuf-size 2M --num-subbuf 4 >/dev/null \\
+               && lttng enable-event -k -s "\$KSESSION" -c ksched sched_switch,sched_waking >/dev/null \\
+               && { [[ "\${FISH_KERNEL_FUTEX:-1}" != 1 ]] || lttng enable-event -k -s "\$KSESSION" -c ksched --syscall futex >/dev/null; } \\
+               && { [[ "\${FISH_GOMP_UPROBE:-0}" != 1 ]] || lttng enable-event -k -s "\$KSESSION" -c ksched --userspace-probe=elf:\$(readlink -f /usr/lib/x86_64-linux-gnu/libgomp.so.1):GOMP_parallel gomp_parallel >/dev/null \\
+                    || echo "[FISH] WARNING: GOMP_parallel uprobe not enabled (lttng-modules uprobes? libgomp path?)"; } \\
+               && { [[ "\${FISH_GOMP_UPROBE:-0}" != 1 ]] || lttng enable-event -k -s "\$KSESSION" -c ksched --userspace-probe=elf:\$(readlink -f /usr/lib/x86_64-linux-gnu/libgomp.so.1):GOMP_parallel_loop_dynamic gomp_parallel_loop >/dev/null 2>&1 || true; } \\
+               && lttng add-context -k -s "\$KSESSION" -c ksched -t vtid -t vpid -t procname >/dev/null \\
+               && lttng start "\$KSESSION" >/dev/null; then
+                echo "\$KSESSION" > /tmp/fish_ksession_name
+                echo "[FISH] kernel sched_switch session \$KSESSION -> \$SESSION_DIR/kernel"
+            else
+                echo "[FISH] WARNING: kernel sched_switch session did not start (lttng-modules on the host? /lib/modules mounted?)"
+            fi
         fi
         sleep 2
         echo "[FISH] Trace session started"
@@ -207,6 +271,21 @@ stop_session() {
     fi
     echo \$\$ > "\$FISH_SESSION_DIR_FILE.stopping/pid"
     trap 'rm -rf "\$FISH_SESSION_DIR_FILE.stopping" 2>/dev/null' RETURN
+
+    # 0. Freeze the trace NOW. Everything below (shutdown snapshot = ros2 node
+    #    info over ~225 nodes, ~160 s; nsys drain) used to run with LTTng still
+    #    recording, so every session ended with a long idle tail of timer
+    #    ticks and the probe's own CLI nodes. The sessions are destroyed in
+    #    step 3; the discard warnings are printed by this stop.
+    SESSION=\$(cat \$FISH_SESSION_NAME_FILE 2>/dev/null)
+    if [[ -n "\$SESSION" ]]; then
+        lttng stop "\$SESSION" 2>&1 | tee "\$SESSION_DIR/fishlog/lttng_stop.txt" | grep -i "discard" || true
+        echo "[FISH] trace frozen at \$(date +%T) (lttng stop \$SESSION)"
+    fi
+    KSESSION=\$(cat /tmp/fish_ksession_name 2>/dev/null)
+    if [[ -n "\$KSESSION" ]]; then
+        lttng stop "\$KSESSION" 2>&1 | tee "\$SESSION_DIR/fishlog/lttng_kernel_stop.txt" | grep -i "discard" || true
+    fi
 
     # 1. Shutdown snapshot (ps_tree + component_list — needs live processes)
     echo "[FISH] Taking shutdown snapshot..."
@@ -324,12 +403,18 @@ stop_session() {
         fi
     fi
 
-    # 3. Stop LTTng trace session
-    echo "[FISH] Stopping trace session..."
+    # 3. Destroy the LTTng sessions (stopped in step 0; a second stop is a no-op)
+    echo "[FISH] Destroying trace session..."
     SESSION=\$(cat \$FISH_SESSION_NAME_FILE 2>/dev/null)
     if [[ -n "\$SESSION" ]]; then
-        lttng stop "\$SESSION" 2>&1 | tee "\$SESSION_DIR/fishlog/lttng_stop.txt" | grep -i "discard" || true
+        lttng stop "\$SESSION" >/dev/null 2>&1 || true
         lttng destroy "\$SESSION" 2>&1 | tee -a "\$SESSION_DIR/fishlog/lttng_stop.txt" | grep -i "discard" || true
+    fi
+    KSESSION=\$(cat /tmp/fish_ksession_name 2>/dev/null)
+    if [[ -n "\$KSESSION" ]]; then
+        lttng stop "\$KSESSION" >/dev/null 2>&1 || true
+        lttng destroy "\$KSESSION" >> "\$SESSION_DIR/fishlog/lttng_kernel_stop.txt" 2>&1 || true
+        rm -f /tmp/fish_ksession_name
     fi
     # Discard report: LTTng ring-buffer overflows silently drop events; make
     # every session declare its own loss (probe-effect / completeness line).
@@ -369,6 +454,7 @@ stop_session() {
         # something (e.g. setsid not available, pre-existing single-PID install).
         kill \$TPID 2>/dev/null
     fi
+    [[ -n "\$SESSION_DIR" ]] && date +%s > "\$SESSION_DIR/fishlog/stop_done.txt"   # end-of-stop marker (runner waits for it)
     rm -f \$FISH_COUNTER \$FISH_SESSION_NAME_FILE \$FISH_SESSION_DIR_FILE /tmp/fish_trace_pid \
          /tmp/fish_launch_output.log /tmp/fish_system_stable \
          /tmp/fish_gpu_handler_complete /tmp/fish_replay_complete
@@ -566,6 +652,32 @@ PYCDDS
     # composable node containers are started with nsys from the very
     # first moment (no kill/reload needed). For 'ros2 run' we fall back
     # to the real ros2 binary unchanged.
+    # FISH_GOMP_SHIM=1 (default, 2026-10-03, A0.2): preload libfish_gomp_shim.so (overlay tracetools lib dir)
+    # into every launched process — interposes GOMP_parallel and emits ros2:fish_gomp_parallel(_end) so OpenMP
+    # regions are visible per callback. Harmless for processes that never call libgomp.
+    if [[ "\${FISH_GOMP_SHIM:-1}" == 1 ]] && [[ "\$1" == "launch" ]]; then
+        SHIM=\$(ldconfig -p 2>/dev/null | grep -m1 -o '/[^ ]*libfish_gomp_shim.so')
+        [[ -z "\$SHIM" ]] && SHIM=\$(find /root/trace_overlay_ws/install/tracetools/lib -name libfish_gomp_shim.so 2>/dev/null | head -1)
+        if [[ -n "\$SHIM" ]]; then
+            export LD_PRELOAD="\$SHIM\${LD_PRELOAD:+:\$LD_PRELOAD}"
+            export FISH_GOMP_SHIM_PATH="\$SHIM"   # launch_wrap strips LD_PRELOAD for nsys and re-adds the shim for the target
+            echo "[FISH] OpenMP shim preloaded: \$SHIM"
+        else
+            echo "[FISH] NOTE: libfish_gomp_shim.so not found (image < fishwait16) — OpenMP regions not traced"
+        fi
+    fi
+    # FISH_LOCK_SHIM=1 (default 0, 2026-10-05, image >= fishwait24): preload libfish_lock_shim.so — per callback
+    # instance, which application mutexes it locks and for how long (ros2:fish_lock; enable the event with
+    # FISH_EXTRA_EVENTS, the shim collects nothing while it is off).
+    if [[ "\${FISH_LOCK_SHIM:-0}" == 1 ]] && [[ "\$1" == "launch" ]]; then
+        LSHIM=\$(find /root/trace_overlay_ws/install/tracetools/lib -name libfish_lock_shim.so 2>/dev/null | head -1)
+        if [[ -n "\$LSHIM" ]]; then
+            export LD_PRELOAD="\$LSHIM\${LD_PRELOAD:+:\$LD_PRELOAD}"
+            echo "[FISH] lock shim preloaded: \$LSHIM"
+        else
+            echo "[FISH] NOTE: libfish_lock_shim.so not found (image < fishwait24) — application locks not traced"
+        fi
+    fi
     if [[ "\$1" == "launch" ]]; then
         PYTHONPATH=\$FISH_PYTHON:\$PYTHONPATH python3 -m fish.launch_wrap \\
             "\${@:2}" > >( tee -a \$FISH_LAUNCH_LOG ) 2>&1 &

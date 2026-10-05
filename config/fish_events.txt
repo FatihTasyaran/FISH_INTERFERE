@@ -82,6 +82,33 @@ ros2:fish_rclcpp_executor_add_cbgroup
 #   ros2:rclcpp_take                        (per-message, high volume)
 #   ros2:rcl_lifecycle_state_machine_init   (lifecycle, no consumer)
 #   ros2:rcl_lifecycle_transition           (lifecycle, no consumer)
-#   ros2:rclcpp_executor_get_next_ready     (per-spin, high volume)
-#   ros2:rclcpp_executor_wait_for_work      (per-spin, high volume)
-#   ros2:rclcpp_executor_execute            (per-iteration, high volume)
+# Enabled 2026-10-03 for the task model (A0.1 release instants): wait_for_work marks the
+# executor thread going to sleep, the next get_next_ready on that thread marks its wake-up
+# (= something became ready), execute marks the dispatch decision with the entity handle.
+# Volume is one event per spin iteration per executor thread (same order as callback_start).
+ros2:rclcpp_executor_get_next_ready
+ros2:rclcpp_executor_wait_for_work
+ros2:rclcpp_executor_execute
+# FISH (fishwait14): tf buffer written from a callback — once per (buffer, callback)
+ros2:fish_tf_set_link
+# FISH (fishwait15): DDS side — endpoint QoS at init, rmw subscription ↔ DDS reader, reader loss statistics, QoS events taken
+ros2:fish_rcl_endpoint_qos
+ros2:fish_rmw_sub_reader
+# FISH (fishwait19): rmw publisher ↔ DDS writer (once per publisher); per-sample identity is fish_dds_write (tiers default/max)
+ros2:fish_rmw_pub_writer
+ros2:fish_rmw_sample_lost
+ros2:fish_rcl_take_event
+# FISH (fishwait16): OpenMP parallel regions via the LD_PRELOAD shim (master thread, ~100/s)
+ros2:fish_gomp_parallel
+ros2:fish_gomp_parallel_end
+
+# --- Agnocast (TIER IV zero-copy shm pub/sub that bypasses rmw) — its own LTTng provider, compiled into libagnocast 2.3.1.
+# Structure events (once per entity). No cost unless the application uses Agnocast. Per-instance events are in the tiers.
+# Added 2026-10-04; consumer and run validation pending (needs agnocast-kmod on the host: notes/task_model_gaps.md).
+agnocast:agnocast_init
+agnocast:agnocast_node_init
+agnocast:agnocast_publisher_init
+agnocast:agnocast_subscription_init
+agnocast:agnocast_timer_init
+agnocast:agnocast_add_callback_group
+agnocast:agnocast_construct_executor

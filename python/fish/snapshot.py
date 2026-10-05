@@ -413,6 +413,90 @@ def capture_launch_output(snapshot_dir: str) -> str:
 
 
 
+def capture_thread_attrs(snapshot_dir: str, tag: str = "shutdown") -> str:
+    """
+    Capture every thread's scheduling attributes (instant; A0.3 of the task model).
+
+    threads_<tag>.json: {pid: {"comm", "cmd", "threads": [{tid, comm, policy, prio,
+    nice, cpus_allowed, cpus_allowed_list}]}} for all processes visible in this
+    PID namespace (the container = the traced application). policy: 0 OTHER,
+    1 FIFO, 2 RR, 3 BATCH, 5 IDLE, 6 DEADLINE; prio is the kernel value from
+    /proc/<pid>/task/<tid>/stat (field 18; <0 for RT threads).
+    """
+    output_path = os.path.join(snapshot_dir, f"threads_{tag}.json")
+    out = {}
+    try:
+        pids = [int(d) for d in os.listdir("/proc") if d.isdigit()]
+    except OSError:
+        pids = []
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmd = f.read().replace(b"\0", b" ").decode(errors="replace").strip()
+            if not cmd:
+                continue  # kernel threads / zombies
+            with open(f"/proc/{pid}/comm") as f:
+                pcomm = f.read().strip()
+            threads = []
+            for tid in os.listdir(f"/proc/{pid}/task"):
+                base = f"/proc/{pid}/task/{tid}"
+                try:
+                    with open(f"{base}/stat") as f:
+                        st = f.read()
+                    # comm may contain spaces: split after the closing paren
+                    rest = st[st.rindex(")") + 2:].split()
+                    comm = st[st.index("(") + 1:st.rindex(")")]
+                    # fields after comm: state=rest[0] ... priority=rest[15] nice=rest[16] ... policy=rest[38]
+                    prio, nice = int(rest[15]), int(rest[16])
+                    policy = int(rest[38]) if len(rest) > 38 else -1
+                    cpus_allowed = cpus_list = ""
+                    with open(f"{base}/status") as f:
+                        for ln in f:
+                            if ln.startswith("Cpus_allowed_list:"):
+                                cpus_list = ln.split(":", 1)[1].strip()
+                            elif ln.startswith("Cpus_allowed:"):
+                                cpus_allowed = ln.split(":", 1)[1].strip()
+                    threads.append({"tid": int(tid), "comm": comm, "policy": policy, "prio": prio, "nice": nice,
+                                    "cpus_allowed": cpus_allowed, "cpus_allowed_list": cpus_list})
+                except (OSError, ValueError, IndexError):
+                    continue
+            out[str(pid)] = {"comm": pcomm, "cmd": cmd[:300], "threads": threads}
+        except OSError:
+            continue
+    with open(output_path, "w") as f:
+        json.dump(out, f)
+    n_thr = sum(len(v["threads"]) for v in out.values())
+    print(f"[FISH]   → {output_path} ({len(out)} processes, {n_thr} threads)")
+    return output_path
+
+
+def capture_net_counters(snapshot_dir: str, tag: str = "shutdown") -> str:
+    """
+    Capture the DDS transport's loss indicators (instant, host-wide: --net host).
+
+    net_<tag>.txt: /proc/net/snmp Udp line (RcvbufErrors = socket receive buffer
+    overflows, the 2026-10-03 top-Velodyne loss) + Ip reassembly counters, and
+    `ss -ulmn` (per UDP socket: rb = SO_RCVBUF, d = drops). Taken at the stable
+    snapshot and at shutdown so the per-run delta is the session's loss.
+    """
+    output_path = os.path.join(snapshot_dir, f"net_{tag}.txt")
+    lines = [f"# UDP/IP counters at {tag} ({time.strftime('%Y-%m-%dT%H:%M:%S')}) — host-wide"]
+    try:
+        snmp = open("/proc/net/snmp").read().splitlines()
+        for i in range(0, len(snmp) - 1, 2):
+            if snmp[i].startswith(("Udp:", "Ip:")):
+                keys, vals = snmp[i].split(), snmp[i + 1].split()
+                lines.append(" ".join(f"{k}={v}" for k, v in zip(keys, vals)))
+    except OSError as e:
+        lines.append(f"# /proc/net/snmp unavailable: {e}")
+    lines.append("# ss -ulmn (UDP sockets: skmem r=queued rb=SO_RCVBUF d=drops)")
+    lines.append(_run_cmd("ss -ulmn", timeout=10.0))
+    with open(output_path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"[FISH]   → {output_path}")
+    return output_path
+
+
 def capture_mapped_libs(snapshot_dir: str, tag: str = "shutdown") -> str:
     """Provenance layer 1 (runtime → binaries): for every process that maps a
     ROS 2 library, record its executable and the full set of shared objects
@@ -492,6 +576,11 @@ def shutdown_snapshot() -> str:
     print(f"\n[FISH] Shutdown snapshot → {snapshot_dir}/")
 
     capture_env(snapshot_dir)
+    try:
+        capture_thread_attrs(snapshot_dir, "shutdown")
+        capture_net_counters(snapshot_dir, "shutdown")
+    except Exception as e:  # noqa: BLE001
+        print(f"[FISH] net counters failed: {e}")
     capture_process_tree(snapshot_dir)
     try:
         capture_mapped_libs(snapshot_dir, "shutdown")

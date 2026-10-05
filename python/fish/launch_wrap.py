@@ -129,7 +129,22 @@ def _make_nsys_prefix(container_name_hint: str) -> str:
     """
     output = _nsys_output_path(container_name_hint)
     flags = list(NSYS_FLAGS) + [f"--output={output}"]
-    return " ".join(flags)
+    # nsys aborts when LD_PRELOAD is set in ITS environment (LogicException / "Failed to probe the process"),
+    # so it must not see one. But the APPLICATION's own preload has to survive: until 2026-10-04 this prefix
+    # replaced it by the FISH shim alone, and a process that needs its preload died under FISH (Agnocast:
+    # "libagnocast_heaphook.so not found in LD_PRELOAD", listener container exit 1). Now an outer sh saves the
+    # process's LD_PRELOAD, nsys runs without it, and an inner sh restores it in front of whatever nsys injects
+    # (application order kept; the FISH OpenMP shim is added only if it is not already in the list).
+    shim = os.environ.get("FISH_GOMP_SHIM_PATH") or next(
+        (p for p in os.environ.get("LD_PRELOAD", "").split(":") if "libfish_gomp_shim" in p), "")
+    # The outer sh must exec nsys DIRECTLY after unsetting LD_PRELOAD: an intermediate `env` would be a second
+    # program in the same pid that loads the application's preload, and a preload that registers the process on
+    # load fails the second time (Agnocast heaphook: AGNOCAST_ADD_PROCESS_CMD → EINVAL, "process already exists").
+    outer = "sh -c 'FISH_APP_PRELOAD=\"$LD_PRELOAD\"; export FISH_APP_PRELOAD; unset LD_PRELOAD; exec \"$@\"' fish_outer "
+    add_shim = ('case ":$P:" in *libfish_gomp_shim*) ;; *) P="${P:+$P:}' + shim + '";; esac; ') if shim else ""
+    inner = (" sh -c 'P=\"$FISH_APP_PRELOAD\"; unset FISH_APP_PRELOAD; " + add_shim.replace('"', '\"')
+             + "P=\"$P${LD_PRELOAD:+:$LD_PRELOAD}\"; [ -n \"$P\" ] && export LD_PRELOAD=\"${P#:}\"; exec \"$@\"' fish_inner")
+    return outer + " ".join(flags) + inner
 
 
 def _resolve_name_best_effort(name_value: Any, ns_value: Any) -> str:

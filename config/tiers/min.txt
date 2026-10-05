@@ -1,0 +1,6 @@
+# tier min: no per-instance events
+# callback windows of Agnocast callables are structure-level (the equivalent of callback_start/end, which every tier has)
+agnocast:agnocast_create_callable
+agnocast:agnocast_create_timer_callable
+agnocast:agnocast_callable_start
+agnocast:agnocast_callable_end

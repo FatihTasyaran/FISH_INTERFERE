@@ -1,0 +1,18 @@
+# tier default: per-message events needed for hops, release instants, polled/tf ages (filter rmw_take: taken == 1 applied by install_fish)
+ros2:rcl_publish
+ros2:rmw_take
+ros2:fish_rcl_take
+ros2:fish_rclcpp_intra_publish
+ros2:fish_rclcpp_intra_take
+ros2:fish_rcl_publish
+ros2:fish_dds_write
+ros2:fish_tf_lookup
+agnocast:agnocast_publish
+agnocast:agnocast_create_callable
+agnocast:agnocast_create_timer_callable
+agnocast:agnocast_callable_start
+agnocast:agnocast_callable_end
+agnocast:agnocast_take
+ros2:fish_mf_add
+ros2:fish_mf_signal
+ros2:fish_srv_request

@@ -1079,8 +1079,13 @@ def _count_executor_started() -> Optional[int]:
 def _capture_libs_at_stable(logger=None):
     """Provenance layer 1 at the moment everything is alive (system_stable)."""
     try:
-        from fish.snapshot import capture_mapped_libs, get_snapshot_dir
+        from fish.snapshot import capture_mapped_libs, capture_net_counters, capture_thread_attrs, get_snapshot_dir
         capture_mapped_libs(get_snapshot_dir(), "stable")
+        try:
+            capture_thread_attrs(get_snapshot_dir(), "stable")
+            capture_net_counters(get_snapshot_dir(), "stable")
+        except Exception as e:  # noqa: BLE001
+            print(f"[FISH] net counters failed: {e}")
     except Exception as e:
         print(f"[FISH]   maps_libs capture at stable failed: {e}")
 
@@ -1199,7 +1204,12 @@ def _wait_for_stable(logger: FishLogger) -> None:
                 else:
                     cl_count = 1
                 cl_prev = ""
-                empty_stable_allowed = cl_seen_nonempty or fallback_unblock
+                # A launch of plain nodes (no component container at all): the process count is stable and
+                # the component list has stayed empty for the whole fallback period → run mode. Without this
+                # a launch file with only `Node` actions never became stable (found 2026-10-04: the
+                # post-stable command and the auto-stop never started).
+                no_container_launch = (not cl_seen_nonempty and ex_ok and elapsed >= run_mode_fallback_s)
+                empty_stable_allowed = cl_seen_nonempty or fallback_unblock or no_container_launch
                 _log_poll("CL", f"empty cnt={cl_count}/{cl_required} "
                                 f"seen_nonempty={cl_seen_nonempty} "
                                 f"fallback={fallback_unblock} "
@@ -1207,6 +1217,7 @@ def _wait_for_stable(logger: FishLogger) -> None:
                 if cl_count >= cl_required and empty_stable_allowed:
                     cl_ok = True
                     reason = ("empty-after-nonempty" if cl_seen_nonempty
+                              else "no-container-launch" if no_container_launch
                               else "fallback-timeout")
                     logger.log_daemon(
                         f"component_list_stable containers=0 components=0 "
