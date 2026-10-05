@@ -237,6 +237,14 @@ def analyze_side(d):
         if "topic_state_monitor" in name:
             got_msg = any((fnum(e, "last_message_time") or 0) > 0
                           for e in entries)
+            # A monitor whose topic delivered a single message in the whole
+            # run (e.g. control_cmd once at start-up in a goal-less replay)
+            # then times out on that stale message forever; that is not a
+            # rate violation of a periodic topic.  Count only monitors that
+            # saw at least two distinct messages.
+            if len({fnum(e, "last_message_time") for e in entries
+                    if (fnum(e, "last_message_time") or 0) > 0}) < 2:
+                continue
             for e in entries:
                 lmt = fnum(e, "last_message_time")
                 bad = e.get("status") in ("Timeout", "Error", "NotReceived")

@@ -37,8 +37,15 @@ REPS=${REPS:-3}
 # callback chain, i.e. a second dose point for perturbation experiments.
 FISH_PER_INSTANCE=${FISH_PER_INSTANCE:-true}
 mkdir -p "$OUTROOT"
-echo "[ovh] campaign → $OUTROOT (image=$IMG rate=$RATE reps=$REPS modes=${MODES:-baseline lttng nsys} per_instance=$FISH_PER_INSTANCE app_cpus=${FISH_APP_CPUS:-all} obs_cpus=${FISH_OBS_CPUS:-all})"
+echo "[ovh] campaign → $OUTROOT (image=$IMG rate=$RATE reps=$REPS modes=${MODES:-baseline lttng nsys} per_instance=$FISH_PER_INSTANCE app_cpus=${FISH_APP_CPUS:-all} obs_cpus=${FISH_OBS_CPUS:-all} cdds_xml=${FISH_CDDS_XML:-0}${FISH_CDDS_XML_FILE:+:$FISH_CDDS_XML_FILE} tier=${FISH_TRACE_TIER:-auto}${FISH_LAUNCH_EXTRA:+ launch_extra=$FISH_LAUNCH_EXTRA}${FISH_IOX_ROUDI:+ iox=$FISH_IOX_ROUDI})"
 docker image inspect $IMG >/dev/null 2>&1 || { echo "[ovh] $IMG not built"; exit 2; }
+# Fork images (label fish.lineage=fork, e.g. Autoware recompiled against the overlay headers) are a side branch of
+# the image lineage: their numbers must not be mixed with mainline campaigns. Explicit opt-in only (2026-10-05).
+IMG_LINEAGE=$(docker image inspect -f '{{index .Config.Labels "fish.lineage"}}' $IMG 2>/dev/null)
+if [ "$IMG_LINEAGE" = fork ] && [ "${FISH_ALLOW_FORK:-0}" != 1 ]; then
+    echo "[ovh] REFUSED: $IMG is a FORK image (base $(docker image inspect -f '{{index .Config.Labels "fish.fork.base"}}' $IMG)). Set FISH_ALLOW_FORK=1 to run on it on purpose."; rmdir "$OUTROOT" 2>/dev/null; exit 3
+fi
+[ "$IMG_LINEAGE" = fork ] && echo "[ovh] NOTE: running on FORK image $IMG (FISH_ALLOW_FORK=1) — not comparable with mainline campaigns" && echo "FORK image: $IMG" > "$OUTROOT/FORK_IMAGE.txt"
 
 read -r -d '' PROBE_FN <<'EOF' || true
 probe_start() {
@@ -89,6 +96,13 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
     echo "=================================================================="
     echo "[ovh] $MODE #$IDX starting ($(date +%T))"
     local FISH_ENV=()
+    # FISH_KERNEL_SCHED=1: kernel sched_switch session next to the UST one
+    # (traced modes only). The container's sessiond loads just the sched probe
+    # from the host's /lib/modules; unset, nothing is mounted or loaded.
+    local KSCHED_ARGS=()
+    if [ "${FISH_KERNEL_SCHED:-0}" = 1 ] && [ "$MODE" != baseline ]; then
+        KSCHED_ARGS=(-v /lib/modules:/lib/modules:ro -e FISH_KERNEL_SCHED=1 -e LTTNG_KMOD_PROBES=sched)
+    fi
     case $MODE in
         lttng) FISH_ENV=(-e FISH_ENABLED=1 -e FISH_NSYS_DISABLE=1) ;;
         nsys)  FISH_ENV=(-e FISH_ENABLED=1 -e FISH_NSYS_DRAIN=15) ;;   # lean nsys profile (python/fish/nsys_flags.py); FISH_CUDA_EVENT_TRACE=1 was the v5/split setting
@@ -99,8 +113,16 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
         -v "$DEST:/root/fish_traces" \
         -v "$HOME/fish_provenance_ros:/opt/fish_provenance_ros:ro" \
         "${FISH_ENV[@]}" \
+        "${KSCHED_ARGS[@]}" \
         $IMG bash -c 'sleep 3600' >/dev/null
     docker exec $NAME mkdir -p /root/fish_traces/overhead_aw_$STAMP/${MODE}_${IDX}
+    # FISH_CDDS_XML=1 (2026-10-03): Autoware's CycloneDDS config (65500 B fragments, 10 MB
+    # socket buffers) in EVERY mode. With Cyclone defaults the ~1.4 MB top-Velodyne scan is
+    # ~100 datagrams into a 2 MB socket buffer; delivery was 288/299 in the Sept campaign and
+    # 89/299 on 2026-10-03 (Udp RcvbufErrors +9k per run) — marginal, host-state dependent.
+    # FISH_CDDS_XML_FILE (2026-10-04): which XML FISH_CDDS_XML=1 installs (default the Autoware one;
+    # config/cyclonedds_autoware_shm.xml = the same + iceoryx shared memory, needs FISH_IOX_ROUDI=1).
+    if [ "${FISH_CDDS_XML:-0}" = 1 ]; then docker cp "$FISH_SRC/config/${FISH_CDDS_XML_FILE:-cyclonedds_autoware.xml}" $NAME:/root/cyclonedds_autoware.xml; fi
     if [ "$MODE" != baseline ]; then
         docker exec $NAME rm -rf /root/fish_interfere
         docker cp "$FISH_SRC" $NAME:/root/fish_interfere
@@ -113,6 +135,11 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
     timeout 1800 docker exec \
         -e MODE=$MODE -e IDX=$IDX -e STAMP=$STAMP -e RATE=$RATE -e PROBE_FN="$PROBE_FN" \
         -e FISH_APP_CPUS="$FISH_APP_CPUS" -e FISH_OBS_CPUS="$FISH_OBS_CPUS" -e FISH_EVENT_COUNT="${FISH_EVENT_COUNT:-0}" \
+        -e FISH_PER_INSTANCE="$FISH_PER_INSTANCE" \
+        -e FISH_BASELINE_OVERLAY="${FISH_BASELINE_OVERLAY:-0}" -e FISH_CDDS_XML="${FISH_CDDS_XML:-0}" -e FISH_TRACE_TIER="${FISH_TRACE_TIER:-}" \
+        -e FISH_LAUNCH_EXTRA="${FISH_LAUNCH_EXTRA:-}" -e FISH_IOX_ROUDI="${FISH_IOX_ROUDI:-0}" \
+        -e FISH_LAUNCH_CMD="${FISH_LAUNCH_CMD:-}" -e FISH_APP_SECONDS="${FISH_APP_SECONDS:-}" -e FISH_PRE_CMD="${FISH_PRE_CMD:-}" \
+        -e FISH_EXTRA_EVENTS="${FISH_EXTRA_EVENTS:-}" -e FISH_LOCK_SHIM="${FISH_LOCK_SHIM:-0}" \
         $NAME bash -c '
         set -e
         export PYTHONUNBUFFERED=1
@@ -120,9 +147,17 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
         POUT=/root/fish_traces/overhead_aw_$STAMP/${MODE}_${IDX}
         source /opt/ros/humble/setup.bash
         source /opt/autoware/setup.bash
-        env | grep -E "RMW|CYCLONE|FISH" > "$POUT/env.txt" || true
         APP_TS=""; [ -n "$FISH_APP_CPUS" ] && APP_TS="taskset -c $FISH_APP_CPUS"
         echo "cpuset: container=$(cat /sys/fs/cgroup/cpuset.cpus.effective 2>/dev/null) app=${FISH_APP_CPUS:-all} obs=${FISH_OBS_CPUS:-all}" > "$POUT/cpuset.txt"
+        # FISH_IOX_ROUDI=1: iceoryx daemon for Cyclone shared memory (G.dds.6), started before any participant
+        if [ "${FISH_IOX_ROUDI:-0}" = 1 ]; then
+            ( $APP_TS iox-roudi > "$POUT/iox_roudi.log" 2>&1 & ); sleep 3
+            echo "iox-roudi: $(pgrep -c iox-roudi) process(es)" >> "$POUT/cpuset.txt"
+        fi
+        [ -n "$FISH_LAUNCH_EXTRA" ] && echo "launch extra: $FISH_LAUNCH_EXTRA" >> "$POUT/cpuset.txt"
+        # FISH_PRE_CMD (2026-10-04): shell run in the container before the launch (e.g. the mqueue limit Agnocast needs;
+        # fs.mqueue.* are per IPC namespace, so this does not touch the host)
+        if [ -n "$FISH_PRE_CMD" ]; then eval "$FISH_PRE_CMD" >> "$POUT/cpuset.txt" 2>&1 || true; fi
 
         if [ "$MODE" != baseline ]; then
             source /root/trace_overlay_ws/install/setup.bash
@@ -135,12 +170,21 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
             INI=/opt/ros/humble/fish/fish_settings.ini
             sed -i "s|^rmw_implementation *=.*|rmw_implementation = rmw_cyclonedds_cpp|" $INI
             sed -i "s|^cyclonedds_uri *=.*|cyclonedds_uri = |" $INI
+            if [ "${FISH_CDDS_XML:-0}" = 1 ]; then export CYCLONEDDS_URI=file:///root/cyclonedds_autoware.xml; fi
             sed -i "s|^per_instance *=.*|per_instance = $FISH_PER_INSTANCE|" $INI
             sed -i "s|ros2 bag play ~/autoware_map/sample-rosbag -r 0.2|ros2 bag play ~/autoware_map/sample-rosbag -r $RATE|" $INI || true
+            # FISH_APP_SECONDS (2026-10-04): a small app without a bag — the post-stable command becomes a sleep,
+            # after which the daemon stops the session exactly as after a replay
+            if [ -n "$FISH_APP_SECONDS" ]; then sed -i "s|ros2 bag play ~/autoware_map/sample-rosbag -r [0-9.]*.*|sleep $FISH_APP_SECONDS|" $INI || true; fi
         else
             export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
             unset CYCLONEDDS_URI
+            if [ "${FISH_CDDS_XML:-0}" = 1 ]; then export CYCLONEDDS_URI=file:///root/cyclonedds_autoware.xml; fi
+            # FISH_BASELINE_OVERLAY=1: the untraced baseline on the FISH overlay
+            # libraries, to separate the cost of the overlay itself from tracing
+            if [ "${FISH_BASELINE_OVERLAY:-0}" = 1 ]; then source /root/trace_overlay_ws/install/setup.bash; fi
         fi
+        env | grep -E "RMW|CYCLONE|FISH|AMENT_PREFIX_PATH" > "$POUT/env.txt" || true
 
         RMW_IMPLEMENTATION=rmw_cyclonedds_cpp probe_start "$POUT"
         date +%s.%N > "$POUT/t_launch.txt"
@@ -154,9 +198,9 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
             # wrapper traps it and stops/drains the trace) — symmetric with
             # the baseline branch.
             rm -f /tmp/fish_replay_complete
-            timeout 1500 $APP_TS ros2 launch autoware_launch logging_simulator.launch.xml \
+            timeout 1500 $APP_TS ${FISH_LAUNCH_CMD:-ros2 launch autoware_launch logging_simulator.launch.xml \
                 map_path:=/root/autoware_map/sample-map-rosbag \
-                vehicle_model:=sample_vehicle sensor_model:=sample_sensor_kit rviz:=false \
+                vehicle_model:=sample_vehicle sensor_model:=sample_sensor_kit rviz:=false} $FISH_LAUNCH_EXTRA \
                 > "$POUT/launch.log" 2>&1 &
             LPID=$!
             for i in $(seq 1 400); do
@@ -174,13 +218,16 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
             # Markers: fishlog/lttng_stop.txt appears at lttng stop; the
             # session-dir file is removed at the very end of the stop.
             SDIR=$(cat /tmp/fish_session_dir 2>/dev/null)
+            # stop_session now freezes LTTng first (lttng_stop.txt appears within
+            # seconds of the replay end) and writes stop_done.txt when the
+            # shutdown snapshot and the nsys drain are through; wait for THAT.
             for j in $(seq 1 720); do
-                [ -n "$SDIR" ] && [ -e "$SDIR/fishlog/lttng_stop.txt" ] && break
+                [ -n "$SDIR" ] && [ -e "$SDIR/fishlog/stop_done.txt" ] && break
                 [ -e /tmp/fish_session_dir ] || break
                 kill -0 $LPID 2>/dev/null || break
                 sleep 1
             done
-            echo "[ovh] trace stop marker after ${j}s (lttng_stop.txt=$([ -n "$SDIR" ] && [ -e "$SDIR/fishlog/lttng_stop.txt" ] && echo yes || echo no))"
+            echo "[ovh] trace frozen=$([ -n "$SDIR" ] && [ -e "$SDIR/fishlog/lttng_stop.txt" ] && echo yes || echo no), stop done after ${j}s (stop_done.txt=$([ -n "$SDIR" ] && [ -e "$SDIR/fishlog/stop_done.txt" ] && echo yes || echo no))"
             sleep 5
             kill -TERM $LPID 2>/dev/null
             # FISH wrapper shutdown (snapshot of ~225 nodes, daemon stop, nsys
@@ -195,9 +242,9 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
             sleep 25
             ls -td /root/fish_traces/fish_2026* 2>/dev/null | head -1 > "$POUT/session.txt"
         else
-            timeout 420 $APP_TS ros2 launch autoware_launch logging_simulator.launch.xml \
+            timeout 420 $APP_TS ${FISH_LAUNCH_CMD:-ros2 launch autoware_launch logging_simulator.launch.xml \
                 map_path:=/root/autoware_map/sample-map-rosbag \
-                vehicle_model:=sample_vehicle sensor_model:=sample_sensor_kit rviz:=false \
+                vehicle_model:=sample_vehicle sensor_model:=sample_sensor_kit rviz:=false} $FISH_LAUNCH_EXTRA \
                 > "$POUT/launch.log" 2>&1 &
             LPID=$!
             PREV=-1; STABLE=0
