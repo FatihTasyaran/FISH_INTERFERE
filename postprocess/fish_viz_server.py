@@ -1433,38 +1433,11 @@ def _serve_task_graphs(handler, qs):
 # splits into 112 components (localization 46, lidar perception 37, control
 # 27, IMU odometry 15, ...). Infra edges are still returned (edge_class=
 # 'infra') and drawn faded; ?infra=include restores the old grouping.
-# Override/extend the list via FISH_INFRA_TOPICS (comma-separated globs).
-import fnmatch as _fnmatch
-_INFRA_TOPIC_GLOBS = [
-    # ROS 2 plumbing
-    '/tf', '/tf_static',
-    '/parameter_events', '/clock', '/rosout', '/service_log',
-    '/*/describe_parameters', '/*/get_parameters', '/*/get_parameter_types',
-    '/*/list_parameters', '/*/set_parameters', '/*/set_parameters_atomically',
-    # diagnostics / statistics (rqt_graph "Debug" quiet list: /clock /rosout
-    # /statistics /diag_agg /time — see rqt_graph/dotcode.py QUIET_NAMES)
-    '/diagnostics', '/diagnostics_agg', '/diagnostics_toplevel_state',
-    '/statistics', '/time', '/diag_agg',
-    # Autoware debug / timing side channels
-    '*/debug/*', '*/processing_time_ms', '*/processing_time_detail_ms',
-    '*/cyclic_time_ms', '*/pipeline_latency_ms',
-    # rqt_graph "hidden" convention: last name segment starting with '_'
-    # (e.g. /foo/_bar) — internal / hidden topics.
-    '*/_*',
-]
-_env_globs = os.environ.get('FISH_INFRA_TOPICS')
-if _env_globs:
-    _INFRA_TOPIC_GLOBS = [g.strip() for g in _env_globs.split(',') if g.strip()]
-
-
-def topic_class(topic: str) -> str:
-    """'infra' for ROS 2 plumbing / diagnostics topics, else 'data'."""
-    if not topic:
-        return 'data'
-    for g in _INFRA_TOPIC_GLOBS:
-        if _fnmatch.fnmatchcase(topic, g):
-            return 'infra'
-    return 'data'
+# Topic classification lives in topic_class.py (shared with the model).
+try:
+    from .topic_class import topic_class, INFRA_TOPIC_GLOBS as _INFRA_TOPIC_GLOBS  # noqa: F401
+except ImportError:
+    from topic_class import topic_class, INFRA_TOPIC_GLOBS as _INFRA_TOPIC_GLOBS  # noqa: F401
 
 
 def _glob_list(spec):

@@ -1300,6 +1300,9 @@ def attach_callback_groups(session_id, executors, nodes, entities, functions):
         ex.A_v["executor_addr"] = primary["executor_addr"]
         ex.A_v["executor_type"] = primary["type"]
         ex.A_v["num_threads"] = primary["num_threads"]
+        # mode: ST / MT from the executor type (was a stale "NA" placeholder from identify_executors)
+        et = str(primary["type"] or "")
+        ex.A_v["mode"] = "MT" if "Multi" in et else ("ST" if "Single" in et else ex.A_v.get("mode", "NA"))
         seen = set()
         cb_groups_list = []
         for e in execs:
@@ -1459,7 +1462,34 @@ def detect_joins(nodes, entities, functions):
     the FT (task) grouping keeps a join's inputs together; those edges are
     membership, not message hops (chain-latency tools must not count them).
     """
-    n_joins = 0
+    n_joins = [0]
+
+    def _record(node, topic, members, evidence):
+        f_list = []
+        for e_id, role in members.items():
+            for f_id in entities[e_id].Z_v:
+                f = functions.get(f_id)
+                if f is None:
+                    continue
+                # an F can take part in several joins (concat completes
+                # the merged cloud AND the per-lidar synced clouds):
+                # joins = {output_topic: role}; join_group = first one
+                # (display / grouping key), join_role = its role there.
+                f.A_v.setdefault("joins", {})[topic] = role
+                f.A_v.setdefault("join_group", topic)
+                f.A_v.setdefault("join_role", role)
+                f.A_v.setdefault("join_evidence", evidence)
+                f_list.append(f_id)
+            entities[e_id].A_v.setdefault("joins", {})[topic] = role
+            entities[e_id].A_v.setdefault("join_group", topic)
+            entities[e_id].A_v.setdefault("join_role", role)
+        node.A_v.setdefault("joins", {})[topic] = f_list
+        n_joins[0] += 1
+        log(f"  join ({evidence}): {node.A_v.get('full_name')} → {topic}: "
+            f"{sum(1 for r in members.values() if r=='completer')} completer(s), "
+            f"{sum(1 for r in members.values() if r=='member')} member(s), "
+            f"{sum(1 for r in members.values() if r=='timeout')} timeout timer(s)")
+
     for n_id, node in nodes.items():
         # entity → (etype, topics it publishes, sub topic, msg_type, f_ids)
         ents = []
@@ -1499,30 +1529,23 @@ def detect_joins(nodes, entities, functions):
                         members[e_id] = "member"
                 elif etype == "tmr" and topic in pubs:
                     members[e_id] = "timeout"
-            f_list = []
-            for e_id, role in members.items():
-                for f_id in entities[e_id].Z_v:
-                    f = functions.get(f_id)
-                    if f is None:
-                        continue
-                    # an F can take part in several joins (concat completes
-                    # the merged cloud AND the per-lidar synced clouds):
-                    # joins = {output_topic: role}; join_group = first one
-                    # (display / grouping key), join_role = its role there.
-                    f.A_v.setdefault("joins", {})[topic] = role
-                    f.A_v.setdefault("join_group", topic)
-                    f.A_v.setdefault("join_role", role)
-                    f_list.append(f_id)
-                entities[e_id].A_v.setdefault("joins", {})[topic] = role
-                entities[e_id].A_v.setdefault("join_group", topic)
-                entities[e_id].A_v.setdefault("join_role", role)
-            node.A_v.setdefault("joins", {})[topic] = f_list
-            n_joins += 1
-            log(f"  join: {node.A_v.get('full_name')} → {topic}: "
-                f"{sum(1 for r in members.values() if r=='completer')} completer(s), "
-                f"{sum(1 for r in members.values() if r=='member')} member(s), "
-                f"{sum(1 for r in members.values() if r=='timeout')} timeout timer(s)")
-    log(f"detect_joins: {n_joins} join output(s) found")
+            _record(node, topic, members, "publish")
+        # message_filters synchronisers.  Their inputs are subscriptions whose
+        # registered callback is message_filters::Subscriber's lambda (the
+        # symbol comes from rclcpp_callback_register), and the synchronised
+        # callback runs inside whichever input completes the set.  When one
+        # input always arrives last, only one completer is ever observed and
+        # the publish-based rule above cannot see the set; the symbol can.
+        mf = [(e_id, pubs, f_ids) for e_id, etype, pubs, sub_topic, msg_type, f_ids in ents
+              if etype == "sub" and any("message_filters::Subscriber" in (functions[f].A_v.get("label") or "")
+                                        for f in f_ids if f in functions)]
+        if len(mf) >= 2 and not any(entities[e_id].A_v.get("join_group") for e_id, _, _ in mf):
+            outs = sorted({t for _, pubs, _ in mf for t in pubs if topic_class_for_join(t) == "data"})
+            topic = outs[0] if outs else f"message_filters:{node.A_v.get('full_name')}"
+            members = {e_id: ("completer" if any(topic_class_for_join(t) == "data" for t in pubs) else "member")
+                       for e_id, pubs, _ in mf}
+            _record(node, topic, members, "message_filters")
+    log(f"detect_joins: {n_joins[0]} join output(s) found")
 
 
 def detect_state_links(session_id, nodes, entities, functions):
@@ -1684,8 +1707,14 @@ def detect_polled_subs(session_id, nodes, entities, functions):
         "payload->>'node_handle' AS nh FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_subscription_init'",
         (session_id,)):
         rh2[(r["vpid"], r["rh"])] = (r["nh"], r["t"])
+    f2node = {}
+    for n_id, node in nodes.items():
+        for e_id in node.Z_v:
+            e = entities.get(e_id)
+            if e is None: continue
+            for f in e.Z_v: f2node[f] = n_id
     polls = Counter()            # (sub_f, reader_f, topic) → n
-    n_take_in = 0
+    n_take_in = n_cross = 0
     for r in pg_store.fetch_all(
         "SELECT vpid, vtid, ts_ns, payload->>'rmw_subscription_handle' AS rh FROM ros2_trace "
         "WHERE session_id=%s AND event='ros2:rmw_take' AND payload->>'taken' IN ('1','true')", (session_id,)):
@@ -1697,16 +1726,16 @@ def detect_polled_subs(session_id, nodes, entities, functions):
         if rd is None or rd in fs: continue
         n_take_in += 1
         for f in fs:
+            if f2node.get(rd) != f2node.get(f):
+                # a take from another node's callback on this thread: not a
+                # polled read of this node (never seen in Autoware; the rule
+                # in the paper says "another callback R of the same node")
+                n_cross += 1
+                continue
             polls[(f, rd, nt[1])] += 1
     if not polls:
         log("detect_polled_subs: no polled subscriptions (no rmw_take inside foreign callback windows)")
         return
-    f2node = {}
-    for n_id, node in nodes.items():
-        for e_id in node.Z_v:
-            e = entities.get(e_id)
-            if e is None: continue
-            for f in e.Z_v: f2node[f] = n_id
     n_sub = set(); n_links = 0
     for (f_s, f_p, topic), n in polls.items():
         if topic_class_for_join(topic) != "data":
@@ -1730,7 +1759,257 @@ def detect_polled_subs(session_id, nodes, entities, functions):
             if e is not None and e.t_v == "E" and any(f in n_sub for f in e.Z_v):
                 e.A_v["polled"] = True
     log(f"detect_polled_subs: {len(n_sub)} polled sub F(s), {n_links} polled state link(s) "
-        f"({n_take_in} rmw_take inside foreign callback windows)")
+        f"({n_take_in} rmw_take inside foreign callback windows, {n_cross} in another node's callback ignored)")
+
+
+
+
+
+def detect_untraced_paths(session_id, executors):
+    """Flag processes that map libraries of data paths FISH has no tracepoints for
+    (todo A0.5c/d): Agnocast (shm pub/sub bypassing rmw), cuda_blackboard (GPU payload
+    beside the key message), iceoryx (Cyclone shared-memory transport), libgomp (OpenMP —
+    traced only with the fishwait16 shim).  Source: snapshot/maps_libs_stable.json (or
+    _shutdown).  Writes EX attrs['untraced_paths'] = [{'path', 'lib', 'status'}];
+    'active' when the trace shows the path in use (cuda_blackboard: a publisher on a
+    '/cuda' topic), otherwise 'mapped'."""
+    import glob, json, os, re
+    base = os.path.join(os.path.expanduser("~/fish_traces"), session_id, "snapshot")
+    files = [f for f in (os.path.join(base, "maps_libs_stable.json"), os.path.join(base, "maps_libs_shutdown.json")) if os.path.exists(f)]
+    if not files:
+        log("detect_untraced_paths: no maps_libs snapshot — skipped"); return
+    PATTERNS = {"agnocast": r"agnocast", "cuda_blackboard": r"libcuda_blackboard", "iceoryx_shm": r"libiceoryx_posh", "openmp": r"libgomp\.so"}
+    cuda_active = bool(pg_store.fetch_all(
+        "SELECT 1 FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_publisher_init' AND payload->>'topic_name' LIKE '%%/cuda' LIMIT 1", (session_id,)))
+    shim = bool(pg_store.fetch_all("SELECT 1 FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_gomp_parallel' LIMIT 1", (session_id,)))
+    by_pid = {}
+    for f in files:
+        try:
+            for e in json.load(open(f)).get("processes", []):
+                by_pid.setdefault(int(e.get("pid", -1)), set()).update(os.path.basename(x) for x in e.get("libs", []))
+        except (OSError, ValueError) as ex:
+            log(f"detect_untraced_paths: cannot read {f}: {ex}")
+    n_flag = 0; summary = {}
+    for ex in executors.values():
+        libs = by_pid.get(ex.A_v.get("pid"))
+        if not libs: continue
+        flags = []
+        for path, pat in PATTERNS.items():
+            hit = sorted(l for l in libs if re.search(pat, l))
+            if not hit: continue
+            status = ("active" if (path == "cuda_blackboard" and cuda_active) else
+                      "traced (shim)" if (path == "openmp" and shim) else
+                      "mapped")
+            flags.append({"path": path, "lib": hit[0], "status": status})
+            summary[(path, status)] = summary.get((path, status), 0) + 1
+        if flags:
+            ex.A_v["untraced_paths"] = flags; n_flag += 1
+    if n_flag:
+        log("detect_untraced_paths: " + ", ".join(f"{p} {st}: {n} process(es)" for (p, st), n in sorted(summary.items())))
+    else:
+        log("detect_untraced_paths: none of agnocast / cuda_blackboard / iceoryx / libgomp mapped")
+
+
+def detect_publisher_threads(session_id, executors, nodes, entities, functions):
+    """Threads that publish OUTSIDE any callback window — the rosbag player, drivers
+    with their own I/O threads, relays publishing from their own threads — become one
+    E (etype 'thread') + F (ptype 'thread') per (process, thread) under the publisher's
+    node, carrying pub aspects for the topics they publish.  Until fishwait15 the
+    player's serialized publishes were invisible (no rcl_publish) and its topics were
+    ext: sources; fish_rcl_publish makes them in-trace publishers with an instant.
+    measure_flows attributes their publishes to this F (no window → thread owner)."""
+    from collections import Counter, defaultdict
+    wins, wstarts, owner, _ = _callback_windows(session_id, functions)
+    ph2nt = {}
+    for r in pg_store.fetch_all(
+        "SELECT vpid, payload->>'publisher_handle' AS ph, payload->>'node_handle' AS nh, payload->>'topic_name' AS t "
+        "FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_publisher_init'", (session_id,)):
+        ph2nt[(r["vpid"], r["ph"])] = (r["nh"], r["t"])
+    node_by_nh = {node.A_v.get("node_handle"): (n_id, node) for n_id, node in nodes.items()}
+    counts = defaultdict(Counter)   # (vpid, vtid) → Counter[(nh, topic)]
+    n_out = n_infra = 0
+    # plumbing published from main threads at start-up (/parameter_events, /rosout, ...) would turn
+    # every process' main thread into a publisher thread with an edge to every node (11 925
+    # /parameter_events edges on fish_20261003_154708); keep data topics plus the clock and tf
+    KEEP_INFRA = ("/clock", "/tf", "/tf_static")
+    for r in pg_store.fetch_all(
+        "SELECT vpid, vtid, ts_ns, payload->>'publisher_handle' AS h FROM ros2_trace "
+        "WHERE session_id=%s AND event IN ('ros2:rcl_publish','ros2:fish_rcl_publish')", (session_id,)):
+        nt = ph2nt.get((r["vpid"], r["h"]))
+        if nt is None: continue
+        if topic_class_for_join(nt[1]) != "data" and nt[1] not in KEEP_INFRA:
+            n_infra += 1; continue
+        if owner((r["vpid"], r["vtid"]), int(r["ts_ns"])) is not None: continue
+        counts[(r["vpid"], r["vtid"])][nt] += 1; n_out += 1
+    created = 0; n_topics = 0
+    for (vpid, vtid), c in counts.items():
+        if sum(c.values()) < 10: continue   # init-time one-offs are not a publishing thread
+        by_node = defaultdict(list)
+        for (nh, topic), n in c.items():
+            by_node[nh].append((topic, n))
+        for nh, topics in by_node.items():
+            hit = node_by_nh.get(nh)
+            if hit is None: continue
+            n_id, node = hit
+            e_A = {"label": f"thread_{vtid}", "etype": "thread", "cb_addr": "NA", "thread_tid": vtid, "vpid": vpid,
+                   "aspects": [{"aspect": "pub", "topic": t, "n_publish": n} for t, n in sorted(topics)]}
+            e = FishVertex("E", next(vertex_counter), e_A, [], 2)
+            f_A = {"label": f"{node.A_v.get('full_name') or node.A_v.get('label')}@thread_{vtid}", "ptype": "thread",
+                   "thread_tid": vtid, "vpid": vpid, "cb_addr": "NA", "phase": "data",
+                   "n_publish": sum(n for _, n in topics)}
+            f = FishVertex("F", next(vertex_counter), f_A, [], 3)
+            e.Z_v.append(f.id_v); node.Z_v.append(e.id_v)
+            entities[e.id_v] = e; functions[f.id_v] = f
+            created += 1; n_topics += len(topics)
+    log(f"detect_publisher_threads: {n_out} data/clock/tf publishes outside callback windows ({n_infra} infra skipped) → "
+        f"{created} publisher thread(s) publishing {n_topics} (thread, topic) pair(s)")
+
+
+def attach_dds_attrs(session_id, nodes, entities):
+    """fishwait15 DDS-side attributes (todo G.dds.2/3):
+    - fish_rcl_endpoint_qos → sub entity A_v['qos'] (kind 2) / node A_v['pub_qos'][topic] (kind 1):
+      reliability, durability, history, depth, deadline_ns, lifespan_ns, liveliness, lease_ns (rmw enums)
+    - fish_rmw_sub_reader → sub entity A_v['dds_reader'] (Cyclone reader entity handle)
+    - fish_rmw_sample_lost → sub entity A_v['dds_lost_total'] / ['dds_rejected_total'] (kinds 2/3 at destroy),
+      A_v['dds_lost_seen'] (sum of kind-0 changes seen at take time)."""
+    sub_by_nt = {}
+    for n_id, node in nodes.items():
+        nh = node.A_v.get("node_handle")
+        for e_id in node.Z_v:
+            e = entities.get(e_id)
+            if e is not None and e.t_v == "E" and e.A_v.get("etype") == "sub":
+                sub_by_nt.setdefault((nh, e.A_v.get("label")), e)
+    node_by_nh = {node.A_v.get("node_handle"): node for node in nodes.values()}
+    sh2nt = {}; rh2nt = {}
+    for r in pg_store.fetch_all(
+        "SELECT vpid, payload->>'subscription_handle' AS sh, payload->>'rmw_subscription_handle' AS rh, "
+        "payload->>'node_handle' AS nh, payload->>'topic_name' AS t FROM ros2_trace "
+        "WHERE session_id=%s AND event='ros2:rcl_subscription_init'", (session_id,)):
+        sh2nt[(r["vpid"], r["sh"])] = (r["nh"], r["t"]); rh2nt[(r["vpid"], r["rh"])] = (r["nh"], r["t"])
+    ph2nt = {}
+    for r in pg_store.fetch_all(
+        "SELECT vpid, payload->>'publisher_handle' AS ph, payload->>'node_handle' AS nh, payload->>'topic_name' AS t "
+        "FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_publisher_init'", (session_id,)):
+        ph2nt[(r["vpid"], r["ph"])] = (r["nh"], r["t"])
+    n_q = n_pq = n_rd = n_loss = 0
+    for r in pg_store.fetch_all(
+        "SELECT vpid, payload FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rcl_endpoint_qos'", (session_id,)):
+        p = r["payload"]
+        qos = {k: int(p.get(k, 0) or 0) for k in ("reliability", "durability", "history", "depth", "deadline_ns",
+                                                   "lifespan_ns", "liveliness", "lease_ns")}
+        if int(p.get("kind", 0)) == 2:
+            nt = sh2nt.get((r["vpid"], p.get("handle")))
+            e = sub_by_nt.get(nt) if nt else None
+            if e is not None: e.A_v["qos"] = qos; n_q += 1
+        else:
+            nt = ph2nt.get((r["vpid"], p.get("handle")))
+            node = node_by_nh.get(nt[0]) if nt else None
+            if node is not None: node.A_v.setdefault("pub_qos", {})[nt[1]] = qos; n_pq += 1
+    for r in pg_store.fetch_all(
+        "SELECT vpid, payload FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rmw_sub_reader'", (session_id,)):
+        nt = rh2nt.get((r["vpid"], r["payload"].get("rmw_subscription_handle")))
+        e = sub_by_nt.get(nt) if nt else None
+        if e is not None: e.A_v["dds_reader"] = int(r["payload"].get("reader", 0)); n_rd += 1
+    for r in pg_store.fetch_all(
+        "SELECT vpid, payload FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rmw_sample_lost'", (session_id,)):
+        p = r["payload"]; nt = rh2nt.get((r["vpid"], p.get("rmw_subscription_handle")))
+        e = sub_by_nt.get(nt) if nt else None
+        if e is None: continue
+        kind = int(p.get("kind", -1)); total = int(p.get("total", 0)); change = int(p.get("change", 0))
+        if kind == 2: e.A_v["dds_lost_total"] = max(total, e.A_v.get("dds_lost_total", 0)); n_loss += 1
+        elif kind == 3: e.A_v["dds_rejected_total"] = max(total, e.A_v.get("dds_rejected_total", 0))
+        elif kind == 0: e.A_v["dds_lost_seen"] = e.A_v.get("dds_lost_seen", 0) + change; n_loss += 1
+        elif kind == 1: e.A_v["dds_rejected_seen"] = e.A_v.get("dds_rejected_seen", 0) + change
+    if n_q or n_rd or n_loss:
+        lost_subs = sum(1 for e in entities.values() if e.A_v.get("dds_lost_total") or e.A_v.get("dds_lost_seen"))
+        log(f"attach_dds_attrs: qos on {n_q} subscription(s) + {n_pq} publisher(s), {n_rd} reader link(s), "
+            f"{n_loss} loss record(s) → {lost_subs} subscription(s) with DDS sample loss")
+    else:
+        log("attach_dds_attrs: no fishwait15 DDS events in this session — skipped")
+
+
+def detect_tf_links(session_id, nodes, entities, functions):
+    """tf buffer reads (image fishwait14+: ros2:fish_tf_set_link / ros2:fish_tf_lookup).
+
+    /tf leaves the ROS layer at the listener: the /tf (and /tf_static) sub
+    callback S calls tf2::BufferCore::setTransform on buffer B — recorded once
+    per (B, S) by fish_tf_set_link — and a later callback R reads B with
+    lookupTransform, recorded per lookup by fish_tf_lookup.  A lookup inside
+    R's window is a sample-and-hold read exactly like a polled rmw_take, so
+    it becomes a polled-msg edge S → R (nature=state, polled=True,
+    evidence='tf_lookup', topic='/tf').  S usually lives in a hidden listener
+    node (transform_listener_impl_*, managed_tf_listener_impl) of the same
+    process, so the edge crosses nodes.  Data age = lookup ts − last start of S
+    before it (trace clock; the transform stamps are ROS/sim time and not
+    comparable).  Stored on the READER's node as tf_links
+    [f_s, f_r, n, p50, p90, max, frames] and turned into edges in build_graph."""
+    import bisect
+    from collections import Counter, defaultdict
+    rows = pg_store.fetch_all(
+        "SELECT vpid, payload->>'buffer' AS b, payload->>'callback' AS cb FROM ros2_trace "
+        "WHERE session_id=%s AND event='ros2:fish_tf_set_link'", (session_id,))
+    if not rows:
+        log("detect_tf_links: no ros2:fish_tf_set_link events (image < fishwait14 or no tf listener) — skipped")
+        return
+    cb2f = {}
+    for f_id, f in functions.items():
+        for c in [f.A_v.get("cb_addr")] + list(f.A_v.get("alt_cb_addrs") or []) + [f.A_v.get("ipc_waitable")]:
+            if c and c != "NA":
+                cb2f.setdefault(c, f_id)
+    writers = defaultdict(set)          # (vpid, buffer) → {writer F}
+    for r in rows:
+        f = cb2f.get(r["cb"])
+        if f is not None:
+            writers[(r["vpid"], r["b"])].add(f)
+    wins, wstarts, owner, starts_by_f = _callback_windows(session_id, functions)
+    f2node = {}; f2topic = {}
+    for n_id, node in nodes.items():
+        for e_id in node.Z_v:
+            e = entities.get(e_id)
+            if e is None: continue
+            for f in e.Z_v:
+                f2node[f] = n_id; f2topic[f] = e.A_v.get("label")
+    look = defaultdict(list); frames = defaultdict(Counter)
+    n_look = n_out = n_nowriter = 0
+    for r in pg_store.fetch_all(
+        "SELECT vpid, vtid, ts_ns, payload->>'buffer' AS b, payload->>'target_frame' AS tf, "
+        "payload->>'source_frame' AS sf FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_tf_lookup'",
+        (session_id,)):
+        n_look += 1
+        ws_ = writers.get((r["vpid"], r["b"]))
+        if not ws_:
+            n_nowriter += 1; continue
+        rd = owner((r["vpid"], r["vtid"]), int(r["ts_ns"]))
+        if rd is None:
+            n_out += 1; continue
+        for f_s in ws_:
+            if f_s == rd: continue
+            look[(f_s, rd)].append(int(r["ts_ns"]))
+            frames[(f_s, rd)][(r["tf"], r["sf"])] += 1
+    def q(a, pct): a = sorted(a); return a[int(pct * (len(a) - 1))]
+    n_edges = 0; readers = set()
+    for (f_s, f_r), tss in look.items():
+        # /tf_static is written once at start-up: a lookup "age" against it is the
+        # session age, not a data age — keep the link, drop the age (static=True).
+        static = (f2topic.get(f_s) == "/tf_static")
+        s_starts = starts_by_f.get(f_s, [])
+        ages = []
+        if not static:
+            for t in tss:
+                i = bisect.bisect_left(s_starts, t)
+                if i > 0: ages.append(t - s_starts[i - 1])
+        node = nodes.get(f2node.get(f_r))
+        if node is None: continue
+        top = [[a, b, n] for (a, b), n in frames[(f_s, f_r)].most_common(3)]
+        node.A_v.setdefault("tf_links", []).append(
+            [f_s, f_r, len(tss), q(ages, .5) if ages else None, q(ages, .9) if ages else None,
+             max(ages) if ages else None, top, static])
+        functions[f_s].A_v["tf_writer"] = True
+        functions[f_r].A_v.setdefault("tf_inputs", []).extend(f"{a}<-{b}" for a, b, _ in top)
+        readers.add(f_r); n_edges += 1
+    log(f"detect_tf_links: {len(writers)} tf buffer(s) with a writing callback, {n_look} lookups "
+        f"({n_nowriter} on buffers without a traced writer, {n_out} outside any callback window) → "
+        f"{n_edges} tf read link(s) into {len(readers)} reader callback(s)")
 
 
 def measure_flows(G, session_id, functions, nodes=None, entities=None):
@@ -1744,7 +2023,10 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
                                     (inter-process) or by time (intra-process)
       nature=state s → p           data age = start(p instance) − last start(s)
     Writes n / p50 / p90 / max (ns) into the edge attrs:
-      flow_n, hop_ns_p50, hop_ns_p90, hop_ns_max          (msg edges)
+      flow_n, hop_ns_p50, hop_ns_p90, hop_ns_max          (msg edges: take − publish)
+      rts_n, rts_ns_p50, rts_ns_p90, rts_ns_max           (msg edges: consumer start − publish =
+                                                           release → start; release of a data-triggered
+                                                           instance is the publish instant of its sample)
       flow_n, age_ns_p50, age_ns_p90, age_ns_max          (state edges)
       flow_method: 'rmw_take' | 'ipc_time' | 'state'
     """
@@ -1754,6 +2036,11 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
 
     wins, wstarts, owner, starts_by_f = _callback_windows(session_id, functions)
     subf = _sub_f_by_node_topic(nodes, entities, functions) if nodes is not None else {}
+    f_vpid = {f: k[0] for k, ws in wins.items() for _, _, f in ws}   # F → process (from its windows)
+    thread_f = {}   # (vpid, vtid) → publisher-thread F (detect_publisher_threads): owner of publishes outside windows
+    for f_id, f in functions.items():
+        if f.A_v.get("ptype") == "thread" and f.A_v.get("vpid") is not None:
+            thread_f[(f.A_v["vpid"], f.A_v["thread_tid"])] = f_id; f_vpid[f_id] = f.A_v["vpid"]
 
     # publishes: rcl_publish → (topic, pub_F, ts)
     pub_topic = {}
@@ -1765,15 +2052,26 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
     n_pub = 0
     for r in pg_store.fetch_all(
         "SELECT vpid, vtid, ts_ns, payload->>'publisher_handle' AS h FROM ros2_trace "
-        "WHERE session_id=%s AND event='ros2:rcl_publish'", (session_id,)):
+        "WHERE session_id=%s AND event IN ('ros2:rcl_publish','ros2:fish_rcl_publish')", (session_id,)):
+        # fish_rcl_publish (fishwait15): serialized / loaned publishes, which have no rcl_publish
+        t = pub_topic.get((r["vpid"], r["h"]))
+        if not t: continue
+        f = owner((r["vpid"], r["vtid"]), int(r["ts_ns"]))
+        if f is None: f = thread_f.get((r["vpid"], r["vtid"]))
+        if f is None: continue
+        pubs[(t, f)].append(int(r["ts_ns"])); n_pub += 1
+    ipc_keys = set(); n_ipub = 0
+    for r in pg_store.fetch_all(
+        "SELECT vpid, vtid, ts_ns, payload->>'publisher_handle' AS h FROM ros2_trace "
+        "WHERE session_id=%s AND event='ros2:fish_rclcpp_intra_publish'", (session_id,)):
         t = pub_topic.get((r["vpid"], r["h"]))
         if not t: continue
         f = owner((r["vpid"], r["vtid"]), int(r["ts_ns"]))
         if f is None: continue
-        pubs[(t, f)].append(int(r["ts_ns"])); n_pub += 1
+        pubs[(t, f)].append(int(r["ts_ns"])); ipc_keys.add((t, f)); n_ipub += 1
     for k in pubs: pubs[k].sort()
-    if n_pub == 0:
-        log("measure_flows: no ros2:rcl_publish events (per_instance off) — hop latencies skipped; state ages only")
+    if n_pub == 0 and n_ipub == 0:
+        log("measure_flows: no ros2:rcl_publish / fish_rclcpp_intra_publish events (per_instance off) — hop latencies skipped; state ages only")
 
     # takes: rmw_take → (topic, sub_F, take_ts, source_ts)
     rmw2topic = {}; rmw2nt = {}
@@ -1782,13 +2080,28 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
         "payload->>'node_handle' AS nh FROM ros2_trace "
         "WHERE session_id=%s AND event='ros2:rcl_subscription_init'", (session_id,)):
         rmw2topic[(r["vpid"], r["rh"])] = r["t"]; rmw2nt[(r["vpid"], r["rh"])] = (r["nh"], r["t"])
+    # fishwait15: receiver-side arrival per sample — (vpid, rmw_sub_handle, source_ts) → arrival_ts
+    reader2rh = {}
+    for r in pg_store.fetch_all(
+        "SELECT vpid, payload->>'rmw_subscription_handle' AS rh, (payload->>'reader')::bigint AS rd FROM ros2_trace "
+        "WHERE session_id=%s AND event='ros2:fish_rmw_sub_reader'", (session_id,)):
+        reader2rh[(r["vpid"], int(r["rd"]))] = r["rh"]
+    arrival = {}; n_arr = 0
+    if reader2rh:
+        for r in pg_store.fetch_all(
+            "SELECT vpid, ts_ns, (payload->>'reader')::bigint AS rd, (payload->>'source_timestamp')::bigint AS st "
+            "FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_dds_rhc_store' AND payload->>'has_data'='1'", (session_id,)):
+            rh = reader2rh.get((r["vpid"], int(r["rd"])))
+            if rh is None: continue
+            arrival.setdefault((r["vpid"], rh, int(r["st"])), int(r["ts_ns"])); n_arr += 1
+    take_rh = {}   # (topic, sub_F, take_ts) → (vpid, rh) for the arrival lookup
     takes = defaultdict(list)  # (topic, sub_F) → [(take_ts, src_ts)]   dispatched takes (hop latency)
     polled = defaultdict(list) # (topic, sub_F, reader_F) → [(take_ts, src_ts)]   polled reads (data age)
     n_take = n_poll = 0
     for r in pg_store.fetch_all(
         "SELECT vpid, vtid, ts_ns, payload->>'rmw_subscription_handle' AS rh, "
         "(payload->>'source_timestamp')::bigint AS st FROM ros2_trace "
-        "WHERE session_id=%s AND event='ros2:rmw_take' AND payload->>'taken' IN ('1','true')", (session_id,)):
+        "WHERE session_id=%s AND event IN ('ros2:rmw_take','ros2:fish_rcl_take') AND payload->>'taken' IN ('1','true')", (session_id,)):
         t = rmw2topic.get((r["vpid"], r["rh"]))
         if not t: continue
         key = (r["vpid"], r["vtid"]); ts = int(r["ts_ns"])
@@ -1809,6 +2122,7 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
         i = bisect.bisect_left(wstarts[key], ts)
         if i < len(ws) and ws[i][0] - ts <= 5_000_000:
             takes[(t, ws[i][2])].append((ts, st)); n_take += 1
+            if arrival: take_rh[(t, ws[i][2], ts)] = (r["vpid"], r["rh"])
     for k in takes: takes[k].sort()
     for k in polled: polled[k].sort()
 
@@ -1823,7 +2137,8 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
                 pr = polled.get((d.get("topic"), u, v), [])
                 ages = [ts - st for ts, st in pr if st is not None and ts >= st]
                 if ages:
-                    d.update(flow_n=len(ages), age_ns_p50=q(ages, .5), age_ns_p90=q(ages, .9), age_ns_max=max(ages), flow_method="polled_take")
+                    d.update(flow_n=len(ages), age_ns_p50=q(ages, .5), age_ns_p90=q(ages, .9), age_ns_max=max(ages), flow_method="polled_take",
+                             prov={"age": "measured:take_minus_source_timestamp"})
                     n_state += 1
                 continue
             s_starts = starts_by_f.get(u, []); p_starts = starts_by_f.get(v, [])
@@ -1832,7 +2147,8 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
                 i = bisect.bisect_left(s_starts, tp)
                 if i > 0: ages.append(tp - s_starts[i - 1])
             if ages:
-                d.update(flow_n=len(ages), age_ns_p50=q(ages, .5), age_ns_p90=q(ages, .9), age_ns_max=max(ages), flow_method="state")
+                d.update(flow_n=len(ages), age_ns_p50=q(ages, .5), age_ns_p90=q(ages, .9), age_ns_max=max(ages), flow_method="state",
+                         prov={"age": "inferred:start_order"})
                 n_state += 1
             continue
         if nat not in ("msg", None):
@@ -1841,9 +2157,16 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
         if not topic: continue
         pts = pubs.get((topic, u))
         if not pts: continue
-        lat = []
+        lat = []; rts = []   # hop = take − publish ; rts = consumer callback start − publish (release → start)
+        arr = []; que = []   # transport = arrival − publish ; queue = take − arrival (sample waiting in the reader cache)
         tk = takes.get((topic, v))
-        if tk:
+        v_starts = starts_by_f.get(v, [])
+        # Same process + intra-process publishes seen: the delivery is the
+        # intra-process one.  rclcpp still rmw_takes the DDS copy and discards it
+        # (matches_any_intra_process_publishers), so those takes are not the
+        # consumption and must not be paired.
+        same_proc_ipc = (topic, u) in ipc_keys and f_vpid.get(u) is not None and f_vpid.get(u) == f_vpid.get(v)
+        if tk and not same_proc_ipc:
             # inter-process: pair each take with the publish whose ts is closest to
             # the DDS source_timestamp (same host → same clock domain)
             for take_ts, src in tk:
@@ -1854,29 +2177,63 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
                 pt = min(cand, key=lambda x: abs(x - ref))
                 if abs(pt - ref) <= 50_000_000 and take_ts >= pt:
                     lat.append(take_ts - pt)
+                    if arrival and src:
+                        vr = take_rh.get((topic, v, take_ts))
+                        at = arrival.get((vr[0], vr[1], src)) if vr else None
+                        if at is not None and pt <= at <= take_ts:
+                            arr.append(at - pt); que.append(take_ts - at)
+                    # the dispatched callback starts right after its take (same thread, executor path)
+                    k = bisect.bisect_left(v_starts, take_ts)
+                    if k < len(v_starts) and v_starts[k] - take_ts <= 5_000_000:
+                        rts.append(v_starts[k] - pt)
             method = "rmw_take"
         else:
             # intra-process (or per_instance without rmw_take): each start of the
-            # consumer F pairs with the latest publish before it (≤ 50 ms)
+            # consumer F pairs with the latest publish before it (≤ 50 ms).  An
+            # intra-process delivery opens two windows µs apart (the waitable's
+            # and the callback's); count one per delivery.
+            last = None
             for tv in starts_by_f.get(v, []):
+                if last is not None and tv - last < 1_000_000:
+                    continue
+                last = tv
                 i = bisect.bisect_right(pts, tv) - 1
                 if i >= 0 and tv - pts[i] <= 50_000_000:
                     lat.append(tv - pts[i])
-            method = "ipc_time"
+            rts = list(lat)   # intra-process: paired at the consumer's start already → hop == release-to-start
+            method = "ipc_fifo" if (topic, u) in ipc_keys else "ipc_time"
         if lat:
             d.update(flow_n=len(lat), hop_ns_p50=q(lat, .5), hop_ns_p90=q(lat, .9), hop_ns_max=max(lat), flow_method=method)
+            # delivery ratio (G.dds.3): samples taken by this consumer / samples published by this publisher.
+            # DDS never counts best-effort samples dropped in the kernel (RcvbufErrors), this does.
+            d["deliv_ratio"] = round(min(1.0, len(lat) / max(1, len(pts))), 3)
+            # provenance (tier experiment): measured = paired per sample from trace events, inferred = time-order heuristic
+            d["prov"] = {"hop": "measured:" + method if method != "ipc_time" else "inferred:ipc_time",
+                         "release": "measured:publish_instant" if rts else "n/a",
+                         "arrival": "measured:rhc_store" if arr else "absent"}
+            if rts:
+                d.update(rts_n=len(rts), rts_ns_p50=q(rts, .5), rts_ns_p90=q(rts, .9), rts_ns_max=max(rts))
+            if arr:
+                d.update(arr_n=len(arr), arr_ns_p50=q(arr, .5), arr_ns_p90=q(arr, .9), arr_ns_max=max(arr),
+                         que_ns_p50=q(que, .5), que_ns_p90=q(que, .9), que_ns_max=max(que))
             n_msg += 1; n_pairs += len(lat)
-    log(f"measure_flows: {n_msg} msg edge(s) with hop latency ({n_pairs} pairs; publishes {n_pub}, takes {n_take}, polled takes {n_poll}), "
+    prov_counts = {}
+    for _u, _v, _d in G.edges(data=True):
+        pv = _d.get("prov")
+        if pv:
+            for k_, v_ in pv.items(): prov_counts[f"{k_}={v_}"] = prov_counts.get(f"{k_}={v_}", 0) + 1
+    if prov_counts:
+        log("provenance of derived quantities: " + ", ".join(f"{k} {v}" for k, v in sorted(prov_counts.items())))
+    log(f"measure_flows: {n_msg} msg edge(s) with hop latency ({n_pairs} pairs; publishes {n_pub} + {n_ipub} intra-process, takes {n_take}, polled takes {n_poll}, arrivals {n_arr}), "
         f"{n_state} state edge(s) with data age")
 
 
 def topic_class_for_join(topic: str) -> str:
-    """Infra topics never count as join members (mirrors fish_viz_server)."""
-    try:
-        from postprocess.fish_viz_server import topic_class
-        return topic_class(topic)
-    except Exception:
-        return "infra" if topic in ("/clock", "/parameter_events", "/tf", "/tf_static", "/rosout") else "data"
+    """Infra topics never count as join / polled-msg members. One shared
+    classifier (topic_class.py); no silent fallback — a missing import must
+    fail loudly, the five-topic fallback it replaced produced spurious joins."""
+    from topic_class import topic_class
+    return topic_class(topic)
 
 
 def detect_actions(entities):
@@ -1944,6 +2301,9 @@ def mark_phases(session_id, executors, entities, functions):
                        timer anywhere, so no anchor to compare to.
                        Rare; only matters for sessions without any
                        periodic timer at all.
+          "shutdown"  — first fire at or after session_shutdown_start_ns,
+                       the first fish_rcl_node_fini of a node that owned a
+                       periodic timer (stored on every executor).
 
     External (ptype="ext") boundary F vertices have no cb and are
     tagged "data" — they are connection terminals, never noise.
@@ -2018,7 +2378,36 @@ def mark_phases(session_id, executors, entities, functions):
         min(exec_data_start.values()) if exec_data_start else None
     )
 
-    n_init = n_data = n_zero = n_unknown = 0
+    # Shutdown boundary (the mirror of init): the first destruction of a node
+    # that owned a periodic timer.  Temporary nodes (launch_ros clients,
+    # parameter helpers) are destroyed during the run; a node whose timer
+    # fired periodically is only destroyed when the application goes down.
+    #   timer -> node via rclcpp_timer_link_node, timer -> cb via
+    #   rclcpp_timer_callback_added, cb periodic via cb_fire_count >= 2,
+    #   node_fini via fish_rcl_node_fini.
+    session_shutdown_start: int | None = None
+    try:
+        tmr_node = {d["payload"].get("timer_handle"): d["payload"].get("node_handle")
+                    for d in _all_events(session_id, "ros2:rclcpp_timer_link_node")}
+        periodic_nodes = set()
+        for d in _all_events(session_id, "ros2:rclcpp_timer_callback_added"):
+            th = d["payload"].get("timer_handle"); cb = d["payload"].get("callback")
+            if th in tmr_node and cb_fire_count.get(cb, 0) >= 2:
+                periodic_nodes.add(tmr_node[th])
+        finis = [int(d["ts_ns"]) for d in _all_events(session_id, "ros2:fish_rcl_node_fini")
+                 if d["payload"].get("node_handle") in periodic_nodes
+                 and (session_data_start is None or int(d["ts_ns"]) > session_data_start)]
+        if finis:
+            session_shutdown_start = min(finis)
+    except Exception as exc:  # phase tagging must never fail the extraction
+        log(f"mark_phases: shutdown boundary skipped ({exc})")
+    for ex in executors.values():
+        if session_data_start is not None:
+            ex.A_v.setdefault("session_data_start_ns", session_data_start)
+        if session_shutdown_start is not None:
+            ex.A_v["shutdown_start_ns"] = session_shutdown_start
+
+    n_init = n_data = n_zero = n_unknown = n_shutdown = 0
     n_fallback = 0
     for f_id, f in functions.items():
         # External (boundary) F vertices have ptype="ext" and no cb_addr.
@@ -2033,10 +2422,20 @@ def mark_phases(session_id, executors, entities, functions):
             f.A_v["phase"] = "data"
             n_data += 1
             continue
+        if f.A_v.get("ptype") == "thread":
+            # publisher thread (detect_publisher_threads): no callback windows by nature → live
+            f.A_v["phase"] = "data"
+            n_data += 1
+            continue
         if not cb or cb == "NA" or cb not in cb_last_start:
             # cb registered but never fired.
             f.A_v["phase"] = "zero_exec"
             n_zero += 1
+            continue
+        if session_shutdown_start is not None and cb_first_start[cb] >= session_shutdown_start:
+            # fired only after the application started going down
+            f.A_v["phase"] = "shutdown"
+            n_shutdown += 1
             continue
         ex_id = cb_to_executor.get(cb)
         data_start = exec_data_start.get(ex_id) if ex_id is not None else None
@@ -2057,9 +2456,11 @@ def mark_phases(session_id, executors, entities, functions):
             f.A_v["phase"] = "init"
             n_init += 1
     log(f"mark_phases DONE in {time.time()-t0:.1f}s — "
-        f"{n_data} data, {n_init} init, {n_zero} zero_exec, {n_unknown} unknown "
+        f"{n_data} data, {n_init} init, {n_shutdown} shutdown, {n_zero} zero_exec, {n_unknown} unknown "
         f"({len(exec_data_start)}/{len(executors)} executors had a "
-        f"periodic timer; {n_fallback} F's used session-level fallback)")
+        f"periodic timer; {n_fallback} F's used session-level fallback"
+        + (f"; shutdown starts {(session_shutdown_start - session_data_start) / 1e9:.1f} s after the data phase"
+           if session_shutdown_start is not None and session_data_start is not None else "; no shutdown boundary") + ")")
 
 
 def split_callbacks(session_id, entities, functions):
@@ -2357,6 +2758,24 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
                 state_count += 1
     if state_count:
         log(f"  State links: {state_count} L3 edges (nature=state; {polled_count} polled/observed, rest inferred)")
+    # tf buffer reads (detect_tf_links): polled-msg edges listener sub F → reader F,
+    # cross-node (the listener is a hidden node of the same process); ages measured there.
+    tf_count = 0
+    f2node_tf = {f: n_id for n_id, node in nodes.items() for e_id in node.Z_v
+                 if e_id in entities for f in entities[e_id].Z_v}
+    for n_id, node in nodes.items():
+        for f_s, f_r, n, p50, p90, mx, fr, static in (node.A_v.get("tf_links") or []):
+            if f_s in functions and f_r in functions:
+                attrs = dict(rel="comm", level="L3", nature="state", topic="/tf_static" if static else "/tf",
+                             inferred=False, polled=True, evidence="tf_lookup", n_polls=n, flow_n=n,
+                             flow_method="tf_static" if static else "tf_lookup", frames=fr, static=static,
+                             intra_node=(f2node_tf.get(f_s) == f2node_tf.get(f_r)),
+                             prov={"edge": "measured:fish_tf_lookup", "age": "n/a" if static else "inferred:lookup_minus_last_write_start"})
+                if p50 is not None:
+                    attrs.update(age_ns_p50=p50, age_ns_p90=p90, age_ns_max=mx)
+                G.add_edge(f_s, f_r, **attrs); tf_count += 1
+    if tf_count:
+        log(f"  tf read links: {tf_count} L3 edges (nature=state, evidence=tf_lookup)")
 
     # ──────────────────────────────────────────────────────────────────
     # NITROS GXF intra-node edges (Option 1: static topology)
@@ -2501,13 +2920,19 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
     def _lift(layer):
         """Group the callback-layer edges by the pair of vertices containing
         them, and write one edge per pair carrying the whole set."""
-        pairs, unattached = {}, 0
+        pairs, unattached, selfp = {}, 0, 0
         for u, v, d in l3_edges:
             su, sv = _ancestor(u, layer), _ancestor(v, layer)
             if su is None or sv is None:
                 # an external peer has no node and no executor of its own; its
                 # interactions exist at the entity layer and stop there
                 unattached += 1
+                continue
+            if su == sv:
+                # both endpoints inside one vertex of this layer: the edge is
+                # contained by it, not an edge of it (E(u,v) for u != v); the
+                # expansion operator brings it back
+                selfp += 1
                 continue
             pairs.setdefault((su, sv), []).append(d)
         written = kept = 0
@@ -2534,7 +2959,7 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
                 attrs["tau"] = "InterP"
             G.add_edge(su, sv, **attrs)
             written += 1
-        return written, kept, unattached, sum(1 for u, v in pairs if u == v)
+        return written, kept, unattached, selfp
 
     for layer, name in (("L2", "entity"), ("L1", "node"), ("L0", "executor")):
         written, kept, unattached, selfp = _lift(layer)
@@ -2568,9 +2993,13 @@ def extract(session_id: str, *, scope: str = graph_store_pg.STANDALONE_SCOPE,
     entities = identify_entities(session_id, nodes)
     functions = identify_callbacks(session_id, nodes, entities, executors)
     attribute_aspects(session_id, executors, nodes, entities)
+    attach_dds_attrs(session_id, nodes, entities)
+    detect_publisher_threads(session_id, executors, nodes, entities, functions)
+    detect_untraced_paths(session_id, executors)
     detect_joins(nodes, entities, functions)
     detect_state_links(session_id, nodes, entities, functions)
     detect_polled_subs(session_id, nodes, entities, functions)
+    detect_tf_links(session_id, nodes, entities, functions)
     attach_callback_groups(session_id, executors, nodes, entities, functions)
     mark_phases(session_id, executors, entities, functions)
     detect_oort_threads(session_id, executors, nodes, entities, functions)

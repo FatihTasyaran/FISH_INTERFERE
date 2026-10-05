@@ -105,7 +105,7 @@ def main():
     # data inputs vs infra/aux subs (/clock, /parameter_events, ...): reuse the
     # FT topic classifier so both views agree on what counts as plumbing.
     try:
-        from postprocess.fish_viz_server import topic_class
+        from topic_class import topic_class
     except Exception:
         def topic_class(t):
             return 'infra' if t in ('/clock', '/parameter_events', '/tf', '/tf_static', '/rosout') else 'data'

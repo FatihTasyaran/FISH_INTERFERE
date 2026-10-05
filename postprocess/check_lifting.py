@@ -66,20 +66,25 @@ def main():
     ok = True
     for level, hops, name in LAYERS:
         union = collections.defaultdict(list)
-        unattached = 0
+        unattached = contained = 0
         for s, t, a in edges['L3']:
             us, ut = ancestor(parent, s, hops), ancestor(parent, t, hops)
             if us is None or ut is None:
                 # an external peer has no node and no executor of its own
                 unattached += 1
                 continue
+            if us == ut:
+                # contained by one vertex of this layer, not an edge of it
+                contained += 1
+                continue
             union[(us, ut)].append(a)
-        have = {(s, t) for s, t, _ in edges[level]}
+        have = {(s, t) for s, t, _ in edges[level] if s != t}
         missing = set(union) - have
         unsupported = have - set(union)
         print(f"  {level} ({name}): {len(have)} edges, union of the callback "
               f"layer gives {len(union)}"
-              + (f", {unattached} interactions have no {name}" if unattached else ""))
+              + (f", {unattached} interactions have no {name}" if unattached else "")
+              + (f", {contained} contained inside one {name}" if contained else ""))
         if missing:
             ok = False
             nat = collections.Counter(a.get('nature', '?')

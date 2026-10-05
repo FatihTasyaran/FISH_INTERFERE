@@ -552,6 +552,44 @@ def _parse_trace_line(line: str, trace_date: datetime) -> tuple | None:
     )
 
 
+def _parse_block(args):
+    """Worker: parse a block of babeltrace2 lines into COPY-ready fragments.
+
+    Returns [(day_sec, nanos, tail)] where tail is the tab-joined PG literal of
+    (session_id, event, cpu_id, vpid, vtid, host_name, procname, payload).  The
+    midnight roll of ts_ns is applied sequentially by the parent (blocks are
+    consumed in order), so workers stay stateless."""
+    lines, session_id = args
+    out = []
+    lit = pg_store._to_pg_literal
+    for line in lines:
+        m = _LINE_RE.match(line.rstrip("\n"))
+        if not m:
+            continue
+        groups = _split_brace_groups(m.group("rest"))
+        cpu = _parse_kv_group(groups[0]) if len(groups) > 0 else {}
+        proc = _parse_kv_group(groups[1]) if len(groups) > 1 else {}
+        payload = _parse_kv_group(groups[2]) if len(groups) > 2 else {}
+        hms = m.group("ts")
+        day_sec = int(hms[0:2]) * 3600 + int(hms[3:5]) * 60 + int(hms[6:8])
+        tail = "\t".join(lit(v) for v in (
+            session_id, m.group("event"), int(cpu.get("cpu_id", 0) or 0), int(proc.get("vpid", 0) or 0),
+            int(proc.get("vtid", 0) or 0), m.group("host"), proc.get("procname", ""), payload))
+        out.append((day_sec, int(hms[9:]), tail))
+    return out
+
+
+def _ingest_workers() -> int:
+    env = os.environ.get("FISH_INGEST_WORKERS")
+    if env:
+        return max(1, int(env))
+    try:
+        n_cpu = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        n_cpu = os.cpu_count() or 2
+    return max(1, min(8, n_cpu - 2))
+
+
 def ingest_ros2_trace(session_id: str, session_dir: str, trace_date: datetime):
     _parse_trace_line._roll = {"last": None, "extra_days": 0}
     trace_root = os.path.join(session_dir, "ros2")
@@ -591,26 +629,65 @@ def ingest_ros2_trace(session_id: str, session_dir: str, trace_date: datetime):
     t_start = time.time()
     last_report = t_start
 
+    workers = _ingest_workers()
+    col_list = ", ".join(f'"{c}"' for c in cols)
+    base_midnight = trace_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    base_epoch = int(base_midnight.timestamp())
+    roll = {"last": None, "extra_days": 0}
     with pg_store.get_cursor() as (conn, cur):
         conn.autocommit = False
         try:
-            for line in proc.stdout:
-                lines_read += 1
-                row = _parse_trace_line(line, trace_date)
-                if row is None:
-                    continue
-                # Inject session_id as the 2nd column
-                buf.append((row[0], session_id, *row[1:]))
-                if len(buf) >= BATCH_SIZE:
+            if workers <= 1:
+                for line in proc.stdout:
+                    lines_read += 1
+                    row = _parse_trace_line(line, trace_date)
+                    if row is None:
+                        continue
+                    buf.append((row[0], session_id, *row[1:]))
+                    if len(buf) >= BATCH_SIZE:
+                        inserted += pg_store.copy_rows(cur, "ros2_trace", cols, buf)
+                        buf.clear()
+                        now = time.time()
+                        if now - last_report >= 5.0:
+                            rate = inserted / (now - t_start) if now > t_start else 0
+                            log(f"    {inserted:,} rows, {lines_read:,} lines ({rate:,.0f}/s)")
+                            last_report = now
+                if buf:
                     inserted += pg_store.copy_rows(cur, "ros2_trace", cols, buf)
-                    buf.clear()
-                    now = time.time()
-                    if now - last_report >= 5.0:
-                        rate = inserted / (now - t_start) if now > t_start else 0
-                        log(f"    {inserted:,} rows, {lines_read:,} lines ({rate:,.0f}/s)")
-                        last_report = now
-            if buf:
-                inserted += pg_store.copy_rows(cur, "ros2_trace", cols, buf)
+            else:
+                # parallel parse: blocks of lines → worker pool (ordered) → COPY text assembled here
+                import multiprocessing
+                log(f"  ros2_trace: parallel parse with {workers} workers")
+                BLOCK = 20_000
+
+                def blocks():
+                    blk = []
+                    for line in proc.stdout:
+                        blk.append(line)
+                        if len(blk) >= BLOCK:
+                            yield (blk, session_id); blk = []
+                    if blk:
+                        yield (blk, session_id)
+                out = io.StringIO(); n_buf = 0
+                with multiprocessing.Pool(workers) as pool:
+                    for parsed in pool.imap(_parse_block, blocks(), chunksize=1):
+                        lines_read += BLOCK
+                        for day_sec, nanos, tail in parsed:
+                            if roll["last"] is not None and day_sec < roll["last"] - 43200:
+                                roll["extra_days"] += 1
+                            roll["last"] = day_sec
+                            ts_ns = (base_epoch + roll["extra_days"] * 86400 + day_sec) * 1_000_000_000 + nanos
+                            out.write(f"{ts_ns}\t{tail}\n"); n_buf += 1
+                        if n_buf >= BATCH_SIZE:
+                            out.seek(0); cur.copy_expert(f"COPY ros2_trace ({col_list}) FROM STDIN", out)
+                            inserted += n_buf; n_buf = 0; out = io.StringIO()
+                            now = time.time()
+                            if now - last_report >= 5.0:
+                                rate = inserted / (now - t_start) if now > t_start else 0
+                                log(f"    {inserted:,} rows ({rate:,.0f}/s, {workers} workers)")
+                                last_report = now
+                if n_buf:
+                    out.seek(0); cur.copy_expert(f"COPY ros2_trace ({col_list}) FROM STDIN", out); inserted += n_buf
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1243,7 +1320,14 @@ def ingest_session(session_dir: str, *,
     # Existing session → either clear or skip
     if pg_store.session_exists(session_id):
         if force:
-            log(f"session {session_id} exists, force=True → deleting")
+            log(f"session {session_id} exists, force=True → deleting (incl. cached gantt_spans/gantt_meta)")
+            try:
+                with pg_store.get_cursor() as (_c, _cur):
+                    _cur.execute("DELETE FROM gantt_meta WHERE session_id=%s", (session_id,))
+                    _cur.execute("DELETE FROM gantt_spans WHERE session_id=%s", (session_id,))
+                    _c.commit()
+            except Exception as _e:  # noqa: BLE001
+                log(f"  gantt cache cleanup skipped: {_e}")
             pg_store.delete_session(session_id)
         else:
             log(f"session {session_id} already exists in PG. Use --force to re-ingest.")
