@@ -1,0 +1,241 @@
+digraph fig3b {
+	graph [bb="0,0,1217,512",
+		bgcolor=white,
+		fontname=Helvetica,
+		fontsize=14,
+		newrank=true,
+		nodesep=0.6,
+		rankdir=LR,
+		ranksep=0.7,
+		splines=true
+	];
+	node [color="#555555",
+		fontname=Helvetica,
+		fontsize=16,
+		label="\N",
+		margin="0.10,0.05",
+		penwidth=1,
+		shape=box,
+		style="filled,rounded"
+	];
+	edge [arrowsize=0.8,
+		color="#222222",
+		fontname=Helvetica,
+		fontsize=13,
+		penwidth=1.3
+	];
+	{
+		graph [rank=same];
+		out_sf	[fillcolor="#F9E79F",
+			height=0.5,
+			label="sub single_frame cloud",
+			pos="1084.5,235",
+			width=2.8194];
+		out_map	[fillcolor="#F9E79F",
+			height=0.5,
+			label="sub occupancy map",
+			pos="1084.5,156",
+			width=2.4722];
+		aeb_sub	[fillcolor="#F9E79F",
+			height=0.5,
+			label="sub obstacle cloud (polled)",
+			pos="1084.5,318",
+			width=3.2361];
+		aeb_tmr	[fillcolor="#AED6F1",
+			height=0.5,
+			label="tmr 100 ms",
+			pos="1084.5,440",
+			width=1.5139];
+	}
+	{
+		graph [rank=same];
+		crop	[fillcolor="#F9E79F",
+			height=0.5,
+			label="sub concatenated cloud",
+			pos="665,400",
+			width=2.9028];
+		ground	[fillcolor="#F9E79F",
+			height=0.5,
+			label="sub range_cropped cloud",
+			pos="665,278",
+			width=3.0556];
+		ogm_pc	[color="#d62728",
+			fillcolor="#F9E79F",
+			height=0.5,
+			label="sub concatenated cloud",
+			penwidth=2.4,
+			pos="665,156",
+			width=2.9028];
+		ogm_sf	[color="#d62728",
+			fillcolor="#F9E79F",
+			height=0.5,
+			label="sub single_frame cloud",
+			penwidth=2.4,
+			pos="665,34",
+			width=2.8194];
+	}
+	{
+		graph [rank=min];
+		c_left	[fillcolor="#F9E79F",
+			height=0.5,
+			label="sub left cloud",
+			pos="89.5,278",
+			width=1.7222];
+		c_right	[fillcolor="#F9E79F",
+			height=0.5,
+			label="sub right cloud",
+			pos="89.5,357",
+			width=1.9028];
+		c_tmr	[fillcolor="#AED6F1",
+			height=0.5,
+			label="tmr 200 ms (x3)",
+			pos="89.5,199",
+			width=2.0417];
+	}
+	subgraph cluster_concat {
+		graph [bb="8,173,371,421",
+			color="#999999",
+			fontcolor="#666666",
+			label="concatenate_data\n(/sensing/lidar)",
+			lheight=0.42,
+			lp="189.5,402",
+			lwidth=1.71,
+			style="rounded,dashed"
+		];
+		c_top	[fillcolor="#F9E79F",
+			height=0.5,
+			label="sub top cloud",
+			pos="300.5,278",
+			width=1.7361];
+		c_left;
+		c_left -> c_top	[color="#1f77b4",
+			dir=none,
+			label=join,
+			lp="200.5,285",
+			penwidth=1.8,
+			pos="151.51,278 178.62,278 210.48,278 237.69,278",
+			style=dotted];
+		c_right;
+		c_right -> c_top	[color="#1f77b4",
+			dir=none,
+			penwidth=1.8,
+			pos="138.19,338.97 172.16,326.13 217.65,308.94 251.66,296.08",
+			style=dotted];
+		c_tmr;
+		c_tmr -> c_top	[color="#1f77b4",
+			dir=none,
+			penwidth=1.8,
+			pos="138.19,217.03 172.16,229.87 217.65,247.06 251.66,259.92",
+			style=dotted];
+	}
+	subgraph cluster_crop {
+		graph [bb="552.5,374,777.5,449",
+			color="#444444",
+			label=crop_box_filter,
+			lheight=0.21,
+			lp="665,437.5",
+			lwidth=1.42,
+			style=rounded
+		];
+		crop;
+	}
+	subgraph cluster_ground {
+		graph [bb="547,252,783,327",
+			color="#444444",
+			label=common_ground_filter,
+			lheight=0.21,
+			lp="665,315.5",
+			lwidth=2.17,
+			style=rounded
+		];
+		ground;
+	}
+	subgraph cluster_ogm {
+		graph [bb="537.5,8,793.5,220",
+			color="#999999",
+			fontcolor="#666666",
+			label="occupancy_grid_map_node\n(/perception/occupancy_grid_map)",
+			lheight=0.42,
+			lp="665.5,201",
+			lwidth=3.33,
+			style="rounded,dashed"
+		];
+		ogm_pc;
+		ogm_sf;
+		ogm_pc -> ogm_sf	[color="#1f77b4",
+			constraint=false,
+			dir=none,
+			label=join,
+			lp="655,95",
+			penwidth=1.8,
+			pos="665,137.92 665,114.82 665,75.068 665,52.002",
+			style=dotted];
+	}
+	subgraph cluster_outlier {
+		graph [bb="953,130,1217,284",
+			color="#444444",
+			label=occupancy_grid_based_outlier_filter,
+			lheight=0.21,
+			lp="1085,272.5",
+			lwidth=3.44,
+			style=rounded
+		];
+		out_sf;
+		out_map;
+	}
+	subgraph cluster_aeb {
+		graph [bb="960,292,1209,504",
+			color="#999999",
+			fontcolor="#666666",
+			label="autonomous_emergency_braking\n(/control)",
+			lheight=0.42,
+			lp="1084.5,485",
+			lwidth=3.21,
+			style="rounded,dashed"
+		];
+		aeb_sub;
+		aeb_tmr;
+		aeb_sub -> aeb_tmr	[arrowhead=onormal,
+			color="#e07b00",
+			label="polled-msg\nage 108 ms",
+			lp="1067.5,379",
+			penwidth=1.8,
+			pos="e,1084.5,421.92 1084.5,336 1084.5,356.54 1084.5,390.33 1084.5,413.79",
+			style=dashed];
+	}
+	c_top -> crop	[label="concatenated cloud",
+		lp="454.5,322",
+		pos="e,614.9,381.9 363.01,276.41 409.52,277.9 473.31,285.95 521,315 531.44,321.36 528.11,329.18 537.5,337 558.17,354.22 584.33,368.24 \
+607.5,378.65"];
+	c_top -> ogm_pc	[pos="e,627.93,174.11 363.34,264.5 407.77,254.11 468.78,238.45 521,220 555.25,207.9 592.69,191 620.67,177.61"];
+	c_left -> crop	[pos="e,608.01,418.1 135.75,296.19 145.8,301.94 155.64,309.16 163,318 185.48,345 159.65,372.25 188,393 310.23,482.47 501.44,447.42 600.19,\
+420.28"];
+	c_left -> ogm_pc	[pos="e,560.25,173.74 151.6,260.33 178.05,252.97 209.44,244.61 238,238 344.02,213.46 466.07,190.5 552.28,175.15"];
+	c_tmr -> crop	[pos="e,560.38,407.88 135.81,217.03 145.74,222.6 155.51,229.55 163,238 183.25,260.86 165.74,281.09 188,302 285.55,393.62 444.96,409.33 \
+552.11,408.02"];
+	c_tmr -> ogm_pc	[pos="e,560.4,147.53 129.95,180.97 147.36,173.92 168.31,166.67 188,163 311.09,140.07 455.18,141.82 552.32,147.08"];
+	crop -> ground	[constraint=false,
+		label="range_cropped cloud",
+		lp="655,339",
+		pos="e,665,296 665,381.92 665,361.35 665,327.56 665,304.13"];
+	ground -> ogm_pc	[constraint=false,
+		pos="e,665,174.11 665,259.74 665,233.87 665,208 665,182.14",
+		style=invis];
+	ground -> ogm_sf	[constraint=false,
+		pos="e,581.92,52.02 554.89,267.86 516.73,258.44 477.67,240.89 454.25,208.5 435.76,182.93 437.56,164.28 454.25,137.5 480.64,95.146 529.98,\
+69.631 574.29,54.536"];
+	ground -> out_sf	[label="single_frame cloud",
+		lp="873,270",
+		pos="e,982.86,245.37 775.15,266.76 836.65,260.42 913.23,252.54 974.68,246.21"];
+	ogm_pc -> out_map	[label="occupancy map\nhop 0.7 ms",
+		lp="873,170",
+		pos="e,995.48,156 769.74,156 836.32,156 922.18,156 987.24,156"];
+	ogm_sf -> out_map	[pos="e,1021.6,137.92 727.6,52.002 803.92,74.302 933.62,112.2 1013.6,135.57"];
+	out_map -> aeb_sub	[constraint=false,
+		head_lp="939.05,334.44",
+		headlabel="obstacle cloud\nhop 0.2 ms",
+		labelangle=-35,
+		labeldistance=3.2,
+		pos="e,967.97,320.75 995.29,157.72 951.16,163.66 901.44,179.11 873.25,216.5 858.27,236.37 858.11,252.74 873.25,272.5 893.95,299.52 926.51,\
+313.1 959.93,319.38"];
+}

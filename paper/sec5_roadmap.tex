@@ -2,9 +2,9 @@
 \section{Roadmap}
 \label{sec:roadmap}
 
-The anomaly of Table~\ref{tab:occgrid}---a callback whose typical cost falls
-under tracing while its worst case grows fivefold---needs its root cause
-established and mitigated. On the model side we aim to extend FISH towards
+What the occupancy row of Table~\ref{tab:overhead-aw} measures is queueing on
+the accelerator, which the model exposes but does not yet bound; carrying the
+device through to the analysis as a shared resource is the next step. On the model side we aim to extend FISH towards
 ARM-based SoC devices and extract task models out of functioning cyber-physical
 systems; LTTng, ROS~2 and \texttt{nsys} are all available there, so this is more
 labour than research. GPU profiling should become lighter: injecting CUPTI in

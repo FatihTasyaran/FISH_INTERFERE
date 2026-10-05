@@ -1,0 +1,59 @@
+digraph fig3b {
+  rankdir=LR; newrank=true; nodesep=0.12; ranksep=0.35; splines=true;
+  graph [fontname="Helvetica" fontsize=10 bgcolor="white"];
+  node  [shape=box style="filled,rounded" fontname="Helvetica" fontsize=9 color="#555555" penwidth=1 margin="0.08,0.04"];
+  edge  [fontname="Helvetica" fontsize=8 color="#222222" penwidth=1.2 arrowsize=0.7];
+  subgraph cluster_concat { label="concatenate_data  (/sensing/lidar)"; style="rounded,dashed" color="#999999" fontcolor="#666666"; fontsize=9;
+    c_top [label="sub top cloud" fillcolor="#F9E79F"];
+    c_left [label="sub left cloud" fillcolor="#F9E79F"];
+    c_right [label="sub right cloud" fillcolor="#F9E79F"];
+    c_tmr [label="tmr 200 ms (x3)" fillcolor="#AED6F1"];
+    c_left -> c_top [style=dotted color="#1f77b4" dir=none penwidth=1.4 label="join"];
+    c_right -> c_top [style=dotted color="#1f77b4" dir=none penwidth=1.4];
+    c_tmr -> c_top [style=dotted color="#1f77b4" dir=none penwidth=1.4];
+  }
+  subgraph cluster_crop { label="crop_box_filter"; style="rounded" color="#444444"; fontsize=9;
+    crop [label="sub concatenated cloud" fillcolor="#F9E79F"];
+  }
+  subgraph cluster_ground { label="common_ground_filter"; style="rounded" color="#444444"; fontsize=9;
+    ground [label="sub range_cropped cloud" fillcolor="#F9E79F"];
+  }
+  subgraph cluster_ogm { label="occupancy_grid_map_node  (/perception/occupancy_grid_map)"; style="rounded,dashed" color="#999999" fontcolor="#666666"; fontsize=9;
+    ogm_pc [label="sub concatenated cloud" fillcolor="#F9E79F" color="#d62728" penwidth=2.2];
+    ogm_sf [label="sub single_frame cloud" fillcolor="#F9E79F" color="#d62728" penwidth=2.2];
+    ogm_pc -> ogm_sf [style=dotted color="#1f77b4" dir=none penwidth=1.4 label="join"];
+  }
+  subgraph cluster_outlier { label="occupancy_grid_based_outlier_filter"; style="rounded" color="#444444"; fontsize=9;
+    out_sf [label="sub single_frame cloud" fillcolor="#F9E79F"];
+    out_map [label="sub occupancy map" fillcolor="#F9E79F"];
+  }
+  subgraph cluster_aeb { label="autonomous_emergency_braking  (/control)"; style="rounded,dashed" color="#999999" fontcolor="#666666"; fontsize=9;
+    aeb_sub [label="sub obstacle cloud\n(polled)" fillcolor="#F9E79F"];
+    aeb_tmr [label="tmr 100 ms" fillcolor="#AED6F1"];
+    aeb_sub -> aeb_tmr [style=dashed color="#e07b00" penwidth=1.6 arrowhead=onormal label="polled-msg\nage 108 ms"];
+  }
+  c_top -> crop [label="concatenated cloud"];
+  c_top -> ogm_pc;
+  c_left -> crop [label=""];
+  c_left -> ogm_pc;
+  c_tmr -> crop [label=""];
+  c_tmr -> ogm_pc;
+  crop -> ground [label="range_cropped cloud"];
+  ground -> out_sf [label="single_frame cloud"];
+  ground -> ogm_sf;
+  ogm_pc -> out_map [label="occupancy map\nhop 0.7 ms"];
+  ogm_sf -> out_map;
+  out_map -> aeb_sub [label="obstacle cloud\nhop 0.2 ms"];
+  legend [shape=box style="filled" fillcolor="white" color="#999999" margin=0.04 label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="2" CELLPADDING="2">
+<TR><TD BGCOLOR="#F9E79F" WIDTH="18"></TD><TD ALIGN="LEFT">sub</TD>
+    <TD BGCOLOR="#AED6F1" WIDTH="18"></TD><TD ALIGN="LEFT">tmr</TD>
+    <TD BORDER="2" COLOR="#d62728" WIDTH="18"></TD><TD ALIGN="LEFT">submits GPU work</TD>
+    <TD BORDER="1" COLOR="#999999" STYLE="dashed" WIDTH="18"></TD><TD ALIGN="LEFT">other namespace</TD></TR>
+<TR><TD><FONT COLOR="#222222">&#9472;&#9472;&#9654;</FONT></TD><TD ALIGN="LEFT">sub</TD>
+    <TD><FONT COLOR="#1f77b4">&#8230;&#8230;&#8230;</FONT></TD><TD ALIGN="LEFT">join</TD>
+    <TD><FONT COLOR="#e07b00">&#8211; &#8211; &#9655;</FONT></TD><TD ALIGN="LEFT">polled-msg</TD>
+    <TD></TD><TD ALIGN="LEFT">hop / age: measured p50</TD></TR>
+</TABLE>>];
+  {rank=sink; legend;}
+}

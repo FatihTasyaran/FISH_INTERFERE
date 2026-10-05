@@ -1,0 +1,27 @@
+digraph legend {
+	graph [bb="0,0,346,296",
+		bgcolor=white
+	];
+	node [label="\N"];
+	legend	[color="#999999",
+		fillcolor=white,
+		fontsize=20,
+		height=4.1111,
+		label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="3" CELLPADDING="3">
+<TR><TD COLSPAN="2" ALIGN="LEFT"><B>Legend</B></TD></TR>
+<TR><TD BGCOLOR="#F9E79F" WIDTH="40" HEIGHT="24"></TD><TD ALIGN="LEFT">sub</TD></TR>
+<TR><TD BGCOLOR="#AED6F1" WIDTH="40" HEIGHT="24"></TD><TD ALIGN="LEFT">tmr</TD></TR>
+<TR><TD BORDER="3" COLOR="#d62728" WIDTH="40" HEIGHT="24"></TD><TD ALIGN="LEFT">submits GPU work</TD></TR>
+<TR><TD BORDER="1" COLOR="#999999" STYLE="dashed" WIDTH="40" HEIGHT="24"></TD><TD ALIGN="LEFT">other namespace</TD></TR>
+<TR><TD><FONT COLOR="#222222" POINT-SIZE="22">&#9472;&#9472;&#9654;</FONT></TD><TD ALIGN="LEFT">sub</TD></TR>
+<TR><TD><FONT COLOR="#1f77b4" POINT-SIZE="22">&#8230;&#8230;&#8230;</FONT></TD><TD ALIGN="LEFT">join</TD></TR>
+<TR><TD><FONT COLOR="#e07b00" POINT-SIZE="22">&#8211; &#8211; &#9655;</FONT></TD><TD ALIGN="LEFT">polled-msg</TD></TR>
+<TR><TD></TD><TD ALIGN="LEFT">hop / age: measured p50</TD></TR>
+</TABLE>>,
+		margin=0.06,
+		pos="173,148",
+		shape=box,
+		style=filled,
+		width=4.8056];
+}

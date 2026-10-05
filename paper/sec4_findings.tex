@@ -1,96 +1,70 @@
 \section{Preliminary Findings}
 \label{sec:findings}
+% 2026-09-14: numbers from the final campaign overhead_aw_20260913_025626
+% (fishwait11 image, optimized overlay, per_instance + kernel sched_switch);
+% model counts from session fish_20260913_014334 (LTTng+nsys #1): 5942 sub + 70 dep + 16 join + 72 polled-msg = 6100
+% (the 99 state-inferred edges are no longer part of the paper's model).
+% Setup paragraph transcribed from WIP__FISH-49.pdf — diff against Overleaf.
 
 \noindent
-\textbf{Model:} From the replay FISH extracts one host, 88 executors, 241 nodes,
-3824 entities and 3832 callbacks, joined by 6179 callback-layer interactions.
-The model is served by FISH-eye, a browser-based viewer that renders it at any
-granularity the expansion operator allows (Fig.~\ref{fig:screens}): from the
-namespace grouping of the whole application down to the GPU work of a single
-callback.
+\textbf{Setup:}
+Autoware Universe runs on ROS~2 Humble on an Intel i7-12700H with six
+performance and eight efficiency cores and an NVIDIA RTX~A1000. The input is
+Autoware's Shinjuku map and sample rosbag, thirty seconds of recorded driving
+replayed at half speed. Turbo and SMT are disabled so that frequency scaling and
+thermal throttling do not enter the comparison, and a cgroup pins the
+application to the six performance cores and the tracing daemons to six
+efficiency cores, since the scheduler would otherwise migrate callbacks onto
+efficiency cores and add noise. Each of the three modes, untraced, LTTng
+(\texttt{ros2\_tracing}'s 14 events plus 28 FISH events plus
+\texttt{sched\_switch}) and LTTng with \texttt{nsys}, is repeated three times,
+and every reported value is taken from the steady-state phase of
+Section~\ref{sec:method}. Out of the profiled session FISH generated an
+application model with 88 executors, 241 nodes and 3451 callbacks linked by
+6100 interactions on the callback level.
 
-% Autoware overhead, execution phase (2->3), campaign overhead_aw_20260909_002310
-% Table 1: upper line = mean over the three runs (delta vs baseline);
-%          lower line = their range.
-% Table 2: the occupancy-grid distribution, pooled over each mode's three runs.
 \begin{table}[t]
 \centering
 \footnotesize
-\caption{What the instrumentation costs Autoware, on the values Autoware's own
-nodes report, in the steady state of a 30\,s rosbag replay: mean over three runs
-on the upper line, with the delta against the baseline, and their range over the
-three runs on the lower line. The last two rows are the diagnostics that would
-report a failure: no centerpoint cycle was missed and no topic state monitor
-left \textsc{ok} in any of the nine runs.}
+\caption{Overhead added with profiling on Autoware, the values taken from
+Autoware's own nodes reporting on \texttt{/diagnostics}, in the steady state of
+a 30\,s rosbag replay: mean over three runs with the delta against the
+baseline. Processing time is the mean over the nodes that report one,
+concatenation counted over complete point-cloud sets. Active-chain latency
+restricts the end-to-end latency to the chain of nodes that are active, and
+measured, during the rosbag replay. The last two rows are the diagnostics that
+would report a failure.}
 \label{tab:overhead-aw}
 \begin{tabular}{@{}lrrr@{}}
 \hline
  & baseline & LTTng & LTTng+nsys \\ \hline
-\begin{tabular}[c]{@{}l@{}}centerpoint\\ (GPU) [ms]\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}23.9\\ \scriptsize 23.7--24.2\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}25.4 (+6.3\%)\\ \scriptsize 25.3--25.5\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}26.2 (+9.8\%)\\ \scriptsize 25.8--26.8\end{tabular} \\ \hline
-\begin{tabular}[c]{@{}l@{}}concatenate data\\ (GPU) [ms]\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}14.7\\ \scriptsize 11.5--16.8\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}18.2 (+23.4\%)\\ \scriptsize 16.4--19.8\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}18.9 (+28.5\%)\\ \scriptsize 18.6--19.3\end{tabular} \\ \hline
-\begin{tabular}[c]{@{}l@{}}occupancy grid\\ (GPU) [ms]\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}3.95\\ \scriptsize 3.94--3.96\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}3.35 (--15.2\%)\\ \scriptsize 3.23--3.41\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}3.59 (--9.0\%)\\ \scriptsize 3.52--3.64\end{tabular} \\ \hline
-\begin{tabular}[c]{@{}l@{}}detected objects\\ rate [Hz]\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}9.94\\ \scriptsize 9.91--9.97\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}9.98 (+0.4\%)\\ \scriptsize 9.81--10.19\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}9.99 (+0.6\%)\\ \scriptsize 9.89--10.05\end{tabular} \\ \hline
-\begin{tabular}[c]{@{}l@{}}end-to-end\\ latency [ms]\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}408\\ \scriptsize 406--410\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}444 (+8.7\%)\\ \scriptsize 441--446\end{tabular}
-  & \begin{tabular}[c]{@{}r@{}}452 (+10.6\%)\\ \scriptsize 442--461\end{tabular} \\ \hline
-\begin{tabular}[c]{@{}l@{}}\textbf{centerpoint missed}\\ \textbf{cycles [ms]}\end{tabular} & \textbf{0} & \textbf{0} & \textbf{0} \\ \hline
-\begin{tabular}[c]{@{}l@{}}\textbf{topic state monitor}\\ \textbf{violations}\end{tabular} & \textbf{0} & \textbf{0} & \textbf{0} \\ \hline
-\end{tabular}
-\end{table}
-
-\begin{table}[t]
-\centering
-\footnotesize
-\caption{The occupancy-grid callback, pooled over the three runs of each mode in
-the steady state.}
-\label{tab:occgrid}
-\begin{tabular}{@{}lrrrrrrr@{}}
-\hline
- & $n$ & min & p10 & \textbf{p50} & p90 & p99 & max \\ \hline
-baseline    & 638 & 2.36 & 2.81 & \textbf{3.69} & 5.00 &  8.86 & 10.65 \\ \hline
-LTTng       & 562 & 2.32 & 2.55 & \textbf{2.75} & 5.08 &  9.80 & 20.80 \\ \hline
-LTTng+nsys  & 556 & 2.45 & 2.58 & \textbf{2.79} & 5.76 & 10.23 & 50.85 \\ \hline
+CPU node processing time [ms] &  2.79 &  3.06 (+9.5\%)  &  3.09 (+10.6\%) \\
+GPU node processing time [ms] & 13.95 & 13.99 (+0.3\%)  & 14.21 (+1.9\%)  \\
+end-to-end latency [ms]       &   412 &   419 (+1.7\%)  &   423 (+2.8\%)  \\
+active-chain latency [ms]     &   154 &   161 (+4.6\%)  &   166 (+7.6\%)  \\
+\textbf{centerpoint missed cycles} & \textbf{0} & \textbf{0} & \textbf{0} \\
+\textbf{topic-rate violations}     & \textbf{0} & \textbf{0} & \textbf{0} \\ \hline
 \end{tabular}
 \end{table}
 
 \noindent
-\textbf{Setup:}
-Autoware Universe runs on ROS~2 Humble on an Intel i7-12700H --- six
-performance and eight efficiency cores --- with an NVIDIA RTX~A1000. The input
-is Autoware's sample map and sample rosbag, thirty seconds of recorded driving
-replayed at half speed. Turbo and SMT are disabled so that frequency scaling and
-thermal drift do not enter the comparison, and a cgroup gives the six
-performance cores to the application and six efficiency cores to the tracing
-daemons: on a hybrid processor the scheduler is otherwise free to migrate a
-callback onto an efficiency core, and the observer would compete for the very
-cores it is measuring. Each of the three modes --- untraced, LTTng, LTTng with
-\texttt{nsys} --- is repeated three times, and every value reported here is
-taken from the steady-state phase of Section~\ref{sec:method}.
-
-\noindent
-\textbf{Cost:}
-Table~\ref{tab:overhead-aw} reports what the instrumentation costs on the values
-Autoware's own nodes publish. End-to-end latency grows by 8.7\,\% under LTTng
-and 10.6\,\% with GPU profiling on top, and the ranges over the three runs do
-not overlap the baseline, so the difference is not run-to-run noise. The GPU
-inference the model exists to describe is the least affected. What does not move
-is the work done: the perception pipeline keeps producing detected objects at
-the same rate, no centerpoint cycle is missed, and no topic state monitor leaves
-\textsc{ok} in any of the nine runs, so the added latency stays below what
-Autoware's own supervision treats as a fault. Run without the core partition the
-same two diagnostics stay at zero and end-to-end latency costs 7.7\,\% and
-7.9\,\% instead, the application being free to spread over every core it finds.
-Table~\ref{tab:occgrid} gives the distribution behind the one metric that falls.
+\textbf{Overhead added with profiling:}
+The untraced baseline carries no trace, so the only per-node values comparable
+across the three modes are the processing times that Autoware's nodes measure
+themselves, with a stopwatch inside their own callback, and report on
+\texttt{/diagnostics}. Nineteen of the 241 nodes do: both GPU nodes, centerpoint
+and the occupancy grid, and 17 CPU nodes, the fourteen crop-box,
+distortion-corrector and ring-outlier filters of the three lidars, the
+point-cloud concatenation, NDT scan matching and map-based prediction;
+Table~\ref{tab:overhead-aw} averages each class. End-to-end latency grows by 1.7\,\%
+under LTTng and 2.8\,\% with GPU profiling on top. In our experiments we find
+that tracing changes how long the application takes, not what it does: the
+perception pipeline keeps producing detected objects at the same rate
+(9.9\,Hz in every mode), no centerpoint cycle is missed, and no topic state
+monitor leaves \textsc{ok} in any of the nine runs, meaning the added latency
+stays below what Autoware's own supervision treats as a fault. The GPU nodes
+are the least affected, and one of them, the occupancy grid, even gets faster
+(3.64 to 3.38\,ms): its callback ends in a blocking device-to-host copy that
+waits behind the centerpoint inference sharing the GPU, so the time it reports
+measures how the two callbacks collide on the accelerator, which tracing
+perturbs, rather than the cost of observing it.

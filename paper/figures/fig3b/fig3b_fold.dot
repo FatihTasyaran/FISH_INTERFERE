@@ -1,0 +1,49 @@
+digraph fig3b {
+  rankdir=LR; newrank=true; nodesep=0.25; ranksep=0.5; splines=true;
+  graph [fontname="Helvetica" fontsize=12 bgcolor="white"];
+  node  [shape=box style="filled,rounded" fontname="Helvetica" fontsize=13 color="#555555" penwidth=1 margin="0.10,0.05"];
+  edge  [fontname="Helvetica" fontsize=11 color="#222222" penwidth=1.3 arrowsize=0.8];
+  ext_in [shape=cds style=filled fillcolor="#e6e6e6" color="#999999" fontcolor="#333333" label="concatenate_data\n(/sensing/lidar)"];
+  subgraph cluster_crop { label="crop_box_filter"; style="rounded" color="#444444";
+    crop [label="sub concatenated cloud" fillcolor="#F9E79F"];
+  }
+  subgraph cluster_ground { label="common_ground_filter"; style="rounded" color="#444444";
+    ground [label="sub range_cropped cloud" fillcolor="#F9E79F"];
+  }
+  subgraph cluster_ogm { label="occupancy_grid_map_node\n(/perception/occupancy_grid_map)"; style="rounded,dashed" color="#999999" fontcolor="#666666";
+    ogm_pc [label="sub concatenated cloud" fillcolor="#F9E79F" color="#d62728" penwidth=2.4];
+    ogm_sf [label="sub single_frame cloud" fillcolor="#F9E79F" color="#d62728" penwidth=2.4];
+    ogm_pc -> ogm_sf [style=dotted color="#1f77b4" dir=none penwidth=1.8 label="join"];
+  }
+  subgraph cluster_outlier { label="occupancy_grid_based_outlier_filter"; style="rounded" color="#444444";
+    out_sf [label="sub single_frame cloud" fillcolor="#F9E79F"];
+    out_map [label="sub occupancy map" fillcolor="#F9E79F"];
+  }
+  subgraph cluster_aeb { label="autonomous_emergency_braking\n(/control)"; style="rounded,dashed" color="#999999" fontcolor="#666666";
+    aeb_sub [label="sub obstacle cloud (polled)" fillcolor="#F9E79F"];
+    aeb_tmr [label="tmr 100 ms" fillcolor="#AED6F1"];
+    aeb_sub -> aeb_tmr [style=dashed color="#e07b00" penwidth=1.8 arrowhead=onormal label="polled-msg\nage 108 ms"];
+  }
+  ext_in -> crop [label="concatenated cloud"];
+  ext_in -> ogm_pc;
+  crop -> ground [label="range_cropped cloud"];
+  ground -> out_sf [label="single_frame cloud"];
+  ground -> ogm_sf;
+  ogm_pc -> out_map [label="occupancy map\nhop 0.7 ms"];
+  ogm_sf -> out_map;
+  out_map -> aeb_sub [label="obstacle cloud\nhop 0.2 ms" constraint=false];
+  {rank=same; out_sf; out_map; aeb_sub; aeb_tmr;}
+  legend [shape=box style="filled" fillcolor="white" color="#999999" margin=0.06 label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="3" CELLPADDING="3">
+<TR><TD COLSPAN="2" ALIGN="LEFT"><B>Legend</B></TD></TR>
+<TR><TD BGCOLOR="#F9E79F" WIDTH="26" HEIGHT="16"></TD><TD ALIGN="LEFT">sub</TD></TR>
+<TR><TD BGCOLOR="#AED6F1" WIDTH="26" HEIGHT="16"></TD><TD ALIGN="LEFT">tmr</TD></TR>
+<TR><TD BORDER="3" COLOR="#d62728" WIDTH="26" HEIGHT="16"></TD><TD ALIGN="LEFT">submits GPU work</TD></TR>
+<TR><TD BORDER="1" COLOR="#999999" STYLE="dashed" WIDTH="26" HEIGHT="16"></TD><TD ALIGN="LEFT">other namespace</TD></TR>
+<TR><TD><FONT COLOR="#222222" POINT-SIZE="15">&#9472;&#9472;&#9654;</FONT></TD><TD ALIGN="LEFT">sub</TD></TR>
+<TR><TD><FONT COLOR="#1f77b4" POINT-SIZE="15">&#8230;&#8230;&#8230;</FONT></TD><TD ALIGN="LEFT">join</TD></TR>
+<TR><TD><FONT COLOR="#e07b00" POINT-SIZE="15">&#8211; &#8211; &#9655;</FONT></TD><TD ALIGN="LEFT">polled-msg</TD></TR>
+<TR><TD></TD><TD ALIGN="LEFT">hop / age: measured p50</TD></TR>
+</TABLE>> fontsize=13];
+  {rank=min; legend; ext_in;}
+}

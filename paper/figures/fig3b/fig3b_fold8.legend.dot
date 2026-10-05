@@ -1,0 +1,15 @@
+digraph legend {
+  graph [bgcolor="white"];
+  legend [shape=box style="filled" fillcolor="white" color="#999999" margin=0.05 label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="2" CELLPADDING="3">
+<TR><TD COLSPAN="4" ALIGN="LEFT"><B>Legend</B></TD></TR>
+<TR><TD BGCOLOR="#F9E79F" WIDTH="34" HEIGHT="20"></TD><TD ALIGN="LEFT">sub</TD>
+    <TD><FONT COLOR="#222222" POINT-SIZE="20">&#9472;&#9472;&#9654;</FONT></TD><TD ALIGN="LEFT">sub</TD></TR>
+<TR><TD BGCOLOR="#AED6F1" WIDTH="34" HEIGHT="20"></TD><TD ALIGN="LEFT">tmr</TD>
+    <TD><FONT COLOR="#1f77b4" POINT-SIZE="20">&#8230;&#8230;&#8230;</FONT></TD><TD ALIGN="LEFT">join</TD></TR>
+<TR><TD BORDER="3" COLOR="#d62728" WIDTH="34" HEIGHT="20"></TD><TD ALIGN="LEFT">submits GPU work</TD>
+    <TD><FONT COLOR="#e07b00" POINT-SIZE="20">&#8211; &#8211; &#9655;</FONT></TD><TD ALIGN="LEFT">polled-msg</TD></TR>
+<TR><TD BORDER="1" COLOR="#999999" STYLE="dashed" WIDTH="34" HEIGHT="20"></TD><TD ALIGN="LEFT">other namespace</TD>
+    <TD></TD><TD ALIGN="LEFT">hop / age: measured p50</TD></TR>
+</TABLE>> fontsize=18];
+}

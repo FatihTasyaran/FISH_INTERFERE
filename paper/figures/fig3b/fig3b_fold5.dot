@@ -1,0 +1,63 @@
+digraph fig3b {
+  rankdir=LR; newrank=true; nodesep=0.6; ranksep=0.7; splines=true;
+  graph [fontname="Helvetica" fontsize=14 bgcolor="white"];
+  node  [shape=box style="filled,rounded" fontname="Helvetica" fontsize=16 color="#555555" penwidth=1 margin="0.10,0.05"];
+  edge  [fontname="Helvetica" fontsize=13 color="#222222" penwidth=1.3 arrowsize=0.8];
+  subgraph cluster_concat { label="concatenate_data\n(/sensing/lidar)"; style="rounded,dashed" color="#999999" fontcolor="#666666";
+    c_top [label="sub top cloud" fillcolor="#F9E79F"];
+    c_left [label="sub left cloud" fillcolor="#F9E79F"];
+    c_right [label="sub right cloud" fillcolor="#F9E79F"];
+    c_tmr [label="tmr 200 ms (x3)" fillcolor="#AED6F1"];
+    c_left -> c_top [style=dotted color="#1f77b4" dir=none penwidth=1.8 label="join" constraint=false];
+    c_right -> c_top [style=dotted color="#1f77b4" dir=none penwidth=1.8 constraint=false];
+    c_tmr -> c_top [style=dotted color="#1f77b4" dir=none penwidth=1.8 constraint=false];
+  }
+  subgraph cluster_crop { label="crop_box_filter"; style="rounded" color="#444444";
+    crop [label="sub concatenated cloud" fillcolor="#F9E79F"];
+  }
+  subgraph cluster_ground { label="common_ground_filter"; style="rounded" color="#444444";
+    ground [label="sub range_cropped cloud" fillcolor="#F9E79F"];
+  }
+  subgraph cluster_ogm { label="occupancy_grid_map_node\n(/perception/occupancy_grid_map)"; style="rounded,dashed" color="#999999" fontcolor="#666666";
+    ogm_pc [label="sub concatenated cloud" fillcolor="#F9E79F" color="#d62728" penwidth=2.4];
+    ogm_sf [label="sub single_frame cloud" fillcolor="#F9E79F" color="#d62728" penwidth=2.4];
+    ogm_pc -> ogm_sf [style=dotted color="#1f77b4" dir=none penwidth=1.8 label="join" constraint=false];
+  }
+  subgraph cluster_outlier { label="occupancy_grid_based_outlier_filter"; style="rounded" color="#444444";
+    out_sf [label="sub single_frame cloud" fillcolor="#F9E79F"];
+    out_map [label="sub occupancy map" fillcolor="#F9E79F"];
+  }
+  subgraph cluster_aeb { label="autonomous_emergency_braking\n(/control)"; style="rounded,dashed" color="#999999" fontcolor="#666666";
+    aeb_sub [label="sub obstacle cloud (polled)" fillcolor="#F9E79F"];
+    aeb_tmr [label="tmr 100 ms" fillcolor="#AED6F1"];
+    aeb_sub -> aeb_tmr [style=dashed color="#e07b00" penwidth=1.8 arrowhead=onormal label="polled-msg\nage 108 ms"];
+  }
+  c_top -> crop [label="concatenated cloud"];
+  c_left -> crop;
+  c_tmr -> crop;
+  c_top -> ogm_pc;
+  c_left -> ogm_pc;
+  c_tmr -> ogm_pc;
+  crop -> ground [label="range_cropped cloud" constraint=false];
+  ground -> out_sf [label="single_frame cloud"];
+  ground -> ogm_sf [constraint=false];
+  ogm_pc -> out_map [label="occupancy map\nhop 0.7 ms"];
+  ogm_sf -> out_map;
+  out_map -> aeb_sub [xlabel="obstacle cloud\nhop 0.2 ms" constraint=false];
+  ground -> ogm_pc [style=invis constraint=false];
+  {rank=same; out_sf; out_map; aeb_sub; aeb_tmr;}
+  {rank=same; crop; ground; ogm_pc; ogm_sf;}
+  legend [shape=box style="filled" fillcolor="white" color="#999999" margin=0.06 label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="3" CELLPADDING="3">
+<TR><TD COLSPAN="2" ALIGN="LEFT"><B>Legend</B></TD></TR>
+<TR><TD BGCOLOR="#F9E79F" WIDTH="40" HEIGHT="24"></TD><TD ALIGN="LEFT">sub</TD></TR>
+<TR><TD BGCOLOR="#AED6F1" WIDTH="40" HEIGHT="24"></TD><TD ALIGN="LEFT">tmr</TD></TR>
+<TR><TD BORDER="3" COLOR="#d62728" WIDTH="40" HEIGHT="24"></TD><TD ALIGN="LEFT">submits GPU work</TD></TR>
+<TR><TD BORDER="1" COLOR="#999999" STYLE="dashed" WIDTH="40" HEIGHT="24"></TD><TD ALIGN="LEFT">other namespace</TD></TR>
+<TR><TD><FONT COLOR="#222222" POINT-SIZE="22">&#9472;&#9472;&#9654;</FONT></TD><TD ALIGN="LEFT">sub</TD></TR>
+<TR><TD><FONT COLOR="#1f77b4" POINT-SIZE="22">&#8230;&#8230;&#8230;</FONT></TD><TD ALIGN="LEFT">join</TD></TR>
+<TR><TD><FONT COLOR="#e07b00" POINT-SIZE="22">&#8211; &#8211; &#9655;</FONT></TD><TD ALIGN="LEFT">polled-msg</TD></TR>
+<TR><TD></TD><TD ALIGN="LEFT">hop / age: measured p50</TD></TR>
+</TABLE>> fontsize=20];
+  {rank=min; legend; c_top; c_left; c_right; c_tmr;}
+}
