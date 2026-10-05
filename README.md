@@ -313,14 +313,24 @@ python3 postprocess/graph_store.py export fish_<ts> __main__ \
 
 ## Citing FISH
 
-A paper is in preparation (mid-2026). Until publication, please cite
-the repository — see `CITATION.cff` (GitHub renders a "Cite this
-repository" button from it):
+If you use FISH in academic work, please cite the paper:
 
+> F. Taşyaran, G. Nelissen, and N. Meratnia, "Work-in-Progress: FISH –
+> Function-Level Inspection of Scheduling Hierarchies," in *IEEE
+> Real-Time Systems Symposium (RTSS)*, 2026 (to appear).
+
+```bibtex
+@inproceedings{tasyaran2026fish,
+  author    = {Ta{\c{s}}yaran, Fatih and Nelissen, Geoffrey and Meratnia, Nirvana},
+  title     = {Work-in-Progress: {FISH} -- Function-Level Inspection of Scheduling Hierarchies},
+  booktitle = {2026 IEEE Real-Time Systems Symposium (RTSS)},
+  year      = {2026},
+  note      = {To appear}
+}
 ```
-Tasyaran, F. (2026). FISH: Function-level Inspection of Scheduling
-Hierarchies. https://github.com/FatihTasyaran/FISH_INTERFERE
-```
+
+`CITATION.cff` carries the same entry (GitHub renders a "Cite this
+repository" button from it).
 
 ## License
 

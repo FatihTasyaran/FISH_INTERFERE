@@ -1,9 +1,8 @@
 cff-version: 1.2.0
 title: "FISH: Function-level Inspection of Scheduling Hierarchies"
 message: >-
-  If you use FISH in academic work, please cite it.
-  An accompanying paper is in preparation; until it appears,
-  please cite this repository.
+  If you use FISH in academic work, please cite the paper
+  given under preferred-citation.
 type: software
 authors:
   - family-names: Tasyaran
@@ -27,3 +26,17 @@ keywords:
   - gpu
 license: MIT
 version: 0.1.0-dev
+preferred-citation:
+  type: conference-paper
+  title: "Work-in-Progress: FISH – Function-Level Inspection of Scheduling Hierarchies"
+  authors:
+    - family-names: Taşyaran
+      given-names: Fatih
+    - family-names: Nelissen
+      given-names: Geoffrey
+    - family-names: Meratnia
+      given-names: Nirvana
+  collection-title: "2026 IEEE Real-Time Systems Symposium (RTSS)"
+  collection-type: proceedings
+  year: 2026
+  status: in-press
