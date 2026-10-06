@@ -316,14 +316,15 @@ python3 postprocess/graph_store.py export fish_<ts> __main__ \
 If you use FISH in academic work, please cite the paper:
 
 > F. Taşyaran, G. Nelissen, and N. Meratnia, "Work-in-Progress: FISH –
-> Function-Level Inspection of Scheduling Hierarchies," in *IEEE
-> Real-Time Systems Symposium (RTSS)*, 2026 (to appear).
+> Automatic Model Extraction for Heterogeneous ROS 2 Applications," in
+> *IEEE Real-Time Systems Symposium (RTSS), Brief Presentations*, 2026
+> (to appear).
 
 ```bibtex
 @inproceedings{tasyaran2026fish,
   author    = {Ta{\c{s}}yaran, Fatih and Nelissen, Geoffrey and Meratnia, Nirvana},
-  title     = {Work-in-Progress: {FISH} -- Function-Level Inspection of Scheduling Hierarchies},
-  booktitle = {2026 IEEE Real-Time Systems Symposium (RTSS)},
+  title     = {Work-in-Progress: {FISH} -- Automatic Model Extraction for Heterogeneous {ROS} 2 Applications},
+  booktitle = {2026 IEEE Real-Time Systems Symposium (RTSS), Brief Presentations},
   year      = {2026},
   note      = {To appear}
 }

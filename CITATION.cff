@@ -28,7 +28,7 @@ license: MIT
 version: 0.1.0-dev
 preferred-citation:
   type: conference-paper
-  title: "Work-in-Progress: FISH – Function-Level Inspection of Scheduling Hierarchies"
+  title: "Work-in-Progress: FISH – Automatic Model Extraction for Heterogeneous ROS 2 Applications"
   authors:
     - family-names: Taşyaran
       given-names: Fatih
@@ -36,7 +36,7 @@ preferred-citation:
       given-names: Geoffrey
     - family-names: Meratnia
       given-names: Nirvana
-  collection-title: "2026 IEEE Real-Time Systems Symposium (RTSS)"
+  collection-title: "2026 IEEE Real-Time Systems Symposium (RTSS), Brief Presentations"
   collection-type: proceedings
   year: 2026
   status: in-press
