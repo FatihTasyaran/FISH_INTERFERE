@@ -6,6 +6,9 @@ ros2:fish_rclcpp_intra_publish
 ros2:fish_rclcpp_intra_take
 ros2:fish_rcl_publish
 ros2:fish_dds_write
+# fastdds1 (2026-10-26): rmw_fastrtps sample identity (writer GUID + sequence number) at the write and at the take (+ reception timestamp)
+ros2:fish_rmw_write
+ros2:fish_rmw_take_id
 ros2:fish_tf_lookup
 ros2:fish_dds_rhc_store
 ros2:fish_rcl_wait_enter
@@ -31,3 +34,7 @@ agnocast:agnocast_take
 ros2:fish_mf_add
 ros2:fish_mf_signal
 ros2:fish_srv_request
+# fishwait27: node-internal container deposits / clears (generated LD_PRELOAD shim, FISH_CONTAINER_SHIM=1)
+ros2:fish_container_op
+# fishwait29 (2026-10-26): user-listed application methods (config/fish_method_probes.txt, FISH_METHOD_SHIM=1)
+ros2:fish_method

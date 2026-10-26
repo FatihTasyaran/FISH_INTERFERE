@@ -51,6 +51,10 @@ fi
 
 # --- Tracing tiers (config/tiers/*.txt → $FISH_ROOT/tiers) ---
 mkdir -p $FISH_ROOT/tiers && cp "$CONFIG_DIR"/tiers/*.txt $FISH_ROOT/tiers/ 2>/dev/null || true
+# --- Method probe list + generator (config/fish_method_probes.txt, docker/overlay_patches/gen_method_shim.py): the ros2
+#     wrapper regenerates libfish_method_shim.so from them at launch when FISH_METHOD_SHIM=1 ---
+cp "$CONFIG_DIR/fish_method_probes.txt" $FISH_ROOT/ 2>/dev/null || true
+cp "$REPO_ROOT/docker/overlay_patches/gen_method_shim.py" $FISH_ROOT/ 2>/dev/null || true
 
 # --- Copy DDS vendor configs (e.g. cyclonedds_autoware.xml) ---
 # Referenced from fish_settings.ini [ros] cyclonedds_uri; the ros2 wrapper
@@ -130,6 +134,9 @@ PYPI
         echo "[FISH] tracing tier \$TIER → per-instance events: \${EXTRA_EVENTS:-none}"
         echo "\$TIER" > "\$SESSION_DIR/fishlog/tier.txt"
         echo "\$EXTRA_EVENTS" > "\$SESSION_DIR/fishlog/extra_events.txt"
+        # fishwait27+: the container shim's symbol table (sym index -> container / element type), for the postprocessor
+        cp /root/trace_overlay_ws/install/tracetools/lib/fish_container_shim.json "\$SESSION_DIR/fishlog/" 2>/dev/null || true
+        cp /root/trace_overlay_ws/install/tracetools/lib/fish_method_shim.json "\$SESSION_DIR/fishlog/" 2>/dev/null || true
         [[ "\$EXTRA_EVENTS" == *rmw_take* ]] && echo "filter ros2:rmw_take: taken == 1" >> "\$SESSION_DIR/fishlog/extra_events.txt"
 
         if [[ -n "\$EXTRA_EVENTS" ]]; then
@@ -676,6 +683,37 @@ PYCDDS
             echo "[FISH] lock shim preloaded: \$LSHIM"
         else
             echo "[FISH] NOTE: libfish_lock_shim.so not found (image < fishwait24) — application locks not traced"
+        fi
+    fi
+    # FISH_CONTAINER_SHIM=1 (default 0, 2026-10-25, image >= fishwait27): preload libfish_container_shim.so — node-internal
+    # message flow through std::deque / map / unordered_map members (ros2:fish_container_op, tiers default/max).
+    if [[ "\${FISH_CONTAINER_SHIM:-0}" == 1 ]] && [[ "\$1" == "launch" ]]; then
+        CSHIM=\$(find /root/trace_overlay_ws/install/tracetools/lib -name libfish_container_shim.so 2>/dev/null | head -1)
+        if [[ -n "\$CSHIM" ]]; then
+            export LD_PRELOAD="\$CSHIM\${LD_PRELOAD:+:\$LD_PRELOAD}"
+            echo "[FISH] container shim preloaded: \$CSHIM"
+        else
+            echo "[FISH] NOTE: libfish_container_shim.so not found (image < fishwait27) — node-internal container flow not traced"
+        fi
+    fi
+    # FISH_METHOD_SHIM=1 (default 0, 2026-10-26, image >= fishwait29): preload libfish_method_shim.so — the user-listed
+    # application methods of config/fish_method_probes.txt (ros2:fish_method). The shim is regenerated here from the
+    # config that install_fish.sh copied, so the list can change without an image rebuild (gcc + nm in the image).
+    if [[ "\${FISH_METHOD_SHIM:-0}" == 1 ]] && [[ "\$1" == "launch" ]]; then
+        T=/root/trace_overlay_ws/install/tracetools
+        if grep -q fish_method \$T/include/tracetools/tracetools/tracetools.h 2>/dev/null && [[ -f \$FISH_ROOT/fish_method_probes.txt ]]; then
+            python3 \$FISH_ROOT/gen_method_shim.py --config \$FISH_ROOT/fish_method_probes.txt --out \$T/lib --tracetools \$T > /tmp/fish_method_shim_gen.log 2>&1 \\
+                && echo "[FISH] method shim regenerated: \$(grep -m1 'method probe' /tmp/fish_method_shim_gen.log)" || echo "[FISH] WARNING: method shim generation failed (see /tmp/fish_method_shim_gen.log)"
+            # the symbol table the postprocessor reads must be the REGENERATED one (the copy made earlier in this wrapper is the
+            # image's build-time list; fish_20261026_201712 lost 2 of 4 probes that way)
+            [[ -n "\${SESSION_DIR:-}" ]] && cp \$T/lib/fish_method_shim.json "\$SESSION_DIR/fishlog/" 2>/dev/null || true
+        fi
+        MSHIM=\$(find /root/trace_overlay_ws/install/tracetools/lib -name libfish_method_shim.so 2>/dev/null | head -1)
+        if [[ -n "\$MSHIM" ]]; then
+            export LD_PRELOAD="\$MSHIM\${LD_PRELOAD:+:\$LD_PRELOAD}"
+            echo "[FISH] method shim preloaded: \$MSHIM"
+        else
+            echo "[FISH] NOTE: libfish_method_shim.so not found (image < fishwait29 or empty probe list) — listed methods not traced"
         fi
     fi
     if [[ "\$1" == "launch" ]]; then

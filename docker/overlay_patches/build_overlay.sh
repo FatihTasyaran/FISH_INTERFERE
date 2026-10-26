@@ -19,7 +19,7 @@ case "$NEW" in
   *) FORK=0; [ "$BASE_LINEAGE" = fork ] && { echo "REFUSED: $BASE is a fork image; a mainline tag ($NEW) must not be built on it" | tee "$LOG"; exit 2; } ;;
 esac
 docker rm -f $C >/dev/null 2>&1
-docker run -d --name $C --entrypoint bash -v "$HERE":/patches:ro -v "$HERE/../../scripts":/fish_scripts:ro $P-$BASE:latest -c 'sleep 14400' >/dev/null
+docker run -d --name $C --entrypoint bash -v "$HERE":/patches:ro -v "$HERE/../../scripts":/fish_scripts:ro -v "$HERE/../../config":/fish_config:ro $P-$BASE:latest -c 'sleep 14400' >/dev/null
 {
   echo "=== $(date +%T) $BASE → $NEW: patch=$PATCH pkgs=$PKGS"
   [ -n "${PRE_CMD:-}" ] && docker exec $C bash -c "$PRE_CMD"       # e.g. clone an extra package into the overlay workspace
@@ -29,6 +29,10 @@ docker run -d --name $C --entrypoint bash -v "$HERE":/patches:ro -v "$HERE/../..
   docker exec $C bash -c 'T=/root/trace_overlay_ws/install/tracetools; cp $T/lib/libfish_gomp_shim.so /tmp/shim_old.so 2>/dev/null; gcc -shared -fPIC -O2 -o $T/lib/libfish_gomp_shim.so /patches/fish_gomp_shim.c -I$T/include/tracetools -L$T/lib -ltracetools -ldl -Wl,--no-as-needed -l:libgomp.so.1 && echo SHIM_OK; source /opt/ros/humble/setup.bash; source /root/trace_overlay_ws/install/setup.bash; echo "old shim:"; bash /patches/test_gomp_shim.sh /tmp/shim_old.so | sed "s/SHIM_TEST_/OLD_SHIM_TEST_/"; echo "new shim:"; bash /patches/test_gomp_shim.sh $T/lib/libfish_gomp_shim.so'
   # lock shim (fishwait24+): built only when the overlay's tracetools has the fish_lock event
   docker exec $C bash -c 'T=/root/trace_overlay_ws/install/tracetools; grep -q fish_lock $T/include/tracetools/tracetools/tracetools.h || exit 0; gcc -shared -fPIC -O2 -o $T/lib/libfish_lock_shim.so /patches/fish_lock_shim.c -I$T/include/tracetools -L$T/lib -ltracetools -ldl -lpthread && echo LOCKSHIM_OK || echo "SHIM_TEST_FAIL lock: build"; source /opt/ros/humble/setup.bash; source /root/trace_overlay_ws/install/setup.bash; bash /patches/test_lock_shim.sh $T/lib/libfish_lock_shim.so'
+  # container shim (fishwait27+): generated from the image's own libraries when the overlay's tracetools has fish_container_op
+  # method shim (fishwait29+): the user-listed application methods of config/fish_method_probes.txt (regenerated at every launch too)
+  docker exec $C bash -c 'T=/root/trace_overlay_ws/install/tracetools; grep -q fish_method $T/include/tracetools/tracetools/tracetools.h || exit 0; bash /patches/test_method_shim.sh /tmp/mshim_test 2>&1 | tail -2; python3 /patches/gen_method_shim.py --config /fish_config/fish_method_probes.txt --out $T/lib --tracetools $T 2>&1 | tail -4'
+  docker exec $C bash -c 'T=/root/trace_overlay_ws/install/tracetools; grep -q fish_container_op $T/include/tracetools/tracetools/tracetools.h || exit 0; python3 /patches/gen_container_shim.py 2>&1 | tail -4; bash /patches/test_container_shim.sh $T/lib/libfish_container_shim.so'
   [ -n "${POST_CMD:-}" ] && docker exec $C bash -c "$POST_CMD"
   echo "=== $(date +%T) build step done"
 } > "$LOG" 2>&1

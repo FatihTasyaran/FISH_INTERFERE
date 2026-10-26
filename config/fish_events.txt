@@ -49,6 +49,11 @@ ros2:fish_rclcpp_publish_link
 ros2:fish_rclcpp_client_link
 ros2:fish_rclcpp_receive_link
 ros2:fish_rclcpp_waitable_init
+# FISH (fishwait25): IntraProcessManager registrations + matching (once per entity / pair, init-time only):
+# which publisher feeds which intra-process subscription, shared vs ownership buffer, ring buffer depth
+ros2:fish_rclcpp_ipm_add_publisher
+ros2:fish_rclcpp_ipm_add_subscription
+ros2:fish_rclcpp_ipm_match
 
 # --- NITROS GXF topology (FISH custom, intra-node attribution) ---
 ros2:fish_nitros_sub_link
@@ -97,6 +102,8 @@ ros2:fish_rmw_sub_reader
 # FISH (fishwait19): rmw publisher ↔ DDS writer (once per publisher); per-sample identity is fish_dds_write (tiers default/max)
 ros2:fish_rmw_pub_writer
 ros2:fish_rmw_sample_lost
+# FISH (fastdds1, 2026-10-26): rmw_fastrtps per-sample identity — fish_rmw_write / fish_rmw_take_id (tiers default/max; the Fast DDS
+#   counterpart of fish_dds_write + fish_dds_rhc_store, Isaac images only)
 ros2:fish_rcl_take_event
 # FISH (fishwait16): OpenMP parallel regions via the LD_PRELOAD shim (master thread, ~100/s)
 ros2:fish_gomp_parallel
@@ -112,3 +119,6 @@ agnocast:agnocast_subscription_init
 agnocast:agnocast_timer_init
 agnocast:agnocast_add_callback_group
 agnocast:agnocast_construct_executor
+
+# --- Synthetic task-chain applications (tests/synth): the lineage oracle, emitted only by generated apps ---
+synth:instance

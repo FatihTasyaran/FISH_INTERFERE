@@ -1,0 +1,36 @@
+# FISH method probes (2026-10-26) — node-internal state links that no generic mechanism can observe.
+#
+# A callback that COPIES its input into a private structure and a timer that READS it later leave no trace: reads are
+# invisible, the copy is not a ROS message (container shim), the pointer is not retained (held@publish) and the output is
+# re-stamped (stamp identity). Such links stay `state_candidate` in the FISH task set — unless the application's own
+# deposit / read methods are named here. The generated LD_PRELOAD shim (docker/overlay_patches/gen_method_shim.py,
+# FISH_METHOD_SHIM=1) wraps every listed exported C++ method and emits ros2:fish_method(sym, phase, key, v1, v2, v3)
+# at entry (phase 0) and exit (phase 1). Like the GPU library list and the tracepoint whitelist: edit, re-run, no rebuild
+# of the application, no source change. Only exported (default-visibility) methods called through the PLT / GOT can be
+# wrapped — the shim prints a resolution error otherwise, the postprocessor reports 0 hits per probe.
+#
+# Line: <library file substring>  <demangled method prefix>  role=<deposit|read|span>  key=<argspec> [stamp=|lo=|hi=|v1=|v2=|v3=<argspec>]
+#   role=deposit : key = the private structure (usually a0 = this), stamp = the deposited element's stamp (ns)
+#   role=read    : key = the same structure, lo / hi = the read's own selection band (ns): a deposit whose stamp lies in
+#                  [lo, hi] and precedes the read was consumed by that read instance -> evidence `probe:band`
+#   role=span    : instants only (v1..v3 free), for attribution without identity
+# argspec: a<N> is the N-th integer-class argument at entry (a0 = this for methods; a class passed by value arrives as a
+#   pointer to it), followed by reader ops separated by ':'
+#     deref        read the pointer stored at the address (e.g. the pointee of a std::shared_ptr)
+#     i64@OFF      int64 at byte offset OFF
+#     stamp@OFF    builtin_interfaces/Time at OFF (int32 sec, uint32 nanosec) -> ns
+#     time         alias for i64@8   (rclcpp::Time: vtable pointer + rcl_time_point_t{nanoseconds, clock})
+#     sp_stamp     alias for deref:stamp@0 (std::shared_ptr<Msg> whose Msg starts with a std_msgs/Header)
+#     msg_stamp    alias for stamp@0 (const Msg & whose Msg starts with a std_msgs/Header)
+#   Limits: at most 6 integer-class arguments including this, no floating-point arguments, integer / void return.
+#
+# Autoware multi_object_tracker: InputStream keeps a std::deque<types::DynamicObjectList> (copy of the DetectedObjects
+# message); the 10 ms timer reads the entries whose stamp lies in [object_earliest_time, object_latest_time].
+libautoware_multi_object_tracker.so  autoware::multi_object_tracker::InputStream::onMessage            role=deposit key=a0 stamp=a1:sp_stamp
+libautoware_multi_object_tracker.so  autoware::multi_object_tracker::InputStream::getObjectsOlderThan  role=read    key=a0 hi=a1:time lo=a2:time
+#
+# The tracker's second internal stage (2026-10-26 evening): the trigger callback updates TrackerProcessor::list_tracker_
+# (runProcess -> update/spawn/prune), the 10 ms timer publishes the LATEST state (publish -> getTrackedObjects). role=read with
+# latest=1: a read consumes the most recent deposit of the same key made before it (state semantics, not a time band).
+libautoware_multi_object_tracker.so  autoware::multi_object_tracker::TrackerProcessor::update             role=deposit key=a0 stamp=a1:msg_stamp
+libautoware_multi_object_tracker.so  autoware::multi_object_tracker::TrackerProcessor::getTrackedObjects  role=read    key=a0 latest=1 v1=a1:time
