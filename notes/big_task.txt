@@ -1,0 +1,80 @@
+BIG TASK — the autonomous programme agreed with Fatih on 2026-10-25
+====================================================================
+Written by Claude Fable 5.1 (Anthropic). This file is the RECOVERY ANCHOR: if the session, the tokens or the machine
+die, read this file and notes/big_task_progress.txt and continue from the last progress entry. Decisions here are
+Fatih's; do not re-litigate them.
+
+GOAL
+----
+No edge of the FISH graph may be heuristic / guessed. Every edge is observed (an identity record: message address,
+writer + source timestamp, request id, synchronizer membership, container operation, pointer hold at publish) or it
+is absent and listed as an unresolved CANDIDATE. Then make that version of FISH ("final version") the one every image
+uses, prove it with generated applications whose behaviour we know, and extract the model of every application.
+
+THE FOUR TASKS (do in this order unless a dependency says otherwise)
+---------------------------------------------------------------------
+TASK 1 — "FISH final version": finish and verify the three open items of 2026-10-25
+  1a. Port the evidence into the model: model_improved_pg state links / join ties exist only with evidence
+      (container:observed, exact:message_filters, pointer:held@publish, polled takes, tf lookups); the structural
+      rest becomes nature 'state_candidate' / 'join_candidate' (viewer: class 'candidate', never in task grouping;
+      extractor: counted, never an edge). Verify with postprocess/truth_check.py against
+      notes/state_links_truth_2026-10-05.tsv: precision of observed links = 1.0, report recall.
+      STATUS: implemented 2026-10-25 (model + viewer + extractor + truth_check.py), verification pending.
+  1b. Deposits read WITHOUT a clear (26 of 28 containers; 'field' pattern): (i) output-stamp evidence (fish_msg_stamp,
+      state_links.py [3]); (ii) static class analysis (libclang over /opt/fish_provenance/src with
+      compile_commands.json, no rebuild) -> member offsets, container types, consumption class; (iii) boundary reads:
+      a shim on the reader callback's entry reading member stamps at this+offset — try LD_PRELOAD interposition of the
+      exported callback method first, uprobe (narrow root wrapper) as fallback. Verify against the truth table.
+  1c. Cost of the container shim: night tier campaign on fishwait27 with the shim on / off (host split, Fatih off
+      the desktop); numbers into notes.
+TASK 2 — migrate ALL other image families to the final version
+  Families: the 18 Isaac r2b `-wip` images (apriltag, bi3d, bi3d_freespace, centerpose, detectnet, dnn_image_encoder,
+  dope, ess (+ess-wip2), image_proc, nitros_bridge, nvblox, rtdetr, segformer, stereo_image_proc, tensor_rt, triton,
+  unet, visual_slam), aircraft/AAS (aircraft-fish-image etc.), autoware-awsim-fish. New tags = <old>-fishdeterministic
+  (old tags untouched). Per image: detect the overlay level (markers in tracetools.h), apply fishwait12..27 patches
+  in order where applicable (Cyclone-specific ones only if cyclonedds is in the overlay), generate + test the
+  container shim from that image's own libraries, SHORT smoke run + model + extractor checks. Order: my choice
+  (sensible: smallest / fastest first, AAS last or together with Fatih — see task 4).
+TASK 3 — synthetic task-chain generator + validation loop (design: notes/synth_generator_design_2026-10-25.md)
+  Decisions: code generation is PRIMARY (real rclcpp/rclpy packages per seed, parallel colcon + ccache, compile time
+  accepted), interpreter node secondary (scale sweeps); lineage tracepoint `synth:instance(cb, inst, in[], out[])` is
+  the instance-level oracle (only in synth apps); two layers (logical callback graph: ER / BA / layered DAG / chain /
+  tree / star / bipartite / cycle / disconnected, 2 .. 10^3-10^4 callbacks; deployment: nodes, containers, executors,
+  callback groups, languages, QoS, intra on/off, priorities, sim/wall time); compute + data-pattern libraries from
+  the truth table; GPU primitives (kernel stub, memcpy, streams, sync/async, cuda_blackboard-like); legality rules
+  + health run; verifier metrics (structure P/R per mechanism, instance pairs vs lineage, join sets, drops, ages,
+  timing, resources, scaling curves, per-tier overhead); nightly loop; every failure = regression case + FIX THE BUG
+  in FISH (task 4 says: all bugs found this way get fixed).
+TASK 4 — (Fatih, 2026-10-25) after the synthetic validation shows FISH works as expected (fixing every bug it
+  surfaces), run EVERY image (EXCEPT AAS — to be looked at together with Fatih later) and extract its FISH model, so
+  that everything is ready for what comes next.
+  Detail (Fatih, same day): the images used in task 4 (all families) will need a SMALL further upgrade first — the
+  FISH version in them must be the state FISH reaches AFTER task 3 and its bug fixes, i.e. task 2's
+  `-fishdeterministic` images get re-upgraded (small delta: whatever overlay patches / shim changes task 3 produced)
+  before the task-4 runs. Keep the migration script re-runnable for that (level detection + patch sequence).
+
+CONSTRAINTS / RULES
+-------------------
+- Host perf mode is MINE to toggle during this programme: `sudo -n /usr/local/sbin/fish-host-perf-mode split` when an
+  application run needs performance, `off` when analysis needs the cores (ingest, model, extraction are confined to
+  2 E-cores in split mode). Do not forget to switch back for each phase.
+- No interim reports in chat: write progress into notes/big_task_progress.txt (Fatih reads it; I resume from it).
+- Never edit a running bash script in place (temp + mv). Never match my own command line with pgrep -f (use anchored
+  patterns `^python3 ...`).
+- Commit/push only when Fatih asks. Timing numbers only from split-mode runs without desktop load; functional runs
+  may run any time (NIGHT_RUNS_NO_SPLIT=1 skips the gates; the allow rule covers
+  `FISH_ALLOW_FORK=1 NIGHT_RUNS_NO_SPLIT=1 bash scripts/night_runs.sh` with a PLAN FILE).
+- Images: mainline head = autoware-dev-trt-a1000-fishwait27 (fishwait26 + container tracepoint + shim). Fork line
+  retired. Build with docker/overlay_patches/build_overlay.sh <new> <base> <patch.py> <pkgs>.
+- Memory files: ~/.claude/projects/-home-tue037807/memory/ (project_container_shim.md, project_ipm_tracepoints.md ...).
+
+KEY FILES
+---------
+notes/status_2026-10-25_container_shim.md   today's results and evidence semantics
+notes/synth_generator_design_2026-10-25.md  task 3 design
+notes/full_paper_todo.md                    the paper work list (deadline 2026-11-05)
+postprocess/extract_fish_tasks.py           evidence-unified task extraction (container / mf / held@publish / drops)
+postprocess/model_improved_pg.py            evidence-aware state links & join ties, candidates
+postprocess/truth_check.py                  truth-table verification
+postprocess/container_flow.py, ipm_report.py, scripts/scan_container_symbols.py
+docker/overlay_patches/{fishwait25_ipm.py,fishwait27_container.py,gen_container_shim.py,test_container_shim.sh}

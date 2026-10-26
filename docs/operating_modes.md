@@ -134,8 +134,31 @@ Written into `snapshot/` at stop: `env.txt` (RMW / Cyclone / ROS / FISH env,
 `udp_mem`, `/proc/net/sockstat`, `lo_multicast`, effective Cyclone XML copy),
 `ps_tree.txt`, `component_list.txt`, refreshed `node_list.txt` /
 `node_info_all.json`, and `fishlog/launch_full.log` (full launch output).
-Continuous collectors during the run: `topic_list.txt`, `topic_info.json`,
-`topic_hz.json`.
+Continuous collectors during the run: `topic_list.txt`, `topic_info.json`.
+The `ros2 topic hz` sampler (`topic_hz.json`) is off by default since
+2026-10-26 (`FISH_TOPIC_HZ=1` re-enables it): sequential 10 s/topic sampling
+covered 2-5 topics per session, nothing reads the `avg_rate_hz` edge
+attribute, and every probe is a DDS participant whose subscription forces
+inter-process serialization on the sampled topic. Publish rates come from
+the trace (`rcl_publish` / `fish_dds_write` per publisher).
+
+## 7b. Method probes (`FISH_METHOD_SHIM=1`, image >= fishwait29)
+
+Some node-internal state links cannot be observed by any generic mechanism: a
+callback copies its input into a private structure and a timer reads it later
+(reads leave no trace; the copy is not a ROS message, the pointer is not
+retained, the output is re-stamped). FISH reports them as `state_candidate`.
+`config/fish_method_probes.txt` lists the application's own deposit / read
+methods (library, demangled method, role, argspecs) in the same spirit as the
+tracepoint whitelist and the GPU library list; `docker/overlay_patches/
+gen_method_shim.py` wraps every listed exported method with an LD_PRELOAD shim
+(`libfish_method_shim.so`, regenerated at launch from the copied list) that
+emits `ros2:fish_method(sym, phase, key, v1, v2, v3)`. The extractor pairs a
+deposit `(key, stamp)` with the read `(key, [lo, hi])` whose band contains it:
+evidence `probe:band`, the candidate is closed. No source change, no rebuild
+of the application; only exported methods reached through the PLT / GOT can be
+wrapped (the postprocessor prints hits per probe). Regression test:
+`docker/overlay_patches/test_method_shim.sh`.
 
 ## 8. Environment variables that change behaviour
 

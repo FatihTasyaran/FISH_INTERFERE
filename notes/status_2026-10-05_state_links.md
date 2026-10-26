@@ -134,3 +134,20 @@ unless FISH_ALLOW_FORK=1 (and then writes FORK_IMAGE.txt into the campaign dir);
 fishwaitNN tag on a fork base. Both refusals tested.
 Consumer: `extract_fish_tasks.py` pairs an intra-process publish with its take by (process, message address) when
 both events carry the address (prov `exact:message_address`), else the old order rule.
+Result (session fish_20261005_204151 = run overhead_aw_20261005_224148, fork image, all probes on, host in off mode —
+functional run, no timing claims; analysis in ~/fish_traces/analysis_fork_awintra1):
+- Healthy: 73 processes, none died, same task set as the mainline (117 data tasks, 12 multi-callback).
+- Intra-process identity: 5,326 intra-process takes, 5,318 paired with their publish by message address (99.8 %).
+  Of the 28 intra-process trigger edges 20 are exact for every instance, 5 mixed (a few instances by order), 3 have
+  no address pair at all (concatenate_data → lidar_centerpoint twice, voxel_grid_downsample_filter →
+  voxel_based_compare_map_filter) — cause not identified yet (no take event mapped to those subscriptions).
+- Retention on intra-process deliveries: 1,014 of the 15,062 retained messages come through this path, in 5
+  callbacks of the recompiled packages; e.g. occupancy_grid_based_outlier_filter holds every cloud until its other
+  input (the occupancy map) arrives — released inside that callback 187 of 249 times. No change for the structural
+  state links (the same 3 observed): only 1 of their deposit callbacks is fed intra-process.
+- Two analysis defects found by this run and fixed: (1) state_links.py keyed a retained message by (process,
+  address) — an intra-process message is shared, two callbacks hold the same address → key is now (process,
+  subscription, address) (the first pass had invented cross-node consumers and 111 pointer-identity hits);
+  (2) a publisher compiled against the overlay headers reports each intra-process publish twice (header hook with
+  the address + library fallback with 0x0) — extract_fish_tasks.py now counts it once (20,123 → 10,443 here; 426
+  duplicates also in the mainline reference session, whose task set is unchanged: 118 data tasks).

@@ -11,7 +11,7 @@ here from now on). Design of the extraction: notes/fish_task_extraction.md. Code
 | C per instance (on-CPU, not window) | done | kernel sched_switch → ksched_inst | min tier / no kernel session: window length only |
 | self-suspension per instance, by class | done | futex syscalls + CUDA runtime + OpenMP shim: gpu / omp / other sleep; lock = blocking B; L2 segment templates (cut at the blocking CUDA call) | stable for simple GPU users (C [g] C in 94 %), not for TensorRT pipelines (30 patterns) → L1 or the per-invocation typed DAG there |
 | helper threads (OpenMP) | done, FIXED 2026-10-04 | LD_PRELOAD shim on GOMP_parallel | shim bug of fishwait16–18: region bodies were skipped in dlopen'ed nodes → those sessions are functionally invalid (NDT never aligned); GOMP_parallel_loop_* entry points (combined constructs) are not interposed |
-| trigger edges + instance pairs | done | DDS: (writer GUID, source timestamp) exact from fishwait19 (fish_dds_write); intra: FIFO at the consumer start; before fishwait19: nearest source timestamp ≤ 50 ms | intra-process identity is still FIFO order (header TPs need an Autoware rebuild) |
+| trigger edges + instance pairs | done | DDS: (writer GUID, source timestamp) exact from fishwait19 (fish_dds_write); intra: FIFO at the consumer start; before fishwait19: nearest source timestamp ≤ 50 ms | intra-process: on the mainline images paired by order (the hooks sit in header templates); on the fork image fork-awintra1 (Autoware's 8 intra-process packages recompiled, 2026-10-05) paired by message address — 5,318 of 5,326 takes, 20 of 28 edges exact for every instance, 3 edges without any address pair → resolved 2026-10-19 (2 = cuda_blackboard not recompiled, fixed in fork-awintra2; 1 = not intra-process at all, re-labelled dds via the IPM match events) |
 | δ on DDS edges (transport) | done at tier max | fish_dds_rhc_store arrival − publish | default tier: upper bound start − publish |
 | message size, publish (write) duration | done from fishwait19 | fish_dds_write(size), rcl_publish → fish_dds_write | intra-process publishes have no size |
 | ready → start (dispatch + OS) | done | arrival/publish → callback_start; kernel wake-up as cross-check | it is the analysis' output; reported, never part of δ |
@@ -32,7 +32,7 @@ here from now on). Design of the extraction: notes/fish_task_extraction.md. Code
 ## Paths that bypass rmw
 | path | status |
 |---|---|
-| intra-process (rclcpp IPM) | traced (fish_rclcpp_intra_publish; FIFO pairing) |
+| intra-process (rclcpp IPM) | traced (fish_rclcpp_intra_publish; FIFO pairing; from fishwait25 the IPM's own registration + matching: fish_rclcpp_ipm_add_publisher/add_subscription(take_shared, depth)/match → a same-process edge is intra only if the IPM matched it; buffer kind and copies-per-publish are static edge attributes: Autoware 268 matches, all zero-copy, 14 ownership subs) |
 | serialized / loaned publish and take, take_sequence | traced (fishwait12/15/17) |
 | GenericSubscription dispatch | traced (fishwait13) |
 | tf2 buffer reads | traced (fishwait14) |

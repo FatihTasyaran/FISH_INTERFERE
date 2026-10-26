@@ -1,0 +1,849 @@
+BIG TASK PROGRESS LOG (newest entry at the bottom; see notes/big_task.txt for the programme)
+==========================================================================================
+
+2026-10-25 16:20  Programme defined (4 tasks). Done before this log existed, today: fishwait26 (intra identity in the
+  mainline), fishwait27 (container tracepoint + shim), extractor evidence unification (0 structural join edges in the
+  task set of fish_20261025_134134), notes/status_2026-10-25_container_shim.md.
+2026-10-25 16:20  TASK 1a in progress: model_improved_pg ported (evidence -> observed state/join edges, candidates),
+  viewer candidate class, extractor candidate count, truth_check.py written. Model running on fish_20261025_134134
+  (model_evidence.log in analysis_cshim2). Next: run truth_check, then extractor, then fix whatever disagrees.
+  Host: off mode (analysis).
+2026-10-25 16:40  TASK 1a result on fish_20261025_134134: model observed 20 links (17 held@publish, 1 container, 2 mf),
+  created 9 new edges, demoted 45 state + N join ties to candidates. truth_check: precision 12/17 = 0.71 — FIVE FALSE
+  links observed, all 'pointer:held@publish' in vehicle_cmd_gate (steering_status / control_cmd -> 100 ms timer):
+  the timer publishes while the message is held but does not READ that member (its true readers are the control_cmd
+  callbacks that never fired). Lesson: hold + publish is necessary, not sufficient — the publisher must read the
+  member. Decision: 'pointer:held@publish' alone is a CANDIDATE (instance pairs attached); it becomes observed only
+  when a source-level 'reads' relation corroborates it (static class analysis — task 1b(ii); interim: the hand-made
+  truth table as the source-verified set, clearly labelled). Recall 12/38: the field-copy links stay candidates until
+  stamp evidence (1b-i) or static analysis + boundary reads (1b-ii/iii). Implementing now.
+2026-10-25 16:58  1a: model now needs source corroboration for 'pointer:held@publish' (FISH_SOURCE_FLOW = truth table
+  for now); uncorroborated holds stay candidates WITH their instance pairs; extractor follows the model. Model re-run
+  in progress, then truth_check + extractor.
+2026-10-25 16:58  1b(ii) started: libclang feasibility probe OK (scripts/source_flow/probe_libclang.py): with the
+  package's compile_commands.json + clang resource headers (libclang-common-14-dev) a TU parses in ~3 s with 0 errors;
+  member reads / writes / mutators (push_back, clear, operator=) and publish sites per method are visible. 383 compile
+  DBs in /opt/fish_provenance/build. Building fishwait28 = fishwait27 + clang headers + python libclang (tooling only,
+  no runtime change). Next: scripts/source_flow/source_flow.py (callback -> member writes; reader -> member reads +
+  publish; consumption class from mutators; topic literals + launch remappings -> runtime names), validate against
+  the 55-row truth table, then feed the model via FISH_SOURCE_FLOW.
+2026-10-25 17:25  1a DONE at the extractor level: with source corroboration (truth table as interim FISH_SOURCE_FLOW)
+  precision of observed node-internal links 12/12 = 1.0; extractor on fish_20261025_134134: 116 trigger edges with
+  evidence, 7 join edges (2 container, 3 mf, 2 held@publish+source), 0 structural, 8 observed sampled deps, 11
+  held@publish candidates with pairs, 64 candidates (structural, no evidence). fishwait28 built (fishwait27 + clang
+  headers + python libclang; tooling only).
+2026-10-25 17:25  1b(ii) static tool scripts/source_flow/source_flow.py works on gyro_odometer (queue/batch-clear both
+  ways), mrm_handler (ptr/latest -> timer), imu_corrector (field/latest; truth says PARAM-GATED FALSE -> static = potential
+  flow, trace must corroborate), concatenate_data (keyed map self-links + timer path). Fixes on the way: message-typed
+  members only, deposit needs a deposit mutator, self-links, callbacks bound through a local std::function, class-own
+  methods only, parallel packages. Full run over all 383 packages started (fishwait28, --jobs 8) ->
+  ~/fish_traces/source_flow/source_flow_autoware_fw28.json. Next: mapper (class + literals -> node + runtime topics via
+  launch remappings / topic signature), truth-table validation, FISH_SOURCE_FLOW from the tool instead of the table.
+2026-10-25 18:20  1b(ii): mapper scripts/source_flow/map_source_flow.py works (package gate from the process executable
+  path / component package; literal -> runtime topic via remappings, ~/ and relative expansion, normalised tails,
+  message-type fallback from node_endpoints; timers by period). On 6 packages: gyro both queues (batch-clear),
+  mrm_handler ptr->timer, gyro_bias_scale_validator; precision so far 1.0 vs truth table, recall grows with coverage.
+  Full static run: 113/383 packages (restarted with message types). Static semantics = POTENTIAL flow (param-gated
+  reads are "reads"); the trace evidence decides the actual edge — exactly the corroboration role.
+2026-10-25 18:20  TASK 2 approach decided: transplant fishwait28's PATCHED overlay SOURCE tree (8 MB tgz:
+  ~/fish_traces/overlay_src_fw28.tgz = tracetools rcl rclcpp rclcpp_action tf2 message_filters cyclonedds
+  rmw_cyclonedds_cpp) into each target image and colcon-build it there (same Humble 16.0.19 / 4.1.2; Isaac images run
+  rmw_fastrtps -> cyclone packages skipped, DDS identity falls back to source_timestamp), generate + test the shims,
+  rebuild header-hook users (generic subscription + use_intra_process_comms users + benchmark pkgs), commit
+  <family>-fishdeterministic. Writing scripts/migrate_overlay.sh; first target fish-r2b-apriltag-wip.
+2026-10-25 18:45  1b(i): stamp identity evidence ('stamp:match': a non-tick leading stamp taken by one callback reappears
+  in another callback's output of the same node) added to the model's evidence; model re-running with truth_check.
+  Mapper gained a package gate (executable path / component package) + tail normalisation: on 6 packages precise
+  (gyro both ways, mrm ptr->timer, bias_scale_validator; imu_corrector's param-gated reads appear as POTENTIAL, which
+  is correct for static). scripts/migrate_overlay.sh written (overlay source transplant + build + shims + header-hook
+  users + commit); first migration running: fish-r2b-apriltag-wip -> fish-r2b-apriltag-fishdeterministic.
+  Smoke runs of migrated Isaac images: scripts/overhead_sweep_v8.sh with IMG_OVERRIDE=<new image>, one lttng-mode run.
+2026-10-25 19:10  TASK 3: tests/synth/ skeleton + descriptor_schema.json + lineage provider (synth:instance) +
+  synth_gen.py v0 (families chain/tree/star/bipartite/layered/er/ba/cycle/zoo, roles, join patterns, timer readers,
+  deployment, legality, cpu budget) + synth_emit.py v0 (rclcpp components per node, SynthMsg with lineage tag,
+  patterns: plain sub, queue_batch_clear, map_keyed_timeout(+timeout timer), mf_exact/approx, ptr_hold, timer readers
+  field/ptr/deque, optional CUDA stub; rclpy standalone nodes with a log-line lineage; launch = one container per
+  process). zoo_s1 (11 callbacks, 6 nodes, 2 processes) emitted to ~/fish_synth/ws_zoo_s1; first colcon build running
+  in fishwait28.
+2026-10-25 19:10  TASK 2: apriltag migration attempt 1: overlay built (6 pkgs, 3.6 min, marker OK), gomp/lock shims OK,
+  container shim test FAILED only because the Isaac image has no deque<Imu> instantiation (1 symbol interposed) ->
+  test made tolerant; benchmark packages must be passed explicitly (ros2_benchmark isaac_ros_benchmark: the pattern
+  discovery finds nothing in /root/ros_ws). Attempt 2 running.
+2026-10-25 19:35  Written: tests/synth/run_synth.sh (emit -> build in image -> FISH run via night_runs plan with
+  FISH_LAUNCH_CMD/FISH_PRE_CMD/FISH_EXTRA_DOCKER_ARGS (new runner knob) -> pipeline -> verify), tests/synth/verify_synth.py
+  v0 (structure per descriptor edge, false positives, lineage instance counts; pair-level check next),
+  scripts/migrate_all.sh (all 18 Isaac families + smoke via overhead_sweep_v8 IMG_OVERRIDE lttng x1). synth:instance
+  added to the base whitelist. Waiting on: zoo package build (fishwait28), model+truth with stamp evidence, apriltag
+  migration attempt 2 (no Cyclone -> DDS identity by source_timestamp only), static run (~200/383).
+2026-10-25 19:40  1a/1b(i) numbers (fish_20261025_134134, truth table as FISH_SOURCE_FLOW): observed node-internal
+  links 13 (12 held@publish+source, 1 container, 2 mf, 2 stamp:match — some overlap), precision 13/13 = 1.00, recall
+  13/38 = 0.34 (the rest = field copies without stamp identity under simulated time -> candidates; a wall-clock run
+  and the static tool as FISH_SOURCE_FLOW will raise it). 43 state + 7 join structural links demoted to candidates,
+  5 + 7 held@publish without source corroboration kept as candidates with pairs, 299 drops.
+2026-10-25 19:55  zoo_s1 package BUILDS against the overlay (3m43s, rosidl + nodes); first full synthetic cycle running
+  (tests/synth/run_synth.sh zoo_s1: emit -> build -> FISH run 60 s -> pipeline -> verify). Incident: the first static
+  run (jobs 8, no message types) was not killed by my ancestor-filtered docker kill and ran alongside the typed one for
+  ~20 min, sharing the log file; killed now (container id). The typed run (jobs 10) continues and writes the JSON at
+  the end. Apriltag migration attempt 2 compiling rclcpp.
+
+[2026-10-25 17:45] TASK 3 / TASK 1 — bugs found by the first synthetic cycle, fixed
+- Synthetic DDS edges were "inferred:upper-bound" because ALL trace timestamps of session fish_20261025_161528 were 1 h early.
+  Root cause: ingest_pg.py parallel path computed ts = midnight_epoch + time-of-day; today (2026-10-25) is the CEST->CET switch day,
+  midnight was UTC+2, the afternoon UTC+1 -> -3600 s. Fixed: per-(day,hour) tz-aware epoch cache (DST-safe). Re-ingested: take-source = 0.37 ms.
+  Re-verified synth zoo_s1: 7/7 fired trigger edges exact (3 intra + 4 DDS); the mf_sync join (cb_005) never fired in that run (per-node
+  stamp epochs -> emitter already fixed with the global 100 ms grid) -> second cycle started.
+- Static class analysis (source_flow.py): 3318/5101 classes had parse errors. Fixed (1) compile_commands split with shlex (-D"x" quoting),
+  (2) GCC include dir for omp.h (-fopenmp TUs), (3) build-tree include dirs are EMPTY (generated rosidl / generate_parameter_library headers
+  stripped) -> add /opt/autoware/include/<pkg> for every build-dir -I, (4) owned helper objects: non-const method call on a member whose type
+  is a project class (unique_ptr<EKFModule>, AgedObjectQueue<...>) = deposit kind 'call' / pattern 'object'; const calls = reads.
+  vehicle_cmd_gate 0 -> 74 links (27 callbacks, 0 errors), ekf_localizer 0 -> 10, costmap_generator 0 -> 2. 'object' links are permissive
+  (every non-const call on adapi_pause_ etc.) -> next: package-level pass that follows the call INTO the owned class (does the called method
+  write/read the owned object's members) before the full --all rerun + truth check.
+- TASK 2 migration batch: apriltag, bi3d, bi3d_freespace, centerpose, detectnet, dnn_image_encoder, dope done (+ smoke OK each); continuing.
+
+[2026-10-25 18:05] TASK 3 cycle 2 (session fish_20261025_164320, zoo_s1 with the global stamp grid) + static tool state — SESSION CUT (usage limit)
+- Cycle 2: 10/10 fired trigger edges exact, 3/3 fired mf_sync joins exact:message_filters (grid fix works). Still MISSING: cb_007<->cb_008
+  cycle + cb_005->cb_007 join: cb_007/cb_008 never fired (mf_sync in a 2-cycle never gets both inputs: cb_007 waits for cb_008 and vice versa)
+  -> generator LEGALITY bug: a join (mf_sync) callback inside a cycle with no external seed is a deadlock; fix in synth_gen (cycle members must
+  not be joins, or the cycle needs a seed timer). FISH itself is correct on everything that fired.
+- One FP both cycles: a JOIN edge with evidence 'stamp' between two subscribers of the SAME topic (cycle 1: node_000 sub t000 -> node_001 sub t000;
+  cycle 2: node_001 sub t000 -> node_001 sub t001). Cause: stamp:match (model_improved_pg.py _join_state_evidence step 4, ~line 2137;
+  extract_fish_tasks.py ~line 783) treats "callback B published a stamp that callback A took earlier (same node)" as evidence, but the stamp
+  is explained by B's OWN input (B took a message with the same stamp through its trigger subscription). RULE TO ADD (both files): drop a
+  stamp:match (fi -> fo, stamp v) when fo itself took stamp v before the publish (S_IN[(vpid,nh)][v] contains an entry with f == fo), i.e.
+  the stamp must not be reachable through fo's own inputs. Same risk exists in Autoware (two subscribers of one pointcloud topic). NOT YET DONE.
+- Static tool (scripts/source_flow/source_flow.py) refactored: package-wide link pass (links_for_classes), owned project objects followed INTO
+  the owned class (member-level: OW & OR), push/pop are mutators, non-const calls on the owned class's members count as writes.
+  Test: vehicle_cmd_gate 70 links / ekf_localizer 8 (pose_queue_, twist_queue_, ekf_module_ as expected) / costmap 2. SF_DUMP=<Class> env dumps
+  per-method sets. Full run started in background: output /tmp/claude-1000/-home-tue037807/f56af2dd-c080-4e10-9195-a1c5aab65da2/scratchpad/sf_all2.json
+  (+ sf_all2.err) — if the scratchpad is gone, rerun: docker run --rm --entrypoint bash -v $PWD/scripts/source_flow:/sf:ro -v <out>:/out
+  autoware-dev-trt-a1000-fishwait28:latest -c 'python3 /sf/source_flow.py --all --jobs 10 --out /out/sf_all2.json' (~30 min).
+  NEXT: map_source_flow.py on fish_20261025_134134 with the JSON -> FISH_SOURCE_FLOW -> model_improved_pg + truth_check (precision must stay 1.0).
+- ingest_pg.py DST fix is in; sessions ingested earlier TODAY via the parallel path before the fix have -3600 s ros2_trace timestamps
+  (fish_20261025_161528 re-ingested OK; check any other session ingested 2026-10-25 before 17:35 and re-ingest with --force).
+- TASK 2 migration batch still running in background (log ~/fish_traces/migrate_20261025/migrate_all.txt; 7/18 done at 17:45); it is
+  re-runnable (existing -fishdeterministic tags are skipped). aircraft/AAS + awsim not started.
+
+[2026-10-25 18:20] SESSION CUT AGAIN (usage limit) — state
+- stamp:match self-explained rule ADDED to both postprocess/model_improved_pg.py (_join_state_evidence step 4) and
+  postprocess/extract_fish_tasks.py (spairs): an output stamp that the publishing callback itself took through its own input is not
+  deposit evidence. NOT yet re-verified: rerun scripts/post_run_pipeline.sh fish_20261025_164320 --no-ingest + verify_synth -> FP must vanish.
+- Static --all finished (1526 TUs, 1550 s): 2325 classes, 209 with parse errors (was 3318), 608 links (331 'object', 174 self).
+  JSON copied to ~/fish_traces/source_flow/sf_all2.json (+ .err). NEXT: python3 scripts/source_flow/map_source_flow.py fish_20261025_134134
+  ~/fish_traces/source_flow/sf_all2.json --out <json> [--truth <tsv>] -> FISH_SOURCE_FLOW=<json> model_improved_pg + truth_check (precision 1.0 required).
+- synth_gen legality fix for mf_sync joins inside a cycle (cb_007<->cb_008 deadlock) still TODO. Migration batch continues in background.
+
+[2026-10-25 18:23] TASK 2: migrate_all.sh batch FINISHED (18 Isaac families): 17 -fishdeterministic images present, failures: 0. Remaining: aircraft/AAS + awsim (check overlay presence first), then the small re-upgrade of all task-4 images to the final FISH state.
+  centerpose: NOT migrated — base image fish-r2b-centerpose-wip:latest does not exist on this host (other centerpose tags listed in the log above; ask Fatih which one is the base, then: KEEP=0 bash scripts/migrate_overlay.sh <base> fish-r2b-centerpose-fishdeterministic). 17/18 Isaac families done.
+
+[2026-10-25 18:55] Fatih away ~17 h (back in the morning); autoContinueAtUsageLimit=true set in ~/.claude/settings.json. Plan for the night:
+  static tool/mapper iteration -> synth cycles (zoo + more families) -> TASK 1c shim-cost campaign in split mode -> TASK 4 runs for all images.
+- Synth generator legality fixed: every DIRECTED cycle now gets a timer reader (Tarjan SCC loop, highest in-degree member), not only
+  source-less components. zoo_s1 regenerated: cb_007 = timer_reader (ptr_hold sampled edges), cycle 3 started (cycle3_zoo_s1.log).
+- Stamp-rule re-verification was INVALID: post_run_pipeline.sh --no-ingest did not re-run the model (model.log 17:46) — the 'stamp' join
+  edges 252->251 / 260->261 in fish_20261025_164320 are the OLD model's. Extractor side already reports 0 stamp pairs, 1399 self-explained.
+  -> re-run the model explicitly, then extractor + verify.
+- Static tool: message-derived scalar assignments (RHS mentions a callback parameter: is_system_emergency_ = msg->state == ...) are
+  deposits now ('field'); vehicle_cmd_gate onMrmState/onEngage/onGateMode -> onTimer found. Full rerun sf_all3.json in background.
+- Mapper: same-type subscriptions disambiguated by longest common tail prefix ('initialpose' -> /initialpose3d). Truth-table recall
+  before these two fixes: 6/38 REAL found, 7 FALSE claimed (potential-only, fine), 32 missing: standalone nodes without launch
+  remappings (ekf), cross-class object graphs (multi_object_tracker InputManager/InputStream), lambdas in loops (autoware_state), classes
+  not mapped to nodes (CalibrationStatusClassifierNode, HazardLightsSelector, PoseCovarianceModifierNode, VoxelGridBasedEuclideanCluster).
+
+[2026-10-25 19:40] ROOT CAUSE of the synthetic FP join found and fixed (FISH bug #1 from the synthetic loop)
+- fish_msg_stamp sits in rmw_cyclonedds (rmw_publish / rmw_take): INTRA-PROCESS receivers have no take-side stamp record, so the
+  model could not see that the publisher's own input carried the stamp -> stamp:match paired a sibling subscriber's take with it.
+  Fix (model_improved_pg.py + extract_fish_tasks.py): own-input stamps per callback = DDS takes + intra takes
+  (fish_rclcpp_intra_take.message -> publish-side stamp record with the same message address in the process); a callback with an
+  intra take of UNKNOWN stamp (publisher never hit rmw_publish) gives no stamp evidence at all (conservative). Also: take attribution
+  = next window on the thread first (owner_before mis-attributed takes on MT executors). Result on fish_20261025_164320: FP 0.
+  Autoware impact: stamp evidence drops where intra-process is on (cuda_blackboard / pointcloud containers) -> candidates instead.
+  TODO (overlay fishwait29, later): stamp probe in SubscriptionIntraProcess::execute (typed MessageT, has_header) to recover it.
+- Night queue started (scripts/night_queue_20261025.sh, log ~/fish_traces/night_20261025_final/queue.log): waits for GO file or 22:00
+  and an idle host, then split -> 1c (3x baseline / lttng no-shim / lttng shim on fishwait28) -> TASK 4 Isaac 17 families on
+  -fishdeterministic (lttng x1) -> pipelines -> off. centerpose skipped (no -wip base), awsim/aircraft NOT migrated (overlay = old
+  rclcpp/rclcpp_action/tracetools only; migration needs the full fw28 overlay source transplant like the Isaac images).
+- Static tool: AD API NodeAdaptor (init_sub/init_srv/init_pub, topic from Spec::name via libclang), LHS sub-object assignments
+  (state_.x = / v_[i] =), topic literal held in a local variable (prefix literal -> mapper expands over the node's subscriptions).
+
+[2026-10-25 20:00] TASK 1 — precision regression found with the static tool as corroboration source, and the rule that fixes it
+- With FISH_SOURCE_FLOW = static-tool mapping (flow_134134.json, 101 links) on fish_20261025_134134: observed 7, of which 2 FALSE
+  (#29/#30 vehicle_cmd_gate control_cmd -> timer, pattern 'copy', evidence pointer:held@publish+source) -> precision 5/7 = 0.71.
+  The hand truth table as source gave 1.0 because it carries only REAL rows. The static tool reports the POTENTIAL flow
+  (prev_control_cmd_ is read by the timer) which is true at the source level but is a latest-value copy, not a hand-off.
+  RULE (model_improved_pg.py _source_verified_links/_corroborated): a held pointer (held@publish) is corroborated only when the
+  source deposit RETAINS the message (queue / keyed / ptr / object); a scalar field/copy deposit is a sampled read -> candidate.
+  The 5 REAL observed are ptr/queue (mrm_handler, ekf x2, mission_planner) + stamp:match (map_based_prediction) -> unaffected.
+  Model re-running with the rule (model_sf2.log / truth_check_sf2.txt) — expected 5/5.
+- Static tool: cross-class links implemented (external registrations std::bind(&Other::m, obj) + deep owned-object read/write sets
+  as (class, member) pairs, local/range-for aliases of members). multi_object_tracker still 0 cross links: the objects are read on
+  the onTrigger path (input_manager_->getObjects in runProcess/onTrigger), not on the timer's path — the truth rows #16/#17 name the
+  timer as reader; needs a look at which callback really consumes (onTrigger is itself fired by the subscription via func_trigger_).
+- Synthetic zoo_s1 cycle 3 with all fixes: VERDICT PASS (12 trigger exact, 3 joins exact, 0 FP; 1 sampled ptr_hold edge missing =
+  needs source corroboration -> run_synth.sh now runs the static tool on the generated package and maps it; next cycle will test it).
+- Full static rerun sf_all4.json in progress (all new rules). Night queue armed (GO file or 22:00).
+
+[2026-10-25 20:20] notes
+- Synthetic package static analysis had 0 links: colcon emits no -std flag when the compiler default already satisfies CXX_STANDARD 17,
+  clang then parses as C++14 (std::is_same_v errors in rclcpp headers). tu_flags now adds -std=gnu++17 when absent. Re-running the
+  corroborated cycle-3 model (tests the ptr_hold sampled edge).
+- Isaac -fishdeterministic images need NO re-upgrade so far: every fix today is host-side postprocess (ingest/model/extractor/static tool).
+  A re-upgrade becomes necessary only if an overlay change lands (candidate: fishwait29 stamp probe in the intra-process take path).
+- Truth rows #16/#17 (multi_object_tracker -> timer, queue): the objects queue is consumed on the onTrigger path INSIDE the subscription
+  callback (InputStream::onMessage -> func_trigger_ -> MultiObjectTracker::onTrigger -> getObjects/runProcess); the timer reads processor_
+  trackers (derived state) -> in FISH terms a sampled dependency into the timer, not a hand-off. To discuss with Fatih; not a precision issue.
+[19:32] TASK 2: awsim migration started: autoware-awsim-fish:latest -> autoware-awsim-fishdeterministic:latest (log ~/fish_traces/migrate_20261025/migrate_awsim.out)
+
+[2026-10-25 20:40] RESULTS
+- TASK 1 precision with the static tool as corroboration source + retaining rule: fish_20261025_134134 truth check 5/5 = 1.00
+  (observed: mrm_handler ptr, ekf pose/twist queue, mission_planner ptr via held@publish+source; map_based_prediction via stamp:match);
+  the 2 FALSE control_cmd links are candidates again. Recall 5/38 is bounded by the runtime held@publish evidence, not by the tool.
+- TASK 2: awsim migrated (autoware-awsim-fishdeterministic:latest, 35.5 GB, shim test OK, no smoke: needs the AWSIM simulator).
+  Remaining: centerpose (base?), aircraft/ground/simulation (AAS family, 3 images; same recipe).
+- Synthetic corroboration works end to end (static tool on the generated package -> 2 ptr links -> 2 (F,F) pairs), but the sampled
+  edge cb_005 -> cb_007 is still MISSING: held@publish proposes only the NEAREST publishing callback after the hold (node_003's 10 ms
+  timer cb_6), never the 100 ms timer cb_7 that actually reads the held pointer -> source rejects -> candidate. Fixing: propose every
+  distinct publishing callback of the node during the hold, let the source corroboration pick.
+- Disk: root FS 320 GB free of 1.8 TB; docker 293 GB images (221 GB reclaimable old tags) + 91 GB build cache — cleanup to decide with Fatih.
+- awsim for TASK 4 (asked by Fatih 20:50): headless = lavapipe CPU Vulkan only (start_awsim_lavapipe.sh; -nographics kills the ego);
+  lidar/NDT degraded (<=29 % inliers) -> structural model possible, timings not. run_awsim_e2e.sh is pinned to fishwait5 -> needs
+  porting to autoware-awsim-fishdeterministic + the FISH runner. Decide with Fatih in the morning together with AAS; not in the night queue.
+- held@publish evidence now proposes EVERY other publishing callback of the node during the hold (was: nearest only); corroboration
+  selects. Re-running synth cycle-3 model (expect the sampled ptr_hold edge) and the Autoware model with sf_all4 (precision must stay 1.0).
+
+[2026-10-25 21:05] TASK 3: zoo_s1 fully covered — VERDICT PASS, 0 FP, 12 trigger exact, 3 joins exact:message_filters, 2 sampled
+  (ptr_hold) edges observed as pointer:held@publish+source with the static tool's own analysis of the generated package as the
+  corroboration. Pipeline for synth = run_synth.sh (build with compile commands -> static tool -> run -> ingest/model -> map -> model+
+  extractor with FISH_SOURCE_FLOW -> verify). Descriptors generated for chain/tree/star/bipartite/layered/er/ba/cycle (seed 1);
+  scripts/night_queue2_synth_20261025.sh runs one cycle per family after the main queue ("QUEUE DONE"), log night_20261025_final/synth_loop.log.
+  scripts/task4_summary.py prints one line per night session (vertices / trigger / joins / structural / candidates) for the morning.
+- Autoware re-check of the all-publishers held@publish rule running (model_sf3.log / truth_check_sf3.txt); then GO for the night queue.
+
+[19:41] NOTE: the entry timestamps "19:40"…"21:05" above were estimated and run ~1 h ahead of the host clock; real host time now is 19:41. From here on timestamps come from date(1).
+
+[19:46] Autoware truth check with the all-publishers held@publish rule (source = static tool sf_all2 mapping): precision 5/5 = 1.00, recall 5/38 unchanged; observed held@publish+source 4, container 1, mf 2, stamp 1; 42 state + held@publish candidates. Waiting for sf_all4 (all new static rules) -> map -> model -> truth check -> GO for the night queue.
+
+[19:49] Static tool full run sf_all4 (all rules): 2317 classes, 209 with parse errors, 911 links (ptr 97, queue 46, keyed 81, field 276, object 411; 1 cross-class). Mapped onto fish_20261025_134134: truth-table recall 22/38 REAL found (was 7/38 this afternoon, 6/38 at the start); 8 FALSE rows also claimed as potential flow (expected: the tool reports potential flow, the retaining rule keeps them out of observed). Model + extractor rebuilding with this mapping (model_sf4.log / truth_check_sf4.txt / fish_tasks_sf4.txt).
+
+[19:50] post_run_pipeline.sh: new step "source flow map" — maps the latest ~/fish_traces/source_flow/sf_all*.json onto the session (map_source_flow.py) and exports FISH_SOURCE_FLOW for the model; every night-queue pipeline (1c Autoware runs, Isaac runs -> 0 rows) gets corroboration automatically. Edited via temp+mv while not running. Dry run on fish_20261025_174731 in progress.
+
+[19:56] TASK 1 RESULT (fish_20261025_134134, source = static tool sf_all4 mapping, 153 REAL rows -> 113 (F,F) pairs): precision of observed links 7/7 = 1.00, recall 7/38 (mrm_handler ptr, planning kinematic_state ptr, ndt biased_pose queue, ekf pose/twist queue, mission_planner ptr via held@publish+source; map_based_prediction stamp:match). Extractor: 115 trigger edges with instances (27 intra, 79 dds, 3 srv), 6 join edges all with evidence (container 2, mf 3, held@publish+source 1), 0 structural joins, 5 observed sampled dependencies (timer readers), 13 held@publish candidates. GO given to the night queue (1c shim-cost campaign -> TASK 4 Isaac runs -> pipelines with source-flow mapping -> synthetic family loop).
+
+[20:02] Fatih: after TASK 4 (and the family loop), if he has not written, run the larger synthetic scales. Armed scripts/night_queue3_scale_20261025.sh (waits for "SYNTH LOOP DONE"): er 50, layered 100, er 200, ba 500 callbacks (callbacks-per-node 2/4/4/5, duration 90 s). Touch ~/fish_traces/night_20261025_final/STOP to stop between cycles. Logs: synth_scale.log, synth_<desc>.log, verdicts in ~/fish_traces/synth_runs/verify_<name>.txt.
+[20:03] scale descriptors er200/ba500 regenerated with --cpu-budget 4 (the app gets 6 CPUs under the runner cpuset; 8 cores of demand would overload). Family loop (queue2) restarted with the correct verdict file name (verify_<descriptor name>.txt). Three queues armed: main (running) -> family loop -> scale runs; STOP file halts the scale runs between cycles.
+
+[20:39] Pipeline dry run OK (PIPELINE DONE rc=0, source-flow map step works) but it took 48 min on the desktop CPUs (18-19 in split mode): the 1c+TASK 4 pipelines inside the main queue would not finish tonight. Armed scripts/night_queue1b_20261025.sh: waits for the 1c "BATCH DONE", stops the old queue, runs the 17 Isaac TASK 4 families (split), sets the host to off, then runs every pipeline on all CPUs, then writes QUEUE DONE (family loop + scale runs follow). 1c progress: base1/noshim1/shim1/base2/noshim2 done (thr=+0, desk<=0.17), shim2 running.
+
+[21:23] TASK 4 first pass FAILED (all 17 families rc=126 within 11 s each): the migrated images inherited ENTRYPOINT ["bash"] from the migration container (docker commit of a --entrypoint bash container) -> `bash bash -lc ...` = "cannot execute binary file". The afternoon smoke runs (12 s each) were the SAME failure, undetected (migrate_all.sh did not check runs.csv rc). Fixes: all 18 -fishdeterministic images rebuilt with ENTRYPOINT [] (metadata layer only, same tags, verified bash -lc works); migrate_overlay.sh commits with ENTRYPOINT []; migrate_all.sh smoke fails on rc != 0. Night re-sequenced: queue1b (pipelines of the 1c sessions, running) -> queue1c (TASK 4 retry in split + pipelines, writes TASK4 DONE) -> queue2 family loop (waits for TASK4 DONE) -> queue3 scale runs.
+
+[21:37] Fatih asked whether anything runs (looked idle from outside): the first 1c pipeline was at the extractor step (no GPU run, by design). REORDERED to get TASK 4 done early: queue1b/1c stopped (pipeline of fish_20261025_195107 will be redone), queue1d started NOW: split -> 17 Isaac TASK 4 runs -> off -> all pipelines (1c + task4) -> TASK4 DONE/QUEUE DONE -> family loop -> scale runs.
+
+[21:39] Fatih: do not reorder for cosmetic reasons; TASK 4 is 4th because TASK 3 may still find bugs. Restored order: queue1e pipelines of the 1c sessions (now) -> PIPELINES DONE -> queue2 family loop -> queue3 scale runs -> queue4 TASK 4 (after SCALE RUNS DONE) -> TASK4 DONE. The started apriltag run was aborted (container removed, host off); its partial session is listed in skipped_sessions.txt and excluded from the pipelines.
+
+[23:20] Night check: queue1e "PIPELINES DONE" at 22:30 but only 2 of the 6 traced 1c sessions were processed. Cause: the session names
+  come from the container clock (UTC) and are 1 h behind the host since the DST switch (host CET from today); queue1e filtered
+  "> fish_20261025_195000" in host time and missed 190123 (noshim1, pipeline killed at 21:37), 191310 (shim1), 192832 (noshim2),
+  193659 (shim2). The base runs produce no FISH session (no tracing). Scheduled: queue5 (below).
+  Family loop (queue2) ran 22:32-23:23: chain PASS, star PASS, cycle PASS; tree / bipartite / layered / er FAIL (0 FP, missing
+  edges), ba FAIL with 2 false positives. Scale runs (queue3) started 23:25.
+
+[23:30] TASK 3 DIAGNOSIS of the five FAILs (all from the stored sessions, no new runs):
+  (1) FISH BUG — same-topic double subscription in one node. ba_s1 node_001 subscribes /synth/t001 twice (cb_002, cb_003);
+      tree_s1 node_003 subscribes /synth/t003 twice. identify_entities keyed sub entities by (node, topic) and identify_callbacks
+      keyed the callback chain by topic -> the second subscription's callback had no F: its windows were unknown, its publishes
+      became orphans ("thread:thread_563 -> /synth/t002" pseudo publishers in ba, 835 orphan publishes in tree), the intra-process
+      takes of t006 found no publish record (tree: cb_006 -> cb_008 MISSING although 925/925 publish/take addresses pair in the raw
+      events), model WARN firing_cb_without_F: 5. Autoware fish_20261025_134134 has the same situation in 7 nodes
+      (planning_validator, mission_planner, vehicle_cmd_gate, collision_detector x /localization/kinematic_state;
+      traffic_light_occlusion_predictor x2 topics; robot_state_publisher /parameter_events) -> TASK 1 numbers to be regenerated.
+  (2) Static analysis ran BEFORE the build in run_synth.sh -> "0 translation units" on every fresh workspace (zoo_s1 had a built
+      workspace from the afternoon, which is why it worked) -> no source corroboration -> every ptr_hold join stayed a candidate.
+  (3) Emitter/oracle mismatch: map_keyed_timeout joins carry a 250 ms timeout timer that publishes on the join's behalf (same
+      lineage id); the verifier did not know the timer -> 2 "false positives" in ba (FISH was right).
+  (4) Evidence gap: the synthetic map / slot joins READ AND CLEAR the held pointers before publishing (release inside the
+      publishing instance) -> no held@publish, counted as a drop -> member_map / ptr_hold joins MISSING.
+  (5) Evidence gap: deque<SynthMsg> copies (queue_batch_clear): no retain, no container op (element < 256 B) -> neither observed
+      nor listed -> violates "observed or candidate".
+  (6) Verifier read the AGE provenance of sampled dependencies ("measured:stamp:match") and called them inferred.
+
+[23:45] FIXES (tested on the stored ba and tree sessions, then promoted; queue5 re-runs all families with them):
+  - model_improved_pg.py: one sub entity per rcl subscription handle (A_v sub_handle, dup=1..k when a node subscribes to the same
+    topic more than once); callback chain resolved by handle; sub_handle -> entity and DDS attrs (qos / reader / loss) by handle.
+    New evidence 'pointer:release@publisher' (hold released inside another callback's instance that publishes later in that
+    instance; same corroboration rule as held@publish: retaining source deposit -> '+source' observed, else candidate).
+    Source-only candidates: a static deposit->reader link without runtime evidence becomes nature *_candidate with
+    candidate_evidence 'source:<patterns>' (listed, never an edge).
+  - extract_fish_tasks.py: vertex names 'sub:/topic#k' for duplicates; 'pointer:release@publisher' pairs (corroborated by the
+    model's edge evidence like held@publish, else candidates with pairs); sampled deps carry prov_edge + candidate flags.
+  - tests/synth/run_synth.sh: static step after the build. tests/synth/reanalyze_synth.sh <descriptor> <session>: static -> map ->
+    model -> extractor -> verify on an existing session. tests/synth/verify_synth.py: vertices per handle (picks the one publishing
+    the descriptor's topics), timeout timer = alias of its join, joins/sampled 'candidate-listed' category (PASS with candidates),
+    prov_edge for sampled.
+  Result on the stored sessions: ba 15/15 trigger exact, 6 joins observed (4 release@publisher+source, 2 held@publish+source),
+  2 joins candidate-listed (deque copies, source-only), 0 FP -> PASS (with candidates); tree 9/9 exact incl. the intra edge
+  (1670/1670 takes paired), 0 orphans -> PASS. Remaining firing_cb_without_F: single one-shot callbacks in the CLI/launch
+  processes (n=1), not app callbacks.
+  Queue chain now: queue3 scale runs -> queue5 (1c pipelines 190123/191310/192832/193659, then the 8 families again with the fixed
+  code, log synth_loop2.log) -> "PRE-TASK4 DONE" -> queue4 TASK 4 (split). queue4 was stopped, patched (waits for PRE-TASK4 DONE) and
+  restarted. TASK 4 cannot start before ~03:30 (Fatih watching TV until ~02:00).
+  Running now: re-analysis of all 9 stored family sessions (reanalyze_synth.sh, scratchpad reanalyze_families.log) and the Autoware
+  validation session fish_20261025_134134 with the fixed model (analysis_cshim2/model_night.log, fish_tasks_night.*) -> truth_check
+  (precision must stay 1.0; recall may rise: the duplicate-subscription nodes include mission_planner and vehicle_cmd_gate).
+  Scale runs so far (old code): er50 ?, layered100 FAIL 4 FP (570 s) -> to be re-analysed with reanalyze_synth.sh, not re-run.
+
+[23:55] Re-analysis of all 9 stored family sessions with the fixed code (tests/synth/reanalyze_synth.sh, no new runs): zoo, chain, star, tree,
+  cycle PASS; ba PASS (6 joins observed, 2 candidate-listed), er PASS (6 observed: ptr_hold via pointer:release@publisher; 2 member_queue
+  candidate-listed), bipartite PASS (3 member_queue candidate-listed = deque copies, listed via the static source only), layered PASS
+  (2 ptr_hold joins observed, 1 member_field sampled observed:stamp:match, 1 candidate). 0 false positives everywhere.
+  Note: the container shim never fires in the synthetic runs (container_ops=0): it is generated per image from Autoware's PLT symbols
+  and does not cover the synthetic package's own template instantiations -> deque copies can only be listed (source), as designed.
+
+[00:03] TASK 1 REGRESSION found by re-running the Autoware validation session with the duplicate-subscription fix: truth-check precision
+  7/9 = 0.78 — rows #29/#30 (vehicle_cmd_gate /system/emergency/control_cmd -> timer, FALSE) became observed:stamp:match. Data: the
+  emergency control_cmd and the emergency gear_cmd deposits carry the SAME stamp (one value, repeated 133k times = a constant stamp), the
+  timer republishes the gear_cmd copy -> the stamp also "matched" the control_cmd deposit. Before the fix this was hidden by the
+  mis-attributed second kinematic_state subscription (the timer F carried an unknown intra-process input and all its stamp evidence was
+  skipped). FIX (model + extractor): a stamp is an identity only when it is unique in the node — value 0 and /clock ticks excluded (as
+  before), a value deposited by TWO callbacks of the node = ambiguous, a value taken > 2 times by one callback = degenerate; both counted,
+  no evidence. Synthetic side: timer readers stamped their outputs on the sources' 100 ms grid, so reader outputs coincided with input
+  stamps by luck (correct edges, wrong reason) -> synth_emit.py: readers stamp with now(); every other field_overwrite reader
+  propagates its first deposit's header (the real republish-latest identity flow). Stored layered session re-analysed: stamp:match pairs
+  463 -> 18 (ambiguous grid values dropped), verdict unchanged. Autoware model re-running with the guard (model_night2.log,
+  truth_check_night2.txt) — precision must be 7/7 again.
+
+[00:08] Scale runs (queue3, old code at model time): er50 FAIL 4 FP, layered100 FAIL 4 FP (all timeout-timer aliases -> verifier), er200
+  FAIL 0 FP (1027 s), ba500 running. er200 re-verified with the new verifier: 109 trigger exact, 113 trigger UNDERSAMPLED, 2 MISSING;
+  17 joins observed, 44 candidate-listed, 90 undersampled, 7 MISSING (member_map); sampled 1 observed / 3 undersampled / 1 MISSING.
+  The system is starved, not FISH: a 10 ms timer source fired 195 times in 90 s (2 Hz), a 20 ms one 8 times; the 4-core budget counts
+  callback compute only, not DDS transport of 600 kB pointclouds across 7 processes. Verifier now (a) counts oracle instances inside the
+  FISH window and reports 'undersampled' (< 5 instances) apart from MISSING, (b) maps same-period timers of one node exactly: synth_emit.py
+  creates every timer with a lambda (symbol ...::{lambda()#k}); std::bind gave identical symbols (cb_013 20 ms vs another 20 ms timer in
+  node_003 were indistinguishable). The 7 member_map joins + 2 triggers still MISSING in er200 are to be looked at after queue5's
+  re-analysis of the scale sessions with the current code. For a meaningful scale validation the descriptors need a load that keeps the
+  nominal rates (message sizes, budget 2 cores, 180 s) — a scale-up round after TASK 4, as agreed, not tonight.
+
+[00:16] Fatih (chat): why do the synthetic runs get a limited core set? — night_runs.sh pinned the app to 6 P-cores (0,2,4,6,8,10) and the
+  observers to 12-17 (the overhead-campaign design for the hybrid CPU); the synthetic cycles inherited it and the scale graphs starved.
+  Decision (Fatih): like the full Autoware runs, the app gets everything but the host's two E-cores. night_runs.sh now defaults to
+  FISH_APP_CPUS=0-17 / FISH_OBS_CPUS=12-17 (override NIGHT_APP_CPUS / NIGHT_OBS_CPUS). Applies to the family re-runs tonight and to every
+  later run; the 1c shim-cost sessions of this evening were measured with the old 6-core set (keep in mind when comparing).
+
+[00:16] TASK 1 FINAL after the night's fixes (fish_20261025_134134, sf_all4 corroboration, model_night2.log / truth_check_night2.txt /
+  fish_tasks_night2.*): precision of observed links 6/6 = 1.00, recall 6/38 (mrm_handler ptr, planning kinematic_state ptr, ndt
+  biased_pose queue, ekf pose + twist queue, mission_planner ptr). Row #15 (map_based_prediction vector_map -> objects, stamp) is now a
+  candidate: the stamp guard found a second depositor with the same value (1 ambiguous output) — honest loss of one weak observation.
+  Extractor: 119 trigger edges with instances (+4 from the duplicate-subscription F's), 6 join edges all evidenced, 0 structural, 6 observed
+  sampled dependencies, 14 held@publish candidates with pairs, 159 structural/source candidates (was 69: +90 source-only).
+  er200 re-verified with the final verifier: 109 trigger exact / 44 undersampled / 71 INACTIVE (the consumer never received anything:
+  e.g. node_025's /synth/t020 subscription has zero rmw_take although cb_020 published 168 times — middleware under the starved 6-core
+  run; FISH_CDDS_XML=0 in the synthetic plan), joins 17 observed / 44 candidate / 90 undersampled / 6 inactive / 1 MISSING
+  (cb_007 -> cb_171: the release inside the timeout-timer instance was not recorded because another timer had published during the
+  hold — fixing: release@publisher is independent of held@publish now).
+
+[00:25] CORRECTION to the 00:16 core-set entry (Fatih: "Autoware ran on the same 6 P-cores and did not starve — how did this starve?"):
+  the 6-P-core set is identical for the Autoware runs and the synthetic ones; the starvation is the synthetic SCALE descriptors' own
+  load, not the core count. er200: 67 of 184 publishing callbacks send 600 kB 'pointcloud' messages, timer sources alone at 10-50 ms push
+  ~1.45 GB/s to DDS subscribers in 7 processes (202k DDS publishes in 117 s vs Autoware's 42k in 50 s, Autoware's pointclouds mostly
+  intra-process), with FISH_CDDS_XML=0 in the synthetic plan (Cyclone defaults, MaxMessageSize 14.7 kB -> fragment loss for 600 kB
+  samples: 71 edges never delivered a single message). night_runs.sh default RESTORED to 0,2,4,6,8,10 / 12-17 (comparable with every
+  campaign); NIGHT_APP_CPUS / NIGHT_OBS_CPUS stay as overrides. For the scale round after TASK 4: realistic traffic in the generator
+  (pointclouds <= 10 Hz and intra-process, bandwidth cap per process), FISH_CDDS_XML=1, 180 s.
+
+[00:25] Autoware validation session re-run with the final rules (model_night3.log / truth_check_night3.txt / fish_tasks_night3.*):
+  precision 6/6 = 1.00, recall 6/38 unchanged; release-inside-publisher pairs 2440 on 8 (F,F) pairs (none corroborated by a retaining
+  source deposit -> candidates with pairs), stamps: 0 ambiguous / 0 degenerate in this session's model window; 119 trigger edges with
+  instances, 6 join edges evidenced, 0 structural, 6 observed sampled dependencies, 14 held@publish candidates with pairs, 159 candidates.
+  fish_tasks_night3.json is the TASK 1 deliverable of the night (same session, final code). ba re-analysed with the final rule: PASS,
+  6 joins observed (release@publisher+source), 2 deque joins candidate-listed, 0 FP. er200 re-analysis running (cb_007 -> cb_171 check).
+
+[00:28] er200 with the final code + verifier: VERDICT PASS (with candidates) — trigger 109 exact / 44 undersampled / 71 inactive,
+  joins 34 observed (17 release@publisher incl. 7 timeout completions, mf 10, held@publish+release 7) / 33 candidate-listed / 90
+  undersampled / 1 inactive / 0 MISSING, 0 false positives. Verifier: a map_keyed_timeout join completed by its timeout timer is
+  satisfied by FISH's observed SAMPLED dependency deposit-sub -> timeout timer (FISH types the timer as time-triggered; same hand-off).
+  SCALE RUNS DONE 00:26 (ba500 1497 s, FAIL 0 FP under the old verifier/code -> re-analysed by queue5). queue5 started: 1c pipelines
+  (190123, 191310, 192832, 193659; ~25 min each) -> scale re-analyses -> 8 family re-runs (new emitter: lambda timers, now()-stamped
+  readers; static step after build) -> PRE-TASK4 DONE -> queue4 TASK 4 (split), expected ~03:00.
+
+[02:29] 02:24 check: the four 1c pipelines completed (190123 00:28-00:52, 191310 -01:17, 192832 -01:42, 193659 -02:05; 0 FAILED).
+  Family re-runs with the new emitter (synth_loop2.log): chain / tree / star PASS 0 FP, bipartite running at 02:20 (layered, er, ba,
+  cycle to follow, ~4-5 min each). queue5 BUG: the scale re-analysis step looked for the session name in synth_<N>.log, the logs
+  are synth_<N>_s1.log -> all four logged "no session" and were skipped (02:05). Not patched in the running script (step already
+  passed); instead scripts/night_scale2_reanalyze_20261026.sh (started 02:29, pid 477253) re-analyses the four stored sessions:
+  er50 (222545) and layered100 (223538) at once, confined to CPUs 18,19 (REANALYZE_CPUS, new in reanalyze_synth.sh: docker
+  --cpuset-cpus + taskset) so the family re-runs on 0,2,4,6,8,10 / 12-17 are untouched; er200 (224920) and ba500 (231403) wait for
+  FAMILY RERUN DONE and run unconfined (~6 + ~12 min). Ends with "SCALE2 DONE" in synth_scale2.log. queue4 (TASK 4) kill-patch-
+  restarted (pid 477247): after PRE-TASK4 DONE it also waits for SCALE2 DONE, deadline 04:30 (then it starts anyway, logged).
+  TASK 4 split start therefore ~03:15 instead of ~02:50 — the scale re-analyses are TASK 3 validation and belong before TASK 4; the
+  ba500 verdict (5 join MISSING under the old code) is wanted before the morning. Verify files in synth_runs/ for the four scale
+  sessions still show the OLD code's FAIL (23:34-00:26) until the driver overwrites them; the er200 PASS at 00:28 was a scratch run.
+
+[03:03] 02:50 check + scale2 results. Family re-runs (new emitter): all 8 PASS, 0 false positives (bipartite / er / ba with join
+  candidates, layered / cycle with sampled candidates) — FAMILY RERUN DONE 02:42:50, PRE-TASK4 DONE 02:42:50. Scale re-analyses
+  (driver, no new runs): er50 PASS (with 15 join candidates), er200 PASS (as at 00:28), ba500 PASS (with candidates; 311 trigger
+  inactive / 191 undersampled from the starvation, 0 MISSING — the 5 member_map joins MISSING under the old code are gone),
+  layered100 FAIL: 1 trigger MISSING (cb_024 -> cb_025, /synth/t024, topic_intra). SCALE2 DONE 02:52:25 -> TASK 4 started 02:53:01
+  (split; apriltag done 03:01, ~8 min per family -> 17 families until ~05:10, then host off + pipelines).
+
+[03:03] FISH BUG (layered100 cb_024 -> cb_025): a node-internal pub -> sub hop lost. /synth/t024 is published by cb_024 and consumed
+  intra-process by cb_025 in the SAME node (its only subscriber -> rclcpp makes no DDS publish at all: 0 rcl_publish, 0 rmw_take,
+  only fish_rclcpp_intra_publish; IPM matched). The model has the L2 edge (E 337 -> E 338, ipc_matched) and the L3 propagation adds
+  the F hop 800 -> 801 (nature msg) — then the join-tie step runs G.add_edge(800, 801, nature="join", topic="/synth/t025") for the
+  structural join group of the node (cb_024's sub is a 'member' of the t025 group). G is nx.DiGraph: ONE edge per ordered pair,
+  add_edge UPDATES the existing edge -> nature join_candidate, topic t025, with ipc_matched/msg_type left over. The extractor reads
+  only L3 edges -> no trigger edge, sub:/synth/t024 reported as a 'sub-unpaired' source (431 releases). Same class of overwrite
+  possible from state links and NITROS gxf_internal F edges. Count of such overwritten hops: layered100 1, ba500 1 (fell into the
+  starved/undersampled rows), er200 0, Autoware 134134 0 -> TASK 1 numbers unchanged.
+  FIX (postprocess/model_improved_pg.py): _l3_keep_hop(): a tie on a pair that already carries a message hop is kept as an
+  attribute list on the hop (join_tie_groups / state_link_topics / gxf_internal_groups) and never overwrites it; the hop already
+  keeps the pair in one component. Log lines "Join ties" / "State links" report the count. Validation (model + extractor + verify
+  on the stored sessions, host confined to 18-19 by split) running for layered100 and ba500 — result in the next entry.
+  TASK 4 pipelines (after the split phase) will run with this code.
+
+[03:15] layered100 VERDICT PASS (with candidates): trigger 103 exact / 4 inactive / 9 undersampled, joins 35 observed / 11 candidate-listed
+  / 6 undersampled, 0 MISSING, 0 found-not-exact, 0 false positives. ba500 re-verified with the model fix: PASS (1 tie kept as attributes
+  of its hop). Besides the DiGraph overwrite, layered100 exposed TWO EXTRACTOR BUGS in the intra-process identity (both left the trigger
+  edge 'mixed:message_address+order' instead of exact — the verifier demands exact):
+  (1) the fixed "publish older than 2 s = stale" bound: cb_023's ring buffer (depth 10) stays FULL under the starved run, every message
+      waits 1.7-3.4 s before its take (9 newer publishes between publish and take = depth-1), so 14 (t022) + 113 (t082) correct address
+      matches were rejected and fell back to the order rule. Replaced by the ring-buffer feasibility test: a publish m can still be in a
+      depth-D drop-oldest buffer at the take only if the number of newer publishes into that buffer is <= D-1 (a take always removes
+      the oldest, so nothing newer than m leaves before m); P >= D means a reused address whose own publish event is missing. Depth from
+      the IPM registration event (ipm_add_subscription.depth); D unknown -> 30 s bound. Autoware 134134: 0 takes were affected.
+  (2) per-message records (publishes, DDS writes, intra takes, holds, stamps: 12 queries) were loaded from t_ss - 1 s / - 2 s: a
+      message published before that margin and taken inside the window had no identity (2 takes of t022, published 0.4 s before the
+      margin). Now loaded from the data-phase start (t_lo = min(t_ss - 2 s, t_data - 1 s)); pairs are still filtered by the consumer
+      start inside the window. Diagnostic side effect: "no publish with that address" now also counts pre-data-phase takes (outside
+      the window, never paired).
+  Revalidation batch started 03:14 (scripts/revalidate_extractor_20261026.sh, log revalidate_0315.log): extractor + verify on the 8
+  family re-run sessions and the 4 scale sessions, then the Autoware TASK 1 extractor into the scratchpad (night3 files untouched) with
+  a diff of the summary head. Host still in split (TASK 4 families; bi3d running) -> analysis confined to CPUs 18-19, slower.
+
+[03:23] Revalidation with the final extractor (revalidate_0315.log): all 12 stored synthetic sessions PASS, 0 false positives, 0 MISSING,
+  0 found-not-exact — chain / tree / star exact only; bipartite, er, ba (join candidates: deque copies, source-only), layered, cycle
+  (sampled candidates), er50 (15 join candidates), layered100, er200, ba500 (candidates + starvation rows). TASK 3 validation loop is
+  green with the night's code. Autoware TASK 1 extractor comparison (134134, fresh sf_all4 mapping) running — result in the next entry.
+  TASK 4: apriltag 8 min, bi3d 11 min, bi3d_freespace since 03:11.
+
+[03:32] Autoware TASK 1 session (134134) with the new extractor, fresh sf_all4 mapping (scratch fish_tasks_134134_0315.*; night3 files
+  untouched): the result lines are IDENTICAL — join edges 6 (container 2, message_filters 3, held@publish+source 1), 0 structural,
+  6 observed sampled dependencies, 14 held@publish candidates, drops 247 on 3; held-while-published 4424 pairs on 23, released-in-
+  publisher 2440 on 8 unchanged. Only the diagnostics moved (records now from the data start: more publishes/takes/stamps counted,
+  pre-window takes show as "no publish with that address"; the 1 ambiguous stamp is now explained). ONE intra take was rejected by
+  the new ring-buffer rule: /sensing/lidar/concatenated/pointcloud, depth 1, a 211 ms old message taken while the NEXT publish landed
+  80 us before the take tracepoint — the pop happened before that publish, the tracepoint after (normal publish -> take latency is
+  >= 50 us, p1 74 us). Not a reused address. Fix: publishes within IPC_TAKE_RACE_NS = 1 ms before the take do not count as "newer
+  while m waited". Re-running layered100 (must stay PASS) and the Autoware extractor with the race-tolerant rule; edge-level diff
+  (n_pairs / prov per edge) against fish_tasks_night3.json follows. Expectation: 0 rejected takes, identical edges.
+
+[03:37] With the race-tolerant ring-buffer rule: layered100 PASS (unchanged), Autoware 134134 extractor: 0 rejected takes (6513 paired by
+  address), and the EDGE-LEVEL diff against fish_tasks_night3.json is empty — 393 tasks, 119 trigger/join edges with identical
+  (n_pairs, prov) per edge, 124 sampled, 159 candidates, 86 inactive. TASK 1 deliverable stands as fish_tasks_night3.* (same numbers
+  under the final code). Night-2 fixes are in: model _l3_keep_hop (DiGraph overwrite), extractor ring-buffer feasibility + 1 ms race
+  tolerance, records from the data start. TASK 4 pipelines (after the split phase) run this code.
+
+[03:42] TASK 4 findings while the families run (dope since 03:38; apriltag, bi3d, bi3d_freespace, dnn_image_encoder rc=0 with reports):
+  (1) detectnet FAILED (warmup and lttng, rc=1, no report): the TritonNode cannot load libgxf_isaac_triton.so -> "libdcgm.so.3: cannot
+      open shared object file". DCGM (datacenter-gpu-manager) is neither in the -fishdeterministic image nor on the host (apt candidate
+      1:3.3.9, not installed). Not a regression of tonight's migration: detectnet never ran in these campaigns (overhead_isaac rc=125,
+      migrate smoke rc=126, first task4 attempt rc=126; smoke tests only checked the container starts). The triton family uses the same
+      TritonNode and will fail the same way. MORNING DECISION (network + image change): install datacenter-gpu-manager into the two
+      images (or on the host and bind-mount libdcgm.so.3), then re-run detectnet + triton (split) and their pipelines.
+  (2) BUG in the TASK 4 plan: overhead_sweep_v8.sh mounts $DEST_BASE/<family>/lttng_1 as /root/fish_traces, so the sessions live at
+      night_20261025_final/task4c/<family>/lttng_1/fish_<ts>, while queue4's pipelines phase and post_run_pipeline.sh expect
+      ~/fish_traces/<session>. Without a fix the pipelines phase would have found nothing. Fix without touching the running queue:
+      scripts/task4_session_links_20261026.sh (pid 525139) polls every 5 s and symlinks each new session into ~/fish_traces (5 linked
+      at 03:40) and writes task4_sessions_map.txt (session -> family; task4_summary.py now reads it). The queue's session filter
+      (names newer than fish_20261026_013950) admits them. Morning: check that every family's session got a pipeline; run any missing.
+
+[05:54] TASK 4 STALL (ess) found at the 05:40 check and cleared at 05:52; two tooling bugs fixed on the way.
+  ess lttng run (session fish_20261026_025512, start 03:55): warmup rc=0 in 5 min; the FISH run went through the probes and the 60 fps
+  fixed-rate test, then at 04:00:04 the 30 fps step's start_monitoring service call lost its response ("failed to send response ...
+  (timeout): client will not receive response", rmw_fastrtps) and ros2_benchmark's Controller waited for it forever (no client timeout).
+  Nothing ended the run: overhead_sweep_v8.sh wraps docker run in `timeout 1200`, but the docker CLIENT only forwards SIGTERM into the
+  container, whose PID 1 is bash (ignored as PID 1), and the client itself stays alive -> the run sat 1 h 45 min past its budget.
+  Meanwhile FISH's snapshot hz sampler (`ros2 topic hz <topic> --window 50` via subprocess.run(shell=True, timeout=10)) leaked one
+  probe every 10 s: the timeout kills the shell only, and on a silent topic the python child never writes -> never gets EPIPE -> lives on.
+  609 orphans (each a DDS participant, lttng-ust registered): container RSS 25.3 GiB of 31, host 3 GiB available, 14 cores busy.
+  Normally masked (a probe on a live topic dies on its first print), the stalled run exposed it. Whether the orphan storm CAUSED the
+  service-response loss is not settled: the first orphan appeared at 03:58:57 (3 orphans existed at 04:00:04) — the three earliest
+  probably died late rather than never. Earlier families tonight and all previous campaigns completed with the same sampler.
+  Actions (host clock): 05:46 pkill -9 of the 609 probes (host back to 1 GiB used); 05:47 python/fish/snapshot.py hz probe runs in its own
+  process group (Popen start_new_session=True) and the whole group is SIGKILLed on timeout (tested on the host: no leftover);
+  05:48 scripts/overhead_sweep_v8.sh `timeout -k 60` (temp + mv; the running ess instance kept the old inode, image_proc onwards use the
+  new one) so a hung container costs 20 min + 1 min, then the existing docker rm -f cleanup removes it; 05:48 SIGINT to launch_test ->
+  test ended "FAILED (errors=2)" but launch left component_container_mt alive (rclpy double-shutdown exception in the launch service);
+  05:52 SIGINT to the container process -> daemon stopped collectors, LTTng session stopped cleanly, wrapper dec, container exit;
+  sweep logged ess rc=124 report_json=0, queue moved on: "[05:52:54] task4 image_proc" (-k 60 visible in the new timeout cmdline).
+  ess data: trace readable on the host (ros2/.../fish_ch_*; 131 MB incl. 1 h 45 min idle), 5 min of benchmark traffic (probes, 60 fps),
+  no r2b report. The pipeline will run on it like any other session; a clean ess re-run is a MORNING item (together with detectnet/triton).
+  Schedule: 10 families left (image_proc .. visual_slam) at ~10 min -> host off ~07:40, then 17 pipelines -> TASK4 DONE later in the morning.
+  Still to verify: the image_proc lttng container carries the fixed snapshot.py (install copies /host/fish_src at start; checked on the
+  warmup container before the copy happened). Watcher (pid 525139) still linking sessions (7 linked: .. dope, ess).
+
+[05:58] Verified in the image_proc lttng container (started 05:56:53): the installed /opt/ros/humble/fish/python/fish/snapshot.py carries the
+  process-group fix; after 60 s of sampling 0 orphaned hz probes (ppid 1), only the in-flight probe alive. Waiting for "host off; task4
+  pipelines" (~07:40).
+
+[07:26] TASK 4 split phase finished 07:20:39 (host back to off, unconfined); pipelines running since 07:20 (~1 min per Isaac session,
+  8 done by 07:30). All 17 sessions symlinked into ~/fish_traces (task4_sessions_map.txt, 17 lines).
+  runs.csv (lttng): rc=0 with a report for 11 families — apriltag, bi3d, bi3d_freespace, dnn_image_encoder, dope, image_proc, nvblox,
+  segformer, stereo_image_proc, tensor_rt, visual_slam. Six did not complete:
+    detectnet, triton  rc=1  libgxf_isaac_triton.so needs libdcgm.so.3 (warmup too) — known, image fix needed (03:42 entry).
+    nitros_bridge      rc=1  warmup AND lttng: "No messages were observed from the monitor node monitor_node0" — the benchmark itself
+                             produces nothing in this setup; never passed in any campaign (overhead_isaac 2026-08-27 rc=1 x9, migration
+                             smoke rc=126). Not FISH. Needs a look at the bridge's two-process/CUDA-IPC requirement before any re-run.
+    rtdetr             rc=1  warmup AND lttng: rosbag2 "Could not load/open plugin with storage id 'mcap'" — the r2b 2024 bag is MCAP and
+                             the image lacks ros-humble-rosbag2-storage-mcap. Image fix (network). Not FISH.
+    ess                rc=124 the stall (05:40 entry); 5 min of data recorded.
+    unet               rc=1  warmup rc=0; FISH run: 2nd probe at 1505 Hz (binary search), PlaybackNode "Couldn't maintain the requested
+                             playback rate", play_messages future timed out after 15 s (27 s after the request) -> test FAIL. No lost
+                             response; the probe at the extreme rate did not finish in time under tracing. unet lttng passed 3/3 on
+                             2026-09-09. Re-run candidate (split, quiet host).
+  Lost service responses ("failed to send response (timeout): client will not receive response", rmw_fastrtps rmw_response.cpp:154):
+  exactly one per FISH run in 8 of 11 FISH runs, zero in 17 warmups. 7 of the 8 are explained and benign: the line is printed by the
+  Controller process (rclpy format), immediately after "Computing input data file hash" ends (3-11 s hashing of the 1.3-4 GB bag, the
+  rclpy executor does not spin meanwhile); during the hash FISH's parameter poll asked the Controller's parameter service ("2 not
+  reachable" at polls #4/#5 in bi3d, #2-#4 in unet); the stale request is answered after the hash, the CLI client is gone -> the server's
+  100 ms wait for the response reader fails -> warning. Effect: none on the benchmark; FISH's params snapshot gets the Controller one poll
+  later ("1 not reachable", "+1 new" at the next poll). The 8th is the ess case — a benchmark service (MonitorNode start_monitoring ->
+  Controller) after 5 min of correct calls, i.e. the Controller's response reader was unmatched from the server's view at that moment.
+  Only occurrence of its kind tonight (1 of 11 FISH runs; 0 of 17 FISH-off runs). Open: whether FISH's per-poll CLI participants
+  (node list / param dump / topic hz each create and destroy a DDS participant every ~10 s) perturb discovery enough to drop a match;
+  a controlled re-run of ess (and unet) with the collectors off vs on is the way to settle it — MORNING item, Fatih's call (it is
+  measurement interference, not a model bug).
+
+[07:59] TASK4 DONE at 07:50:43 (pipelines 07:20-07:50, ~1-4 min per Isaac session; all 17 TASK 4 sessions have an analysis dir; watcher
+  exited; host off/unconfined). scripts/task4_summary.py now prints per session the evidence label of EVERY edge (kind:prov=n, from
+  fish_tasks.json) and the model's provenance line. Three more FISH bugs, found by the ess session's pipeline (MODEL FAILED):
+  (D) fish.launch_test_inspect: the test script's module-level code spawned trtexec (97 s ESS engine build in the fresh container);
+      a SUBPROCESS writes to the OS-level fd 1, which the wrapper points at launch_components.json -> the file began with
+      "&&&& RUNNING TensorRT.trtexec ..." and was not JSON. sys.stdout was already redirected, fd 1 was not. Fix: os.dup2(2, 1) around
+      the inspection, restored before the JSON dump (python/fish/launch_test_inspect.py; pattern tested on the host). Consumers made
+      tolerant for existing sessions: scripts/source_flow/map_source_flow.py and postprocess/ingest_pg.py parse from the first line
+      that opens a JSON value (ess file -> the 4 expected keys).
+  (B) model_improved_pg.py: _source_verified_links() returned set() when no source-flow file exists, the 2026-10-25 source-only
+      candidate loop calls .items() -> AttributeError -> no graph stored -> extractor "0 callbacks with instances" (window [spans]).
+      Latent since 2026-10-25 for ANY session whose source-flow step fails or runs without FISH_SOURCE_FLOW; every other session
+      tonight had a mapping, so it never fired. Fix: return {} (dict like the normal path).
+  (C) model_improved_pg.py identify_callbacks: the lifetime loop reused `t0` (a timestamp) and the "DONE in" timer printed
+      -1.79e18 s. Renamed ts0.
+  Pipeline FAILED markers: only ess (SOURCE FLOW MAP FAILED + MODEL FAILED); LIMEIT/KSCHED FAILED everywhere = no kernel session
+  (expected for Isaac runs). ess re-run of the full pipeline with the fixes running now (log pipeline_fish_20261026_025512_rerun.log),
+  preceded by a --no-save model run without any source flow to exercise the repaired fallback path.
+
+[08:12] ess pipeline re-run with fixes B/C/D: PIPELINE DONE 08:07 (model stored: 14490 nodes — the 609 orphan probe nodes are in the
+  graph —, extractor window [phases] 6898.6 s, 862 callbacks with instances, 59 vertices, 5 intra trigger edges, 36 candidates). The
+  --no-save model run WITHOUT any source flow (the configuration that crashed) completed: "source corroboration: none", 29 msg edges.
+  A FIFTH bug of the night, extractor (E), surfaced by the ess output: "3152 takes paired by address" but every intra edge n_exact = 0.
+  New permanent diagnostic (address pairs consumed by no model edge) showed them all as PlaybackNode publishes of /r2b/left|right/
+  image_rect|camera_info paired with the MonitorNode's /r2b/disparity takes: the IPM identity key was (process, message address) and
+  the LAST publish of that address before the take was taken — regardless of topic. NITROS buffers are reused across topics inside
+  the component container, so a /r2b/disparity take matched a foreign topic's publish. Fix: the matched publish must be on the taker's
+  topic (sub F's entity label); walk back to the latest same-topic publish of that address, else counted as "address last published
+  on another topic (reused buffer)". ess now: 0 paired by address, 3436 other-topic, intra edges stay by-construction (the NITROS
+  ESS publisher emits no address record). Regression runs started 08:11: Autoware 134134 extractor + edge-level diff vs night3
+  (scratch fish_tasks_134134_0830.*), synthetic layered100 re-analysis (reanalyze_layered100_0830.log). Then all 17 TASK 4 sessions
+  get the extractor re-run with the final code and the summary file is regenerated.
+
+[08:14] Regression (E) part 1: synthetic layered100 re-analysed with the topic-consistent intra pairing: VERDICT PASS, 0 false positives,
+  category counts identical to the 03:1x run (join candidate-listed 11, undersampled 6; sampled candidate-listed 2, undersampled 1;
+  trigger inactive 4, undersampled 9). Autoware 134134 extractor running (started 08:11).
+
+[08:15] Regression (E) part 2: Autoware TASK 1 session 134134 extractor with the topic-consistent intra pairing (scratch
+  fish_tasks_134134_0830.*): EDGE-LEVEL IDENTICAL to fish_tasks_night3 — 393 tasks, 119 edges with the same (n_pairs, n_exact, prov),
+  124 sampled, 159 candidates, 86 inactive; 5678/5678 takes paired by address, 0 "last published on another topic". Only the
+  diagnostics differ (records loaded from the data start, as since 03:3x). Fix (E) accepted. Re-extraction of the 17 TASK 4 sessions
+  with the final extractor started (scripts/task4_reextract_20261026.sh, log task4_reextract.log; previous fish_tasks.txt kept as
+  fish_tasks_pre_reextract.txt), then notes/task4_summary_2026-10-26.txt is regenerated.
+
+[08:17] ===== MORNING SUMMARY 2026-10-26 (programme of 2026-10-25, night 2) =====
+  STATE OF THE FOUR TASKS
+  TASK 1 (Autoware FISH final): deliverable ~/fish_traces/analysis_cshim2/fish_tasks_night3.* stands; re-run twice tonight under the
+    final code (03:37, 08:14): edge-level identical (393 tasks, 119 edges, 124 sampled, 159 candidates, 86 inactive; 6 join edges,
+    0 structural; hand-truth precision 6/6).
+  TASK 2 (image migration): 17/18 Isaac families on -fishdeterministic (AAS excluded by decision).
+  TASK 3 (synthetic generator + validation loop): all 12 stored synthetic sessions PASS with the final code (03:23); layered100
+    re-verified after the last extractor fix (08:13) with identical category counts; 0 false positives everywhere.
+  TASK 4 (every image, FISH model): DONE 07:50. 17 families run (split, 02:53-07:20), 17 sessions linked, 17 pipelines + a final
+    extractor pass with the day's last fix (08:16). Table: notes/task4_summary_2026-10-26.txt (one line per session with the
+    evidence label of every edge; regenerate with python3 scripts/task4_summary.py). rc=0 with report: 11 families; failed:
+    detectnet/triton (libdcgm.so.3), nitros_bridge (benchmark emits nothing), rtdetr (no rosbag2 mcap plugin), ess (stall, 5 min of
+    data), unet (1505 Hz probe timeout under tracing).
+  FISH BUGS FOUND AND FIXED TONIGHT (night 2; night 1 had DST ingest, intra stamp gap, retaining rule)
+    model_improved_pg.py: (1) _l3_keep_hop — join/state/gxf ties no longer overwrite a propagated message hop (DiGraph);
+      (2) source-flow fallback returned set() -> crash without FISH_SOURCE_FLOW (no graph stored); (3) identify_callbacks timer shadowed.
+    extract_fish_tasks.py: (4) ring-buffer feasibility test + 1 ms race tolerance instead of the 2 s staleness bound; (5) per-message
+      records loaded from the data-phase start; (6) intra identity requires the publish to be on the taker's topic (address reuse
+      across topics: 3152 false identities in ess, up to 195955 in bi3d_freespace — none ever reached an edge, silently); new
+      diagnostic "intra identity NOT consumed by any model edge".
+    tooling: (7) fish snapshot hz probe leaked one `ros2 topic hz` process per 10 s (609 orphans, 25 GiB) — process-group kill;
+      (8) launch_test_inspect: subprocess output polluted launch_components.json — OS fd 1 redirected; map_source_flow.py and
+      ingest_pg.py tolerant of polluted files; (9) overhead_sweep_v8.sh timeout was inert (docker client forwards SIGTERM to PID 1
+      bash) — `timeout -k 60`.
+    Validation after each change: synthetic PASS set + Autoware 134134 edge-level diff (empty every time).
+  FINDING FOR THE PAPER / DESIGN (Fatih's decision): Isaac/FastDDS models carry NO identity-backed hop edge. DDS edges are
+    inferred:upper-bound(start-publish) (no fish_dds_write / rhc_store: the exact DDS identity exists only in the CycloneDDS shim),
+    intra edges by-construction:intra (NITROS publishers emit no address record; rclcpp intra takes exist but their publishes do not).
+    Autoware: 83 dds measured:rhc_store + 27 intra exact:message_address per session. Options: a FastDDS identity layer (rmw_fastrtps
+    overlay: explicit source_timestamp at write + tracepoint, matched with rmw_take.source_timestamp), or count these edges as
+    candidates in the Isaac tables. Isaac is not in the paper, so this may stay a documented limitation.
+  OBSERVATION INTERFERENCE: "failed to send response (timeout)" once per FISH run (8 of 11), never in FISH-off runs: 7 are the
+    Controller's rclpy parameter service answering FISH's `ros2 param` poll after the bag hash (benign); 1 (ess) was a benchmark
+    service after 5 min — the hang. Controlled re-run of ess (collectors on/off) would settle whether FISH's per-poll CLI participants
+    perturb FastDDS discovery.
+  MORNING DECISIONS (nothing started): (a) DCGM into detectnet/triton images (network) + re-run; (b) rosbag2 mcap plugin into the
+    rtdetr image + re-run; (c) ess + unet clean re-runs (split, quiet host; ess also as the collectors-on/off experiment);
+    (d) nitros_bridge: benchmark never produced output in any campaign — investigate or drop; (e) FastDDS identity layer vs
+    candidate policy; (f) scale-up synthetic round (realistic traffic, FISH_CDDS_XML=1, 180 s) — allowed now that TASK 4 is done;
+    (g) 1c shim-cost analysis; AAS/awsim/centerpose; docker cleanup (disk 92 %, 144 GB free); multi_object_tracker truth rows
+    #16/#17; fishwait29 stamp probe; boundary reads. ess session 025512 keeps 609 orphan-probe nodes in its model (14490 nodes).
+  HOST: perf mode off (user slice unconfined) since 07:20; no experiment containers; no night scripts running; memory 2 GiB used.
+  All code changes are uncommitted in ~/fish_interfere (model, extractor, ingest, map_source_flow, snapshot.py, launch_test_inspect.py,
+  overhead_sweep_v8.sh, task4_summary.py, new scripts task4_session_links / task4_reextract / night_scale2 / revalidate).
+
+[2026-10-26 16:05] MORNING SESSION — decisions by Fatih (chat): (1) 'ros2 topic hz' sampler OFF; (2) build the rmw_fastrtps identity
+  layer now; (3) investigate the Isaac intra_take deficit. Status, all code uncommitted:
+  (1) python/fish/snapshot.py: TOPIC_HZ_ENABLED = (FISH_TOPIC_HZ == "1"), default off. Why: sequential 10 s/topic sampling covered
+      2-5 topics per session (Autoware topic_list 739 entries = 2 h per cycle; DB over 109 sessions: mean 2.9 topics, max 36), the
+      avg_rate_hz edge attribute it fed has no reader (extractor, viewer, paper: none), and each probe is a DDS participant whose
+      subscription forces inter-process serialization on the sampled topic for 10 s (observer effect) — plus the ess leak.
+      Publish rates come from the trace (rcl_publish / fish_dds_write per publisher F).
+  (3) Isaac intra_take deficit (apriltag 015704 — mislabelled image_proc in the chat this morning: 72012 fish_rclcpp_intra_publish, 20 fish_rclcpp_intra_take): the publish hook lives
+      in librclcpp (overlay), the take hook in the header template SubscriptionIntraProcess::take_data, instantiated in the user
+      packages. migrate_overlay.sh rebuilt only packages matching 'use_intra_process_comms' (plural); NITROS uses
+      SubscriptionOptions.use_intra_process_comm (singular) -> isaac_ros_nitros never rebuilt (lib dated 2026-09-04). The 20 takes are
+      ros2_benchmark's /r2b/buffer/* subs (rebuilt as EXTRA). Fix: regex 'use_intra_process_comm' + rebuild in the new migration.
+  (2) fastdds1 identity layer: docker/overlay_patches/fastdds1_identity.py (tracetools events fish_rmw_write(rmw_publisher_handle,
+      guid_hi, guid_lo, seq, ret) after DataWriter::write(data, WriteParams) in all 3 publish paths; fish_rmw_take_id(
+      rmw_subscription_handle, guid_hi, guid_lo, seq, source_timestamp, reception_timestamp) for every valid sample in _take,
+      _take_serialized_message, loaned take). Fast DDS 2.6.11 WriterHistory::add_change_ fills wparams.sample_identity (verified in
+      source); SampleInfo carries sample_identity + reception_timestamp (verified in image headers). rmw_fastrtps 6.2.10 source
+      cloned to ~/fish_traces/rmw_fastrtps_src (matches the images' deb version). scripts/migrate_fastdds_identity.sh <base> <new>:
+      overlay build of tracetools + rmw_fastrtps_shared_cpp (LD_LIBRARY_PATH shadows /opt's shared lib: no RPATH), in-place rebuild
+      of intra-process users (fixed regex), lttng pub/echo pairing test, commit with ENTRYPOINT []. New tag suffix: -fishfastid.
+      Tiers default/max: + fish_rmw_write, fish_rmw_take_id. Extractor: Fast DDS loader fills WR/arrival (labels
+      exact:sample_identity / measured:sample_identity); model: arrival from reception_timestamp (measured:sample_identity).
+      First migration started on image_proc: ~/fish_traces/fastdds1_20261026/migrate_image_proc.log
+
+[2026-10-26 16:11] fastdds1 migration of image_proc: COMMITTED fish-r2b-image_proc-fishfastid:latest (16:05-16:08). tracetools +
+  rmw_fastrtps_shared_cpp build 16 s; ldd: librmw_fastrtps_cpp.so resolves the overlay shared lib; in-container lttng pairing test
+  (ros2 topic pub -r 20 / echo): 170 fish_rmw_take_id, 170 matched to a fish_rmw_write by (guid, seq), reception_timestamp
+  nonzero in all 170. Intra side: rebuilt isaac_ros_nitros still has NO intra_take hook. nm scan of the workspace libs
+  (SubscriptionIntraProcess<...>::take_data defined vs ros_trace_fish_rclcpp_intra_take referenced): the subscriptions are
+  instantiated in the NODE libraries (librectify_node.so, libresize_node.so, ... 2 each; isaac_ros_nitros_*_type forward nodes,
+  negotiated, apriltag), not in libisaac_ros_nitros.so. Only the isaac_ros_benchmark playback/monitor nodes carry the hook.
+  Replacing the regex selection by this nm scan (libs with the instantiation but without the hook) + checking why the rebuilt
+  isaac_ros_nitros forward node lacks it (not relinked, or /opt headers ahead of the overlay on the include path).
+[2026-10-26 16:13] extractor regression after the Fast DDS loader: Autoware 134134 (Cyclone path) 119/119 edges, 86 inactive, 159 candidates,
+  0 unpaired; prov and n_pairs identical to the 08:30 run; the only field difference is the NEW n_exact on dds edges (= n_pairs on
+  all 83 measured:rhc_store edges: every DDS pair there is identity-paired). apriltag 015704 (Isaac, no new events yet): summary
+  identical. The forward-node libs without the hook are TEST targets (object dir .../test/, never loaded in any TASK 4 session);
+  the rebuilt isaac_ros_nitros itself has no subscription instantiation. Migration v2 of image_proc (nm-selected rebuild of the
+  node libraries: isaac_ros_image_proc, isaac_ros_apriltag, negotiated, ... + benchmark packages) started 16:12.
+[2026-10-26 16:17] fastdds1 migration v2 of image_proc COMMITTED (16:12-16:17): nm-selected in-place rebuild of isaac_ros_apriltag,
+  isaac_ros_image_proc (16 hook refs), negotiated, benchmark packages — "non-test libs still without the hook: 0"; pairing test 156/156.
+  Validation run started 16:18 (scripts/fastdds1_validate.sh image_proc -> ~/fish_traces/fastdds1_20261026/validate.log).
+[2026-10-26 16:21] Fatih's side question — did the probes cause Autoware diagnostics warnings? Scan of every Autoware run with a diag.log
+  since fishwait24 (notes/diag_warnings_after_probes_2026-10-26.txt, paper metric = analyze_overhead.analyze_side tsm_violations_postinit):
+  post-init topic_state_monitor violations = 0 in 10-05 fw24 nsys x4, 10-19 fw25 nsys x2, 10-25 fw27 campaign baseline x3 + lttng x6
+  (tier max, extra events, CDDS XML, container shim OFF). ONE exception: the TASK 1 run overhead_aw_20261025_144130 (= session 134134;
+  lttng+nsys, tier max, extra events, container shim ON): 22 Timeout ticks on topic_state_monitor_object_recognition_objects over the
+  whole window (objects 9.13 Hz vs 9.6-10.1 in every other run). Not attributable from one run (nsys + shim + max tier together);
+  needs an A/B. Other warnings: Autoware's own 'processing time exceeded' WARNs exist in baseline too (distortion_corrector 160-220
+  per run); traced runs add them in ring_outlier/crop_box (baseline 23-63 -> lttng 58-99 per run, 10-25). Startup NotReceived ticks
+  (excluded by the paper metric) baseline 18-31 vs lttng 46-129 in the 10-25 campaign: the current stack lengthens warm-up (paper-final
+  campaign: 12-58 vs 13-41, no difference). centerpoint proc: paper-final 23.3-23.8 -> 23.7-24.2 ms (+0.3 % claim); 10-25 campaign
+  baseline 24.3-24.6 -> lttng 25.2-28.1 ms: the +0.3 % GPU figure does not hold for tier max + extra events.
+[2026-10-26 16:21] fastdds1 validation attempt 1: rc=126 — docker 29.3 'commit --change ENTRYPOINT []' leaves Entrypoint ["bash"] (the
+  memory note's fix is not sufficient on this daemon; the -fishdeterministic images have null for another reason). Fixed by a one-line
+  Dockerfile build (FROM <commit>, ENTRYPOINT []) in migrate_fastdds_identity.sh; image_proc retagged in place; validation restarted.
+[2026-10-26 17:06] fastdds1 validation run image_proc (session fish_20261026_152557, -fishfastid image, rc=0, PIPELINE DONE 16:34):
+  trace: fish_rclcpp_intra_publish 364848, fish_rclcpp_intra_take 138530 (was 20 in TASK 4), fish_rmw_write 1054, fish_rmw_take_id 2375.
+  Intra: 182424 publishes with address, 138530 takes, 138530 paired by address (100 %) -> all 3 intra task edges exact:message_address
+  (TASK 4: by-construction). Fast DDS identity: every one of the 2375 takes matches a write by (guid, seq) session-wide; clock
+  domains agree (source_ts - write_end median -22 us, reception - write_end median +0.8 us, take - reception +22 us). The
+  extractor matched only 25: this benchmark's DDS traffic is control plane (rclpy Controller/launch processes started before
+  tracing -> no rcl_subscription_init -> topic unknown; /parameter_events; /r2b/* loader topics 11 msgs each at start) — the data
+  path is intra-process. Two fixes: reception may precede the write-END record (same-participant delivery inside write(); accept
+  50 ms before), and FISH_NO_FASTDDS_ID=1 A/B switch (+ the missing 'import os' it needed). Open: the 2 dds edges of TASK 4
+  image_proc are inactive (prov None) in this run — A/B extraction (with/without the identity loader) to run after the Autoware run.
+[2026-10-26 17:06] Autoware clean run attempt 1 (16:37) ABORTED by Fatih: the AC adapter had come out, battery mode, CPU capped at
+  400 MHz, host then reset. Attempt 2 started 17:05 after the reboot (AC online, charging): scripts/aw_clean_run_20261026.sh
+  ~/fish_traces/aw_clean_20261026b — refuses to start without AC, logs AC/BAT/MHz every 20 s (power.log) and flags the run invalid
+  if AC drops; host SPLIT (no_turbo 1, user slice 18-19) -> fishwait28, nsys mode, tier max, container shim, extra events -> host off
+  -> post_run_pipeline. Will report when done.
+[2026-10-26 17:43] CLEAN AUTOWARE RUN for the presentation: session fish_20261026_160533 (campaign overhead_aw_20261026_170524/nsys_1,
+  fishwait28, lttng+nsys, tier max, container shim ON, state-link extra events, CDDS XML, app 0,2,4,6,8,10 / obs 12-17).
+  Run 17:05-17:16 in SPLIT (no_turbo 1), rc=0, throttle +0, temp 53->51 C, desktop busy 0.11, power 33/33 samples on AC (RUN POWER
+  OK); host OFF at 17:16:11 before the pipeline. Health: nullptr 0, NoInputSource 0, died 0, RcvbufErrors 0.
+  Pipeline (off mode) 17:16-17:42: ingest 676 s, model 220 s (77 executors, 230 nodes, 15 join outputs), gantt 58 s, ksched 386 s
+  (700226 steady-state spans, 99.7 % on-CPU at start; 54.4 % on-CPU / 24.8 % runnable / 20.3 % sleeping), FISH tasks + LiME-IT 200 s.
+  Task extraction: 477 callbacks (263 infra) -> 117 trigger edges with instances = 81 dds measured:rhc_store + 27 intra
+  exact:message_address + 6 join (3 exact:message_filters, 2 container:observed, 1 pointer:held@publish) + 3 srv measured:request-id;
+  87 inactive, 159 candidates, 0 unpaired, 0 structural joins; 380 components = 117 data tasks (12 multi-vertex, 114 strict EDD).
+  Same shape as TASK 1 session 134134 (119 edges: 83 rhc_store, 27 exact; 86 inactive; 159 candidates). Analysis dir
+  ~/fish_traces/analysis_fish_20261026_160533 (fish_tasks.*, ksched.*, limeit.*, state_links.*, container_flow.*).
+  Diagnostics (paper metric) on this run: tsm violations 0, objects 9.95 Hz, centerpoint 26.5 ms, concat 9.4 ms, chain 157 ms,
+  e2e 414 ms -> the 22 violations of the 10-25 14:41 TASK 1 run do not reproduce with the same stack (shim ON + nsys); that run
+  was a daytime run, cause unknown; the paper claim stands on every campaign run.
+[2026-10-26 17:43] A/B on image_proc 152557 (FISH_NO_FASTDDS_ID=1 vs default): identical task edges (3 intra exact, 47318/47330/43882
+  pairs) and identical 3 inactive dds edges (/r2b/*/nitros negotiation topics, 0 pairs in window) -> the inactive dds edges are the
+  run, not the loader. With the reception tolerance: 25 identity pairs, 25 with arrival. Parallel ksched_split (per-CPU stream
+  workers + vectorised merge; parse is 356 of 386 s) proposed to Fatih, not started.
+[2026-10-26 19:28] METHOD PROBES (Fatih's decision 19:00): the tracker's deposit->timer link cannot be observed generically —
+  InputStream::onMessage copies DetectedObjects into types::DynamicObjectList and queues it in a std::deque whose aux ops the
+  compiler inlined (no symbol in libautoware_multi_object_tracker.so: nm/objdump 0), the pointer is not retained, the output is
+  re-stamped; reads leave no trace. General feature instead of a workaround: config/fish_method_probes.txt (user list like the GPU
+  library list / event whitelist: library, demangled method, role deposit|read|span, argspecs) -> docker/overlay_patches/
+  gen_method_shim.py wraps every listed exported method under its mangled name (6 integer regs forwarded, caller-object
+  resolution for RTLD_LOCAL plugins), emits ros2:fish_method(sym, phase, key, v1, v2, v3); fishwait29_method.py adds the
+  tracepoint; install_fish.sh regenerates the shim at launch when FISH_METHOD_SHIM=1 (list editable without an image rebuild),
+  copies fish_method_shim.json into fishlog; tiers default/max carry fish_method; run_overhead_modes.sh forwards
+  FISH_METHOD_SHIM. Extractor: deposit (key, stamp) in instance A + read (key, [lo, hi]) in instance B with lo <= stamp <= hi
+  -> `probe:band` evidence (the application's own selection rule on recorded arguments); candidates observed this way are
+  closed ("candidates closed by evidence"). Host regression test docker/overlay_patches/test_method_shim.sh: SHIM_TEST_OK
+  (3 deposits, 1 read band exact, plugin RTLD_LOCAL, results unchanged). Layout facts used: rclcpp::Time has a vtable ->
+  nanoseconds at offset 8; shared_ptr pointee = first word; DetectedObjects starts with std_msgs/Header. Band semantics from
+  input_manager.cpp: earliest <= t <= latest, bands consecutive and disjoint (latest_exported_object_time_).
+  fishwait29 build started 19:27 (build_overlay.sh fishwait29 fishwait28 fishwait29_method.py tracetools); evidence run script
+  scripts/aw_method_probe_run_20261026.sh (lttng, host off) to follow.
+[2026-10-26 20:05] FULL CHAIN WITHOUT A RENDERER (Fatih: AWSIM does not run on this laptop; CARLA/phone/eGPU discussed — eGPU feasible,
+  TB4 present on the ZBook Power G9, no OCuLink, both M.2 used). Autoware's own table: rosbag sim validates sensing/localization/
+  perception, planning simulator validates planning/control — a statement about validation, not about which nodes run. Trial:
+  logging_simulator + AD API route (goal = the bag's own end point). Coordinates: bag GNSS -> UTM (Snyder) -> MGRS 54SUE local
+  frame matches the lanelet map within 0.6 m (scripts/autoware_runs/sim_route_tool.py; route in config/sim_route_sample_rosbag.json;
+  the ego starts parked beside the opposite-direction lane 15, pulls onto lane 5 at bag +13 s, lane 2 at +20 s, goal on lane 2).
+  Trial 2 (plain ros2, no FISH): localization initialized at replay +15 s, set_route_points success, routing state 2, trajectory
+  5 Hz, control_cmd 16.7 Hz, gate 16.4 Hz — planning AND control compute during the replay (open loop: the recorded vehicle does
+  not obey; change_to_autonomous unavailable, as expected). The two planning containers "died" only at shutdown (Autoware's known
+  ~ComponentManager segfault after SIGINT). Trial 1 had failed on a wrong CYCLONEDDS_URI of mine. Integration: FISH daemon hook
+  FISH_INJECT_CMD / FISH_INJECT_AT (python/fish/gpu.py, replay phase; fishlog/inject.log), scripts/autoware_runs/inject_route.py
+  (waits for localization state 3 and ego speed >= 1 m/s, then the route), run_overhead_modes.sh forwards the two envs,
+  aw_clean_run_20261026.sh: ROUTE=1 METHOD_SHIM=1 defaults on fishwait29. Trial 3 (route as soon as the ego moves) running.
+[2026-10-26 20:12] METHOD PROBE EVIDENCE RUN (session fish_20261026_182906, fishwait29, lttng, host off, container + method shim):
+  rc=0, health clean; 2482 ros2:fish_method events; probe hits onMessage=489, getObjectsOlderThan=747; 489 deposits, 747 reads,
+  all inside callback instances; 247 deposit -> read pairs on 2 (F, F) pairs -> two NEW join edges `probe:band`:
+  tracker sub(centerpoint/validation/objects) -> tracker sub(detection_by_tracker/objects) n=195 delta p50 15.3 ms, and the reverse
+  n=52 (197.5 ms). Trigger edges 119 (+2), join ties 8 (3 message_filters, 2 container, 2 probe:band, 1 held@publish), 0 structural.
+  FINDING: the reads happen in the tracker's INPUT callbacks, not in its timer — source confirms: InputStream::onMessage ->
+  func_trigger_ -> InputManager::onTrigger (target stream) -> MultiObjectTracker::onTrigger -> getObjects (reads every stream) ->
+  process; the 10 ms publish_timer_ only publishes (checkAndPublish). So the real chain is validator -> tracker input (deposit)
+  -> tracker trigger callback (read + track) -> [processed tracks, internal state] -> timer (publish) -> prediction. The 2 remaining
+  state candidates (input sub -> timer) are now understood as the processed-tracks -> publish link, outside InputManager; closable
+  with a second probe line (TrackerProcessor update / getTrackedObjects) — the config-driven extension works as intended.
+  FULL-CHAIN CLEAN RUN started 20:10 in SPLIT: fishwait29, nsys, container shim, method shim, route injection (ego moving -> AD API
+  route), ~/fish_traces/aw_full_20261026 (power-guarded). Host off before its pipeline.
+[2026-10-26 21:05] FULL-CHAIN CLEAN RUN DONE: session fish_20261026_191043 (campaign overhead_aw_20261026_201034/nsys_1; fishwait29,
+  lttng+nsys, tier max, container shim, method shim, route injection; SPLIT 20:10-20:21, rc=0, thr +0, 53->51 C, power 34/34 on AC,
+  desktop busy 1.07 = Fatih at the keyboard on CPUs 18-19; host OFF 20:21:44; pipeline off-mode 20:21-20:53: ingest 856 s, model
+  (91 executors, 244 nodes), ksched 713082 spans). Injector: localization state 3 at replay +15 s, ego 1.79 m/s at +26 s, route set at
+  +29 s (success, routing state 2), trajectory 5.0 Hz, control_cmd 16.7 Hz until the bag end. Health: died 0, 1 benign
+  concatenate 'is nullptr' warn. Diagnostics (paper metric): tsm violations 0, trajectory 9.97 Hz (sim), objects 9.95 Hz, centerpoint
+  28.7 ms (26.5 without the route: planning/control load), chain 171 ms, e2e 429 ms, app peak 4.34 cores (3.81).
+  Task set vs the earlier clean session (160533 -> 191043): callbacks 476 -> 573, trigger edges 117 -> 159 (dds rhc_store 81 -> 121,
+  intra 27 = 27, joins 6 -> 8 incl. 2 probe:band), 0 structural, candidates 159 -> 196, sampled 126 -> 220, data tasks 117 -> 120.
+  NEW: task 1 = behavior_path_planner 100 ms timer -> behavior_velocity -> elastic band -> path_optimizer -> motion_velocity_planner
+  (C 11.3 ms) -> scenario_selector -> velocity_smoother -> planning_validator (34 vertices, every hop measured:rhc_store, n 123-130);
+  task 2 = controller 30 ms timer -> vehicle_cmd_gate -> control_validator / mrm / adapi (n 422-423). Between tasks: prediction ->
+  behavior_path_planner polled read age 101.5 ms (n 276); planning_validator trajectory -> controller polled read age 29.0 ms (n 122).
+  Method probes: 425 deposits, 642 reads, 212 pairs -> 2 probe:band joins (validation input -> detection_by_tracker trigger callback
+  n=203, 14.3 ms); the 2 input->timer candidates remain (processed tracks -> publish, outside InputManager).
+  Deliverables in ~/fish_traces/analysis_fish_20261026_191043/: tasks.html (15 multi-callback tasks), chain_e2e_full.{svg,html,png,
+  _4x.png} (25 boxes, 4 rows, 21 identity-paired hops + 2 polled links + 1 candidate), fish_tasks.*, ksched.*, limeit.*.
+  Generators: scripts/chain_figure.py (v2 multi-row, --spec), scripts/svg2png.py, postprocess/task_viz.py.
+[2026-10-26 21:10] AUTOMATIC CHAIN DISCOVERY (Fatih: "the chain figure is hard-coded"): postprocess/chain_find.py builds the vertex graph
+  from fish_tasks.json (trigger edges solid; links between tasks dotted = polled reads / held pointers from the publishing callback of
+  the topic in the writer task to the reading callback; tf lookups excluded; candidates only with --allow-candidates) and searches
+  the chain between --from / --to (and ordered --via waypoints) that crosses the FEWEST sampling boundaries, then has the largest
+  Σ hop p50 + C p50 (--criterion latency) or most identity-paired hops. --all lists every stimulus / timer source's longest intra-task
+  chain (the "analyzable chain breakdown"). chain_figure.py draws its spec directly (auto labels, rows per task, wrap at 8).
+  Session 191043, top LiDAR packets -> control_validator: (A) evidence only: 17 links, 15 trigger hops, 2 sampling boundaries, 0
+  candidates, Σ 252 ms — through obstacle segmentation -> occupancy grid -> motion_velocity_planner polled read (107 ms age) -> control;
+  (B) via lidar_centerpoint + tracking/objects with candidates allowed: 24 links, 21 hops, 3 boundaries, 1 candidate (tracker input
+  -> timer), Σ 289 ms — identical to the hand-made chain. The hand-written path was the only hard-coded part; numbers always came
+  from the JSON. Figures: chain_auto_auto.*, chain_auto_via.* in the analysis dir.
+  ksched parallel: array-level comparison IDENTICAL (on/off/ctx/wk/fx/gp, 11.4 M / 11.4 M / 5969 / 9.4 M / 3.1 M rows); the 2-wake-up
+  text difference came from the global ORDER of the merged arrays (downstream searchsorted on unsplit arrays) -> parallel parser now
+  sorts its outputs like the sequential merge; A/B v2 running. Speed on a quiet host: 386 s -> 148 s (largest stream bound).
+[2026-10-26 21:12] KSCHED PARALLEL ACCEPTED: A/B v3 on fish_20261026_160533 PASS — ksched.txt, ksched.tsv (755), ksched.release.tsv (755),
+  ksched.middleware.tsv (556) byte-identical to the sequential pipeline output. Two order effects had to be reproduced on top of the
+  identical arrays: (1) the global order of the merged tables (sorted like the sequential merge), (2) the INSERTION ORDER of the
+  thread-context dict (ksched_split lets a later entry win on an "ambiguous" (vpid, vtid) -> host tid clash; 1 such thread here;
+  that was the 2-wake-up difference). Speed on a quiet host 386 s -> 148-167 s (bound by the largest per-CPU stream, ~1 GB; the next
+  step would be splitting big streams by time range). post_run_pipeline.sh now runs ksched_split.py --parallel.
+  Side finding, NOT changed: both parsers match the futex uaddr with a hex-only regex while babeltrace2 prints it in decimal, so the
+  lock address is always 0 and the "locks" column of ksched.txt collapses every mutex of a callback into one identity. Fix in both
+  parsers together (changes the lock table), Fatih's call.
+[21:36] system_map.py fixes while the fish_20261026_201712 pipeline ingests: (1) labels showed a literal \n — esc() doubled the backslash of the graphviz newline; labels are now escaped per part and joined with \n; (2) the rosbag player's publish thread (vertex 5881, stimulus source shared by 7 topics, not a task vertex) is drawn as one grey dashed node "rosbag2_player / thread_2828 / 7 topics (stimulus)"; (3) two unnamed grey nodes (v3290 topic_state_monitor control_cmd sink, v3235 hazard_status_converter sink) came from the writer-side anchor of polled-read links falling back to the writer task's FIRST vertex, which was a folded sink -> anchor is now sampled[].writer_vertex when it lies in the writer task, else the publishing callback of that topic in the task, else the task's source callback; never a folded vertex. Verified: no undeclared endpoints in full/tasks dot. Rendered 7824x2724 (tasks), collapsed 4380x1346. Still open for the figure: dashed links dominate visually; for slides crop by stage.
+[21:48] EXPLORER-STYLE SYSTEM MAP (Fatih: "task explorer'dakileri yapabiliyoruz bunu neden yapamiyoruz"): scripts/system_map_svg.py draws the
+  whole system the way tasks.html draws one task — every task is laid out with task_viz.layout inside its own block (compact 150x32 nodes),
+  blocks sit in namespace columns ordered by crossing direction (Kahn-style, fewest incoming crossings first; crossings = links between
+  tasks + trigger edges inside tasks that change namespace -> sensing → localization → perception → planning → adapi → system → control
+  for 191043; --stages overrides), blocks inside a column are stacked by barycenter of their linked blocks (4 sweeps). Links between tasks
+  are drawn callback → callback (writer_vertex when it lies in the writer task, else the publishing callback of the topic, else the task's
+  source), merged per (u, v) with a count; dashed; candidates dotted red. Outputs sysmap_full (no frames, one style = the dense graph before
+  the breakdown), sysmap_tasks (frames + colours = the breakdown, every dashed/dotted line a cut) and sysmap.html (both views, hover a block
+  to isolate its links and show their labels). 191043: canvas 8884x1939, 42 blocks, 7 columns, 104 link lines (134 links), 85 candidate
+  lines. The graphviz system_map.py stays for the collapsed one-node-per-task view.
+[21:51] sysmap legend (Fatih: "bir legend eksik"): drawn legend panel at the bottom of both views — node anatomy (node · entity, C p50, join), stimulus node, the three in-task edge styles (trigger, join tie, service), the two cut styles (link between tasks, candidate), task frame, column meaning; positions computed from text length (6.7 px/char), panel 1720 px wide.
+[22:00] VALIDATION RUN fish_20261026_201712 (second method-probe run, split host, rc=0, route OK): pipeline done 21:54. The extractor
+  reported only 2 listed probes (onMessage 491 deposits, getObjectsOlderThan 729 reads, 249 band pairs, 0 latest pairs) although the
+  launch regenerated 4 — cause: install_fish.sh copied fish_method_shim.json into fishlog BEFORE the regeneration step, so the session
+  carried the image's build-time 2-entry table; PG has the events of all four (sym 2 TrackerProcessor::update 688 entries, sym 3
+  getTrackedObjects 292 entries). Fix: the wrapper now copies the regenerated table after generation; for 201712 the 4-entry table is
+  regenerated in a fishwait29 container and the extractor re-run (scratch reextract_201712.sh; old outputs kept as fish_tasks.2probes.*).
+  The tracker's two state_candidates (centerpoint/validation objects -> timer, detection_by_tracker objects -> timer) were still
+  candidates in the 2-probe extraction; chain_find via centerpoint evidence-only had no path concatenated/pointcloud -> tracking/objects.
+[22:00] CANDIDATE BREAKDOWN for Fatih (session 191043, 196 candidates): 139 state_candidate + 57 join_candidate, all node-internal
+  (sub callback stores -> timer / other callback of the same node publishes). 104 involve a callback that ran < 5 times in the window
+  (vector_map, route, traffic-light topics, …), 92 live. Live by evidence: 40 held pointer at the reader's publish (deposit is a
+  field/copy -> latest-value semantics -> candidate), 22 static source corroboration only (field/object/keyed/queue pattern found in the
+  class, no runtime record), 30 nothing. Concentration: vehicle_cmd_gate 30 live (6 deposits x 4 readers: 2 timers + 2 control_cmd
+  subs — the product rule), adapi/node/planning 21 (held pointers of ~20 factor topics read by one timer). sysmap now draws held-pointer
+  candidates amber and structural-only red, legend carries the counts.
+[22:08] CHAIN FIGURE "what this week closed" (Fatih): chain_figure.py --highlight <prov list> (red) / --highlight-topics <substrings> (orange)
+  + legend lines. 191043 via chain (chain_auto_via_week.*): red = 1 link (tracker InputManager join, probe:band, 10-26); orange = 11
+  planning/control links that exist only because the run injects a route since 10-26 (their evidence rhc_store is from fishwait19, 10-04).
+  Not red on purpose: exact:message_address (fork 10-05, 3 open intra edges closed 10-19, mainline fishwait26 10-25),
+  exact:message_filters (fishwait21, 10-04), measured:rhc_store (10-03), polled_take (August). The open link stays the tracker
+  processed-tracks -> publish timer state_candidate, whose closing probe (probe:latest) is being re-extracted for 201712.
+  Fix along the way: the 201712 fishlog is root-owned (container) -> the 4-probe table was installed via an alpine container; the
+  wrapper copy-after-regeneration fix covers future runs.
+[22:12] VALIDATION RUN 201712, 4-probe extraction: hits onMessage 491 / getObjectsOlderThan 729 / TrackerProcessor::update 684 /
+  getTrackedObjects 292; 249 band pairs on 2 (F,F) (join probe:band 10.1 ms p50, n=213), 680 latest pairs on 2 (F,F) -> the tracker's
+  processed-tracks -> publish-timer link is now an OBSERVED sampled dependency (observed:probe:latest, age p50 16.2 ms n=87 from the
+  detection_by_tracker input, 16.0 ms n=593 from the centerpoint/validation input). chain_find --via lidar_centerpoint --via
+  tracking/objects WITHOUT --allow-candidates now finds the chain: 21 trigger edges + 3 sampled reads with measured ages, 0 candidates
+  (chain_auto_via_week.* in analysis_fish_20261026_201712, red = this week's mechanisms: 2 links). Cosmetic defect found: the two tracker
+  state_candidates were still listed although the same (u, timer) pair is an observed sampled dependency -> extractor now closes
+  candidates for obs_sampled pairs too (third extraction pass running).
+[22:18] Fatih: "the red polled read says 'probe' — what does it mean?" -> the extractor named probe-derived links by the label's first word
+  ('probe') in the topic field and the chain figure printed it as if it were a topic, under a "polled read" heading. Both fixed: the
+  extractor now carries the probed method pair ("TrackerProcessor::update → getTrackedObjects") as the link name (probe_names,
+  join edges and sampled records), chain_figure labels such links "state read · age …" + "method probe: <pair>". Pass 3 result: the two
+  tracker candidates closed (candidates 194 -> 192, 0 tracker candidates). Pass 4 (names) running; it rewrites fish_tasks.*, chain_*,
+  sysmap*, tasks.html of analysis_fish_20261026_201712.
+[22:26] BEFORE / AFTER FIGURE (Fatih: "joins used to connect every candidate — show old vs new with an extreme case"): scripts/join_before_after.py
+  <fish_tasks.json> --node … -o <prefix>. "Before" is reconstructed exactly from the same session: the model marks candidate=True on
+  precisely the pairs the structural rule used to draw (every storing sub callback -> every publishing callback / timer of the node),
+  so before = candidates ∪ evidence edges of the node, now = evidence edges. 191043: adapi/node/planning 22 -> 1 (21 factor subs ->
+  200 ms timer, only kinematic_state observed, held@publish 39.5 ms); vehicle_cmd_gate 30 -> 0 (+26 pairs with a < 5-instance callback);
+  task set: the 13 join candidates between active callbacks, applied as edges, glue 8 data tasks (ekf_localizer 20 ms 62 cb, controller
+  30 ms, IMU x2, right LiDAR, mrm_handler, mrm_emergency_stop_operator 33.3 ms, steering stimulus) into ONE 93-callback task with 8
+  sources (data tasks 113 -> 120 now). Files analysis_fish_20261026_191043/join_before_after.{svg,html,png}.
+[22:26] chain_find fix: links between tasks looked up the writer by (writer task, topic); the probe state read matched only because its
+  placeholder topic 'probe' equalled the tracker join edge's placeholder. With real names the link vanished (pass 4: no path). Now the
+  record's writer_vertex is the fallback when no edge of the writer task carries the topic. 191043 auto + via chains byte-identical;
+  201712 via chain evidence-only again found, label "state read · age 16.0 ms / method probe: TrackerProcessor::update → getTrackedObjects".
+[22:32] join_before_after.py --no-candidates (Fatih: draw before/after without candidates): NOW panels show evidence edges only, no candidate lines or wording; 191043 -> join_before_after_nocand.{svg,html,png} (0 red lines, 0 'candidate' words). The default variant (with candidates) stays as join_before_after.*.
+[22:34] CORRECTION on the before/after planning row (Fatih: "22 -> 1, could it be 3 on another map?"): the 21 planning-factor candidates
+  of /adapi/node/planning are NOT over-approximation. Source (autoware_default_adapi_universe planning.cpp): init_factors<T> registers
+  one lambda per topic that does factors[index] = msg (vector<ConstSharedPtr> captured by reference), and on_timer reads all of them
+  (merge_factors(now(), factors_)). Runtime evidence exists for every one: held@publish pairs 53-64 each in 191043. They stay
+  candidates only because the held-pointer rule needs a static row with a retaining deposit, and source_flow.py (libclang) produced a
+  row only for kinematic_state_ = msg (member assignment in a method); the lambda inside a free function template writing an element
+  of a by-reference vector is not followed -> analyser coverage gap. Expected after the fix: 22 of 22 observed. The run-dependence
+  is real too (an edge needs the event in the window: a factor topic that never publishes cannot be observed), but here all 21
+  published (106-130 msgs). The over-approximation example is the join row / task merge: vehicle_cmd_gate's kinematic / accel / steer /
+  mrm subs -> control_cmd callback are real latest-value reads (source: field, latest) that the old rule made JOIN edges (job
+  membership), gluing localization 20 ms + control 30 ms into one task; their right class is a sampled dependency.
