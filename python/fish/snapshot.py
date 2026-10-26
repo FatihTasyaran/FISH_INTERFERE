@@ -36,6 +36,11 @@ FISH_COLLECTOR_PID_FILE = "/tmp/fish_collector_active"
 TOPIC_HZ_WINDOW_SIZE = 50
 # Topic hz: seconds per topic sample
 TOPIC_HZ_SAMPLE_SECONDS = 10
+# 2026-10-26: the hz sampler is OFF by default (FISH_TOPIC_HZ=1 re-enables it). Sequential 10 s/topic sampling covered
+# 2-5 topics per session (739-topic Autoware list: one cycle = 2 h), nothing downstream reads the avg_rate_hz edge
+# attribute, and every probe is a DDS participant whose subscription forces inter-process serialization on the sampled
+# topic for 10 s (observer effect). Publish rates come from the trace (rcl_publish / fish_dds_write per publisher).
+TOPIC_HZ_ENABLED = os.environ.get("FISH_TOPIC_HZ", "0") == "1"
 
 
 def get_session_dir() -> str:
@@ -607,7 +612,7 @@ class LiveCollector:
     Collects:
       - Node list + node info (one-shot)
       - Topic list + topic info (one-shot)
-      - Topic hz (continuous until stopped)
+      - Topic hz (continuous until stopped; opt-in via FISH_TOPIC_HZ=1 since 2026-10-26)
     """
 
     def __init__(self):
@@ -631,12 +636,15 @@ class LiveCollector:
         t_topics = threading.Thread(
             target=self._collect_topic_info, name="fish-topic-info", daemon=True
         )
-        # Continuous collector
-        t_hz = threading.Thread(
-            target=self._collect_topic_hz, name="fish-topic-hz", daemon=True
-        )
-
-        self._threads = [t_nodes, t_topics, t_hz]
+        self._threads = [t_nodes, t_topics]
+        if TOPIC_HZ_ENABLED:
+            # Continuous collector (opt-in, see TOPIC_HZ_ENABLED)
+            t_hz = threading.Thread(
+                target=self._collect_topic_hz, name="fish-topic-hz", daemon=True
+            )
+            self._threads.append(t_hz)
+        else:
+            print("[FISH]   topic hz sampler disabled (FISH_TOPIC_HZ=1 enables it)")
         for t in self._threads:
             t.start()
 
@@ -882,17 +890,28 @@ class LiveCollector:
                 if self._stop_event.is_set():
                     break
 
+                # `ros2 topic hz` never exits by itself; the sample ends with
+                # the timeout. subprocess.run() would then kill only the
+                # shell, and the python child survived whenever the topic was
+                # silent (no write → no EPIPE): 2026-10-26 ess run, 609
+                # orphaned probes (one DDS participant each, 25 GiB RSS,
+                # 14 cores). Run the probe in its own process group and kill
+                # the whole group.
+                proc = subprocess.Popen(
+                    f"{real_ros2} topic hz {topic} --window {TOPIC_HZ_WINDOW_SIZE}",
+                    shell=True, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
                 try:
-                    result = subprocess.run(
-                        f"{real_ros2} topic hz {topic} --window {TOPIC_HZ_WINDOW_SIZE}",
-                        shell=True, text=True, capture_output=True,
-                        timeout=TOPIC_HZ_SAMPLE_SECONDS
-                    )
-                    output = result.stdout
-                except subprocess.TimeoutExpired as e:
-                    output = e.stdout if e.stdout else ""
-                    if isinstance(output, bytes):
-                        output = output.decode("utf-8", errors="replace")
+                    output, _ = proc.communicate(timeout=TOPIC_HZ_SAMPLE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    output, _ = proc.communicate()
+                output = output or ""
 
                 if not output:
                     continue

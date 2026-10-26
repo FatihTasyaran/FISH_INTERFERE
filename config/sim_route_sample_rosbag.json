@@ -1,0 +1,50 @@
+{
+ "start": {
+  "gnss_xy": [
+   89570.868,
+   42300.229
+  ],
+  "travel_heading_deg": 19.4,
+  "lanelet": "15",
+  "x": 89570.523,
+  "y": 42300.74,
+  "z": -2.5,
+  "yaw": -2.5479,
+  "yaw_deg": -146.0,
+  "dist_to_lane_m": 0.62,
+  "qz": -0.956259,
+  "qw": 0.292522
+ },
+ "goal": {
+  "gnss_xy": [
+   89534.596,
+   42408.073
+  ],
+  "travel_heading_deg": 118.1,
+  "lanelet": "2",
+  "x": 89534.079,
+  "y": 42407.802,
+  "z": -2.5,
+  "yaw": 2.0536,
+  "yaw_deg": 117.7,
+  "dist_to_lane_m": 0.58,
+  "qz": 0.855648,
+  "qw": 0.517559
+ },
+ "sim_start": {
+  "fix": 15,
+  "lanelet": "5",
+  "x": 89576.311,
+  "y": 42304.834,
+  "z": -2.5,
+  "yaw": 0.7361,
+  "yaw_deg": 42.2,
+  "qz": 0.35978,
+  "qw": 0.933037
+ },
+ "adapi": {
+  "initialize": "ros2 service call /api/localization/initialize autoware_adapi_v1_msgs/srv/InitializeLocalization \"{pose: [{header: {frame_id: map}, pose: {pose: {position: {x: 89576.311, y: 42304.834, z: -2.5}, orientation: {x: 0.0, y: 0.0, z: 0.35978, w: 0.933037}}, covariance: [0.25,0,0,0,0,0, 0,0.25,0,0,0,0, 0,0,0.0001,0,0,0, 0,0,0,0.0001,0,0, 0,0,0,0,0.0001,0, 0,0,0,0,0,0.0685]}}]}\"",
+  "set_route_points": "ros2 service call /api/routing/set_route_points autoware_adapi_v1_msgs/srv/SetRoutePoints \"{header: {frame_id: map}, option: {allow_goal_modification: true}, goal: {position: {x: 89534.079, y: 42407.802, z: -2.5}, orientation: {x: 0.0, y: 0.0, z: 0.855648, w: 0.517559}}, waypoints: []}\"",
+  "autonomous": "ros2 service call /api/operation_mode/change_to_autonomous autoware_adapi_v1_msgs/srv/ChangeOperationMode \"{}\""
+ }
+}

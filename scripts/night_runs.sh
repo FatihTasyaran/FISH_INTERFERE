@@ -5,7 +5,9 @@
 set -u
 cd "$(dirname "$0")/.."
 LD=${1:?log dir}; mkdir -p "$LD"
-# NIGHT_RUNS_NO_SPLIT=1: functional validation runs (no timing claims) may run with the host in off mode
+# NIGHT_RUNS_NO_SPLIT=1: functional validation runs (no timing claims) — host may be in off mode, and the thermal
+# cooldown and the desktop gate are skipped too (2026-10-19); the throttle/desk numbers are still logged.
+# Timing runs never set it.
 [ "${NIGHT_RUNS_NO_SPLIT:-0}" = 1 ] || sudo -n /usr/local/sbin/fish-host-perf-mode status 2>/dev/null | grep -q "smt             : off" || { echo "ABORT: host not in split mode" | tee -a "$LD/night_runs.txt"; exit 2; }
 # Thermal validity (2026-10-05): a run during which the package throttles is not a timing measurement (daytime
 # campaign: 31 500 throttle events, application CPU 5.6 instead of 3.95 cores, chain latency x4). Each run starts
@@ -23,9 +25,13 @@ deskj() { LC_ALL=C awk '$1=="cpu18"||$1=="cpu19"{s+=$2+$3+$4+$7+$8} END{print s+
 deskwait() { local t0=$SECONDS a b; while :; do a=$(deskj); sleep 10; b=$(deskj); LC_ALL=C awk -v d=$((b - a)) -v m="${NIGHT_RUNS_DESK_MAX:-0.8}" 'BEGIN{exit !(d/1000 < m)}' && break; [ $((SECONDS - t0)) -ge 600 ] && break; done; }
 while read -r LABEL REST; do
   [ -z "$LABEL" ] && continue
-  cooldown; [ "${NIGHT_RUNS_NO_SPLIT:-0}" = 1 ] || deskwait; THR0=$(thr); TEMP0=$(ptemp); DJ0=$(deskj); DT0=$SECONDS
+  [ "${NIGHT_RUNS_NO_SPLIT:-0}" = 1 ] || { cooldown; deskwait; }; THR0=$(thr); TEMP0=$(ptemp); DJ0=$(deskj); DT0=$SECONDS
   # REST may contain quoted values with spaces: eval the assignment list into an env invocation
-  eval "env FISH_TRACE_TIER=max FISH_APP_CPUS=0,2,4,6,8,10 FISH_OBS_CPUS=12-17 FISH_CDDS_XML=1 FISH_KERNEL_SCHED=1 FISH_PER_INSTANCE=true \
+  # CPU sets (same for every run through this runner, Autoware and synthetic): app on the 6 P-cores 0,2,4,6,8,10, observers
+  # (LTTng, FISH daemon, probes) on the E-cores 12-17, host desktop on 18-19 in split mode. Override per run with
+  # NIGHT_APP_CPUS / NIGHT_OBS_CPUS. 2026-10-26: the synthetic scale runs starved on this set — cause was their traffic
+  # (600 kB messages at 20-100 Hz over DDS to 7 processes, ~1.4 GB/s, Cyclone defaults), not the core count; default kept.
+  eval "env FISH_TRACE_TIER=max FISH_APP_CPUS=${NIGHT_APP_CPUS:-0,2,4,6,8,10} FISH_OBS_CPUS=${NIGHT_OBS_CPUS:-12-17} FISH_CDDS_XML=1 FISH_KERNEL_SCHED=1 FISH_PER_INSTANCE=true \
        FISH_EVENT_COUNT=0 REPS=1 MODES=nsys IMG=autoware-dev-trt-a1000-fishwait19:latest RATE=0.5 $REST \
        bash scripts/autoware_runs/run_overhead_modes.sh" > "$LD/run_$LABEL.log" 2>&1 < /dev/null
   D=$(grep -o 'campaign → [^ ]*' "$LD/run_$LABEL.log" | head -1 | cut -d' ' -f3)

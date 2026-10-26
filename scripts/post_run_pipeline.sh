@@ -3,6 +3,8 @@
 # Post-run pipeline for one traced Autoware run (replaces the ad-hoc post_validate*.sh of 2026-10-03):
 #   health → ingest (PG) → model → gantt spans → thread attrs → ksched split (+ per-instance rows) →
 #   FISH tasks (typed-EDD) → LiME-IT-style models.
+# 2026-10-26: ksched_split runs with --parallel (one babeltrace2 + parser per kernel stream, postprocess/ksched_parse_parallel.py;
+#   output byte-identical to the sequential parser on fish_20261026_160533, 386 s -> ~150 s).
 # Usage: scripts/post_run_pipeline.sh <run_dir (…/overhead_aw_*/nsys_1) | session_id> [out_dir] [--no-ingest]
 # Run it with the host in `off` mode (split confines this shell to 2 E-cores).
 set -u
@@ -25,6 +27,16 @@ cd postprocess
 if [ "$NOINGEST" != "--no-ingest" ]; then
   say "ingest"; python3 ingest_pg.py "$SD" --force > "$OUT/ingest.log" 2>&1 || say "INGEST FAILED"
   tail -2 "$OUT/ingest.log" | cut -c1-200 >> "$SUM"
+  # source-level corroboration (2026-10-25): map the static class analysis (latest sf_all*.json) onto this session's nodes/topics;
+  # FISH_SOURCE_FLOW is read by model_improved_pg (held@publish needs a retaining source deposit) and, through the model's edge
+  # evidence, by extract_fish_tasks. Sessions without Autoware packages simply get 0 rows.
+  SF_JSON=${FISH_SOURCE_FLOW_JSON:-$(ls -t "$HOME"/fish_traces/source_flow/sf_all*.json 2>/dev/null | head -1)}
+  if [ -z "${FISH_SOURCE_FLOW:-}" ] && [ -n "$SF_JSON" ] && [ -f ../scripts/source_flow/map_source_flow.py ]; then
+    say "source flow map ($(basename "$SF_JSON"))"
+    python3 ../scripts/source_flow/map_source_flow.py "$S" "$SF_JSON" --out "$OUT/source_flow_rows.json" > "$OUT/source_flow_map.log" 2>&1 \
+      && export FISH_SOURCE_FLOW="$OUT/source_flow_rows.json" || say "SOURCE FLOW MAP FAILED (model runs without corroboration)"
+    tail -1 "$OUT/source_flow_map.log" | cut -c1-200 >> "$SUM"
+  fi
   say "model"; python3 model_improved_pg.py --session "$S" > "$OUT/model.log" 2>&1 || say "MODEL FAILED"
   grep -E "measure_flows:|provenance of derived|publisher thread|untraced|tf read|detect_joins|Executors:" "$OUT/model.log" | cut -c1-400 >> "$SUM"
   say "gantt spans"
@@ -38,12 +50,16 @@ EOF
   tail -1 "$OUT/gantt.log" | cut -c1-200 >> "$SUM"
   say "thread attrs"; python3 attach_thread_attrs.py "$S" > "$OUT/threads.log" 2>&1; head -3 "$OUT/threads.log" | cut -c1-200 >> "$SUM"
 fi
-say "ksched split"; python3 ksched_split.py "$SD" --session-id "$S" --tsv "$OUT/ksched.tsv" > "$OUT/ksched.txt" 2> "$OUT/ksched.err" || say "KSCHED FAILED ($(tail -1 "$OUT/ksched.err" | cut -c1-150))"
+say "ksched split"; python3 ksched_split.py "$SD" --session-id "$S" --tsv "$OUT/ksched.tsv" --parallel > "$OUT/ksched.txt" 2> "$OUT/ksched.err" || say "KSCHED FAILED ($(tail -1 "$OUT/ksched.err" | cut -c1-150))"
 grep -E "^steady state|^check:|^all steady-state|^all callbacks: futex|^all middleware|per-instance rows|OpenMP regions" "$OUT/ksched.txt" | cut -c1-400 >> "$SUM"
 if [ -f extract_fish_tasks.py ]; then
   say "FISH tasks"; python3 extract_fish_tasks.py "$S" -o "$OUT/fish_tasks.json" --releases "$OUT/releases.json" --show 6 > "$OUT/fish_tasks.txt" 2> "$OUT/fish_tasks.err" || say "TASKS FAILED ($(tail -1 "$OUT/fish_tasks.err" | cut -c1-150))"
   head -30 "$OUT/fish_tasks.txt" | cut -c1-220 >> "$SUM"
 fi
+# fishwait25+/27+: IntraProcessManager report, container flow (node-internal deposits), state links vs the source truth table
+if [ -f ipm_report.py ]; then say "IPM report"; python3 ipm_report.py "$S" --json "$OUT/ipm_report.json" > "$OUT/ipm_report.txt" 2>&1 || say "IPM REPORT: no events"; head -1 "$OUT/ipm_report.txt" | cut -c1-200 >> "$SUM"; fi
+if [ -f container_flow.py ]; then say "container flow"; python3 container_flow.py "$S" --json "$OUT/container_flow.json" > "$OUT/container_flow.txt" 2>&1 || say "CONTAINER FLOW: no events"; head -1 "$OUT/container_flow.txt" | cut -c1-200 >> "$SUM"; fi
+if [ -f state_links.py ] && [ -f ../notes/state_links_truth_2026-10-05.tsv ]; then say "state links"; python3 state_links.py "$S" --truth ../notes/state_links_truth_2026-10-05.tsv -o "$OUT/state_links.json" > "$OUT/state_links.txt" 2> "$OUT/state_links.err" || say "STATE LINKS FAILED ($(tail -1 "$OUT/state_links.err" | cut -c1-120))"; fi
 if [ -f limeit_models.py ]; then
   say "LiME-IT-style models"; python3 limeit_models.py "$S" --releases "$OUT/releases.json" -o "$OUT/limeit.json" > "$OUT/limeit.txt" 2> "$OUT/limeit.err" || say "LIMEIT FAILED ($(tail -1 "$OUT/limeit.err" | cut -c1-150))"
   head -30 "$OUT/limeit.txt" | cut -c1-220 >> "$SUM"

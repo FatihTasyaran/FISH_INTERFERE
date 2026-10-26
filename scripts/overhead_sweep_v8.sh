@@ -103,10 +103,13 @@ run_one() {   # $1=bench $2=mode(warmup|base|lttng|nsys) $3=rep-index
     log "----- $B [$MODE #$IDX] FISH=$FISH_ON -----"
     # Named container + forced removal after the run: `timeout` only kills the
     # docker CLIENT; the container kept running (detectnet 2026-08-31 orphan
-    # ate 23.7 GB RSS + swap). --rm still cleans up the normal path.
+    # ate 23.7 GB RSS + swap). The client only FORWARDS SIGTERM into the
+    # container, whose PID 1 (bash) ignores it, and the client itself stays
+    # alive — ess 2026-10-26 hung 1 h 45 min past the budget. -k 60 SIGKILLs
+    # the client; the docker rm -f below then removes the container.
     local CNAME="ovh-$B-$MODE-$IDX"
     docker rm -f "$CNAME" >/dev/null 2>&1 || true
-    timeout "$SMOKE_TIMEOUT" docker run --rm --name "$CNAME" --gpus all --privileged --net host \
+    timeout -k 60 "$SMOKE_TIMEOUT" docker run --rm --name "$CNAME" --gpus all --privileged --net host \
         --shm-size=2g ${CPUSET:+--cpuset-cpus=$CPUSET} \
         -e FISH_APP_CPUS="$FISH_APP_CPUS" -e FISH_OBS_CPUS="$FISH_OBS_CPUS" -e FISH_EVENT_COUNT="$FISH_EVENT_COUNT" \
         -v "$REPO_ROOT":/host/fish_src:ro \

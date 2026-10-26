@@ -125,16 +125,24 @@ def main() -> int:
     # Keep stdout clean for JSON; route framework chatter to stderr.
     original_stdout = sys.stdout
     sys.stdout = sys.stderr
+    # 2026-10-26: the test script's module-level code may spawn SUBPROCESSES whose output goes to the OS-level fd 1,
+    # i.e. straight into launch_components.json (ess: the 97 s trtexec engine build wrote "&&&& RUNNING TensorRT.trtexec"
+    # ahead of the JSON; the pipeline's source-flow step then failed on the file). Point fd 1 at fd 2 while inspecting.
+    sys.stderr.flush()
+    saved_fd1 = os.dup(1)
+    os.dup2(2, 1)
 
     try:
         result = inspect_launch_test(test_script, launch_args)
     except Exception as e:
+        os.dup2(saved_fd1, 1); os.close(saved_fd1)
         sys.stdout = original_stdout
         print(f"[FISH] launch_test_inspect error: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         print("{}")
         return 0
 
+    os.dup2(saved_fd1, 1); os.close(saved_fd1)
     sys.stdout = original_stdout
     json.dump(result, sys.stdout, indent=2, default=str)
     print()

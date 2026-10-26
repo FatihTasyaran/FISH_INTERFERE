@@ -1779,6 +1779,20 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
         logger.log_daemon(f"replay_start cmd={replay_cmd}")
         session_dir = get_session_dir()
         replay_log = os.path.join(session_dir, "fishlog", "replay_output.log")
+        # Stimulus injection (2026-10-26): FISH_INJECT_CMD is started FISH_INJECT_AT seconds after the replay starts, in
+        # parallel with it (e.g. scripts/autoware_runs/inject_route.py: give the logging_simulator a route through the AD
+        # API so that planning and control compute for real). Observer side: inherits the daemon's CPU set, no LD_PRELOAD;
+        # output in fishlog/inject.log, start/exit in the daemon log.
+        inject_cmd = os.environ.get("FISH_INJECT_CMD", "").strip()
+        inject_proc = None
+        if inject_cmd:
+            inject_at = float(os.environ.get("FISH_INJECT_AT", "0") or 0)
+            inject_env = dict(os.environ); inject_env.pop("LD_PRELOAD", None); inject_env["FISH_ENABLED"] = "0"
+            inject_log = open(os.path.join(session_dir, "fishlog", "inject.log"), "w")
+            inject_proc = subprocess.Popen(f"sleep {inject_at}; {inject_cmd}", shell=True, stdout=inject_log, stderr=subprocess.STDOUT,
+                                           env=inject_env, start_new_session=True)
+            print(f"[FISH] Stimulus injector scheduled at replay +{inject_at:g} s: {inject_cmd}")
+            logger.log_daemon(f"inject_start at={inject_at:g} cmd={inject_cmd}")
         try:
             with open(replay_log, "w") as rlog:
                 replay_proc = subprocess.run(
@@ -1786,6 +1800,9 @@ def daemon_loop(poll_interval: float = None, settle_time: float = None) -> None:
                     preexec_fn=_preexec_app_cpus,   # replay is APPLICATION side
                 )
             _write_signal("replay_complete", logger)
+            if inject_proc is not None:
+                rc = inject_proc.poll()
+                logger.log_daemon(f"inject_state_at_replay_end {'running' if rc is None else 'exit=%d' % rc}")
             print(f"[FISH] Replay finished (exit={replay_proc.returncode})")
             logger.log_daemon(
                 f"replay_complete exit={replay_proc.returncode}"

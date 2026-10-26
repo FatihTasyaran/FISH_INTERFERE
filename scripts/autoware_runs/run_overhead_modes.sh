@@ -112,6 +112,7 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
         --name $NAME \
         -v "$DEST:/root/fish_traces" \
         -v "$HOME/fish_provenance_ros:/opt/fish_provenance_ros:ro" \
+        ${FISH_EXTRA_DOCKER_ARGS:-} \
         "${FISH_ENV[@]}" \
         "${KSCHED_ARGS[@]}" \
         $IMG bash -c 'sleep 3600' >/dev/null
@@ -139,7 +140,7 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
         -e FISH_BASELINE_OVERLAY="${FISH_BASELINE_OVERLAY:-0}" -e FISH_CDDS_XML="${FISH_CDDS_XML:-0}" -e FISH_TRACE_TIER="${FISH_TRACE_TIER:-}" \
         -e FISH_LAUNCH_EXTRA="${FISH_LAUNCH_EXTRA:-}" -e FISH_IOX_ROUDI="${FISH_IOX_ROUDI:-0}" \
         -e FISH_LAUNCH_CMD="${FISH_LAUNCH_CMD:-}" -e FISH_APP_SECONDS="${FISH_APP_SECONDS:-}" -e FISH_PRE_CMD="${FISH_PRE_CMD:-}" \
-        -e FISH_EXTRA_EVENTS="${FISH_EXTRA_EVENTS:-}" -e FISH_LOCK_SHIM="${FISH_LOCK_SHIM:-0}" \
+        -e FISH_EXTRA_EVENTS="${FISH_EXTRA_EVENTS:-}" -e FISH_LOCK_SHIM="${FISH_LOCK_SHIM:-0}" -e FISH_CONTAINER_SHIM="${FISH_CONTAINER_SHIM:-0}" -e FISH_METHOD_SHIM="${FISH_METHOD_SHIM:-0}" -e FISH_INJECT_CMD="${FISH_INJECT_CMD:-}" -e FISH_INJECT_AT="${FISH_INJECT_AT:-}" \
         $NAME bash -c '
         set -e
         export PYTHONUNBUFFERED=1
@@ -155,6 +156,8 @@ run_one() {  # $1 = baseline|lttng|nsys   $2 = rep index
             echo "iox-roudi: $(pgrep -c iox-roudi) process(es)" >> "$POUT/cpuset.txt"
         fi
         [ -n "$FISH_LAUNCH_EXTRA" ] && echo "launch extra: $FISH_LAUNCH_EXTRA" >> "$POUT/cpuset.txt"
+        # FISH_EXTRA_DOCKER_ARGS (2026-10-25): extra `docker run` arguments, e.g. -v $HOME/fish_synth:/root/fish_synth for the
+        # synthetic workspaces (tests/synth/run_synth.sh).
         # FISH_PRE_CMD (2026-10-04): shell run in the container before the launch (e.g. the mqueue limit Agnocast needs;
         # fs.mqueue.* are per IPC namespace, so this does not touch the host)
         if [ -n "$FISH_PRE_CMD" ]; then eval "$FISH_PRE_CMD" >> "$POUT/cpuset.txt" 2>&1 || true; fi
