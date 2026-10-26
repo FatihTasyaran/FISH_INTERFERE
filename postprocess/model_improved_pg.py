@@ -427,6 +427,12 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
         cands = [x for x in node_inits_by_handle.get(nh, []) if x <= t]
         return cands[-1] if cands else None
 
+    sub_inits_by_node: dict[str, list[tuple[str, str]]] = {}
+    for d in _all_events(session_id, "ros2:rcl_subscription_init"):
+        p = d["payload"]
+        if p.get("node_handle") and p.get("subscription_handle") and p.get("topic_name"):
+            sub_inits_by_node.setdefault(p["node_handle"], []).append((p["subscription_handle"], p["topic_name"]))
+    n_dup_sub = [0]
     for node_id, node in nodes.items():
         full_name = node.A_v["full_name"]
         node_handle = node.A_v["node_handle"]
@@ -461,17 +467,34 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
             clients = {s: t for s, t in clients.items() if not _is_param_service(s)}
         node.A_v["service_clients"] = clients
 
+        # 2026-10-25: one entity per rcl subscription HANDLE. A node may subscribe to the same topic twice (synthetic
+        # ba_s1 node_001; Autoware planning_validator / mission_planner / vehicle_cmd_gate / collision_detector /
+        # traffic_light_occlusion_predictor subscribe kinematic_state etc. twice): keyed by topic the second callback
+        # lost its F, its windows were unknown and its publishes fell outside every window (orphans / "thread:" pseudo
+        # publishers, intra-process takes unpaired). Entities of the same topic carry sub_handle (+ dup = 1, 2, ...).
+        _sub_handles_by_topic: dict[str, list[str]] = {}
+        for _sh, _t in sub_inits_by_node.get(node_handle, []):
+            lst_ = _sub_handles_by_topic.setdefault(_t, [])
+            if _sh not in lst_:
+                lst_.append(_sh)
         for topic, msg_type in info["Subscribers"].items():
             if SKIP_PARAMSERVICE and _is_param_service(topic):
                 continue
-            e_A = {
-                "label": topic, "etype": "sub", "cb_addr": "NA",
-                "msg_type": msg_type,
-                "aspects": [{"aspect": "sub", "topic": topic, "msg_type": msg_type}],
-            }
-            e = FishVertex("E", next(vertex_counter), e_A, [], 2)
-            node.Z_v.append(e.id_v)
-            entities[e.id_v] = e
+            handles_ = _sub_handles_by_topic.get(topic) or [None]
+            for k_, sh_ in enumerate(handles_):
+                e_A = {
+                    "label": topic, "etype": "sub", "cb_addr": "NA",
+                    "msg_type": msg_type,
+                    "aspects": [{"aspect": "sub", "topic": topic, "msg_type": msg_type}],
+                }
+                if sh_:
+                    e_A["sub_handle"] = sh_
+                if len(handles_) > 1:
+                    e_A["dup"] = k_ + 1
+                    n_dup_sub[0] += 1
+                e = FishVertex("E", next(vertex_counter), e_A, [], 2)
+                node.Z_v.append(e.id_v)
+                entities[e.id_v] = e
 
         for srv_name, srv_type in info["Service_Servers"].items():
             if SKIP_PARAMSERVICE and _is_param_service(srv_name):
@@ -542,6 +565,8 @@ def identify_entities(session_id: str, nodes: dict[int, FishVertex]):
             node.Z_v.append(e.id_v)
             entities[e.id_v] = e
 
+    if n_dup_sub[0]:
+        log(f"  same-topic subscriptions in one node: {n_dup_sub[0]} entities carry dup=1..k (one F per rcl handle)")
     log(f"Entities: {len(entities)} "
         f"(sub={sum(1 for e in entities.values() if e.A_v['etype']=='sub')}, "
         f"serv={sum(1 for e in entities.values() if e.A_v['etype']=='serv')}, "
@@ -641,6 +666,19 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
         p = d["payload"]
         if p["subscription"] in _intra_wait_ptrs:
             intra_wait_by_handle[p["subscription_handle"]] = p["subscription"]
+    # fishwait25: the IntraProcessManager's own registration of the waitable — buffer kind (shared = the callback takes
+    # shared_ptr<const Msg>, zero-copy; ownership = unique_ptr / non-const shared_ptr / const Msg&, the IPM copies for
+    # all but the last ownership subscriber) and the ring buffer depth. Keyed by (pid, waitable ptr).
+    ipm_sub_by_ptr: dict[tuple, dict] = {}
+    for d in _all_events(session_id, "ros2:fish_rclcpp_ipm_add_subscription"):
+        p = d["payload"]
+        ipm_sub_by_ptr[(d.get("vpid"), p["waitable"])] = {
+            "sub_id": int(p["sub_id"]), "take_shared": int(p["take_shared"]), "depth": int(p["depth"]),
+            "topic": p.get("topic_name")}
+    if ipm_sub_by_ptr:
+        log(f"  IPM registrations (fishwait25): {len(ipm_sub_by_ptr)} intra-proc subscriptions "
+            f"({sum(v['take_shared'] for v in ipm_sub_by_ptr.values())} shared / "
+            f"{sum(1 - v['take_shared'] for v in ipm_sub_by_ptr.values())} ownership buffers)")
     if _intra_wait_ptrs:
         _bound_ptrs = set(intra_wait_by_handle.values())
         log(f"  Intra-proc Waitables: {len(_intra_wait_ptrs)} distinct ptrs registered, "
@@ -755,9 +793,9 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
             h = d["payload"].get(hcol)
             if not h:
                 continue
-            t0 = int(d["ts_ns"])
+            ts0 = int(d["ts_ns"])          # 2026-10-26: was `t0`, shadowing the function's timer (negative "DONE in" times)
             per.setdefault(h, []).append(
-                (t0, next((t for t in finis.get(h, []) if t > t0), None)))
+                (ts0, next((t for t in finis.get(h, []) if t > ts0), None)))
         lifetimes[kind] = per
     ambiguous_windows = collections.Counter()
 
@@ -778,7 +816,8 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
         is_gpu = node_to_pid.get(node_id) in gpu_pids
         node_handle = node.A_v["node_handle"]
 
-        sub_chain = {}
+        sub_chain = {}          # topic -> callback info (first handle of the topic; entities without a sub_handle)
+        sub_chain_h = {}        # rcl subscription handle -> callback info (2026-10-25: same-topic double subscriptions)
         for sub_handle, topic in sub_init_by_node.get(node_handle, []):
             # Firing-aware resolution (handles NITROS duplicate sub_handles)
             cb_ptr = _resolve_sub_handle_to_cb(sub_handle, topic=topic)
@@ -796,14 +835,14 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                         if alts:
                             info["alt_cb_addrs"] = alts
                     info = dict(info); info["rcl_handle"] = sub_handle
-                    sub_chain[topic] = info
+                    sub_chain.setdefault(topic, info); sub_chain_h[sub_handle] = info
                     continue
             cb_ptr = rclpy_sub_cb_by_handle.get(sub_handle)
             if cb_ptr:
                 info = _resolve_cb(cb_ptr)
                 if info:
                     info = dict(info); info["rcl_handle"] = sub_handle
-                    sub_chain[topic] = info
+                    sub_chain.setdefault(topic, info); sub_chain_h[sub_handle] = info
                 else:
                     warn("sub_no_register",
                          f"sub_handle={sub_handle} topic={topic!r} cb_ptr={cb_ptr} has no callback_register")
@@ -834,7 +873,10 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
             etype = entity.A_v["etype"]
             cb_info = None
             if etype == "sub":
-                cb_info = sub_chain.get(entity.A_v["label"])
+                sh_ = entity.A_v.get("sub_handle")
+                cb_info = sub_chain_h.get(sh_) if sh_ else None
+                if cb_info is None and not sh_:
+                    cb_info = sub_chain.get(entity.A_v["label"])
             elif etype == "serv":
                 cb_info = srv_chain.get(entity.A_v["label"])
             elif etype == "tmr":
@@ -905,6 +947,13 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
                     f_A["ipc_capable"] = True
                     f_A["ipc_waitable"] = ip
                     f_A["delivery"] = ("both" if alts else ("ipc" if ipc_primary else "dds"))
+                    ipm = ipm_sub_by_ptr.get((node_to_pid.get(node_id), ip))
+                    if ipm:
+                        # fishwait25: buffer kind + depth from the IntraProcessManager registration
+                        f_A["ipc_buffer"] = "shared" if ipm["take_shared"] else "ownership"
+                        f_A["ipc_depth"] = ipm["depth"]
+                        f_A["ipm_sub_id"] = ipm["sub_id"]
+                        entity.A_v["ipc_buffer"] = f_A["ipc_buffer"]
                 if alts:
                     # Other FIRING callbacks of the same sub (e.g. the DDS copy
                     # when the intra-proc copy is primary, or vice versa).
@@ -923,6 +972,10 @@ def identify_callbacks(session_id: str, nodes, entities, executors):
     if n_cap:
         log(f"  Delivery: {n_cap} ipc-capable sub F node(s) — "
             f"{dl.get('ipc',0)} ipc / {dl.get('dds',0)} dds / {dl.get('both',0)} both")
+        bk = collections.Counter(f.A_v.get("ipc_buffer") for f in functions.values() if f.A_v.get("ipc_capable"))
+        if bk.get("shared") or bk.get("ownership"):
+            log(f"  Intra-process buffers (IPM): {bk.get('shared', 0)} shared / {bk.get('ownership', 0)} ownership / "
+                f"{bk.get(None, 0)} unknown")
 
     # Sanity check: any cb_addr that fired but didn't produce an F is a
     # silent attribution miss — warn at the end so it's visible.
@@ -1872,20 +1925,21 @@ def attach_dds_attrs(session_id, nodes, entities):
     - fish_rmw_sub_reader → sub entity A_v['dds_reader'] (Cyclone reader entity handle)
     - fish_rmw_sample_lost → sub entity A_v['dds_lost_total'] / ['dds_rejected_total'] (kinds 2/3 at destroy),
       A_v['dds_lost_seen'] (sum of kind-0 changes seen at take time)."""
-    sub_by_nt = {}
+    sub_by_nt = {}; sub_by_sh = {}
     for n_id, node in nodes.items():
         nh = node.A_v.get("node_handle")
         for e_id in node.Z_v:
             e = entities.get(e_id)
             if e is not None and e.t_v == "E" and e.A_v.get("etype") == "sub":
                 sub_by_nt.setdefault((nh, e.A_v.get("label")), e)
+                if e.A_v.get("sub_handle"): sub_by_sh[e.A_v["sub_handle"]] = e
     node_by_nh = {node.A_v.get("node_handle"): node for node in nodes.values()}
-    sh2nt = {}; rh2nt = {}
+    sh2nt = {}; rh2nt = {}; rh2sh = {}
     for r in pg_store.fetch_all(
         "SELECT vpid, payload->>'subscription_handle' AS sh, payload->>'rmw_subscription_handle' AS rh, "
         "payload->>'node_handle' AS nh, payload->>'topic_name' AS t FROM ros2_trace "
         "WHERE session_id=%s AND event='ros2:rcl_subscription_init'", (session_id,)):
-        sh2nt[(r["vpid"], r["sh"])] = (r["nh"], r["t"]); rh2nt[(r["vpid"], r["rh"])] = (r["nh"], r["t"])
+        sh2nt[(r["vpid"], r["sh"])] = (r["nh"], r["t"]); rh2nt[(r["vpid"], r["rh"])] = (r["nh"], r["t"]); rh2sh[(r["vpid"], r["rh"])] = r["sh"]
     ph2nt = {}
     for r in pg_store.fetch_all(
         "SELECT vpid, payload->>'publisher_handle' AS ph, payload->>'node_handle' AS nh, payload->>'topic_name' AS t "
@@ -1899,7 +1953,7 @@ def attach_dds_attrs(session_id, nodes, entities):
                                                    "lifespan_ns", "liveliness", "lease_ns")}
         if int(p.get("kind", 0)) == 2:
             nt = sh2nt.get((r["vpid"], p.get("handle")))
-            e = sub_by_nt.get(nt) if nt else None
+            e = sub_by_sh.get(p.get("handle")) or (sub_by_nt.get(nt) if nt else None)
             if e is not None: e.A_v["qos"] = qos; n_q += 1
         else:
             nt = ph2nt.get((r["vpid"], p.get("handle")))
@@ -1908,12 +1962,12 @@ def attach_dds_attrs(session_id, nodes, entities):
     for r in pg_store.fetch_all(
         "SELECT vpid, payload FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rmw_sub_reader'", (session_id,)):
         nt = rh2nt.get((r["vpid"], r["payload"].get("rmw_subscription_handle")))
-        e = sub_by_nt.get(nt) if nt else None
+        e = sub_by_sh.get(rh2sh.get((r["vpid"], r["payload"].get("rmw_subscription_handle")))) or (sub_by_nt.get(nt) if nt else None)
         if e is not None: e.A_v["dds_reader"] = int(r["payload"].get("reader", 0)); n_rd += 1
     for r in pg_store.fetch_all(
         "SELECT vpid, payload FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rmw_sample_lost'", (session_id,)):
         p = r["payload"]; nt = rh2nt.get((r["vpid"], p.get("rmw_subscription_handle")))
-        e = sub_by_nt.get(nt) if nt else None
+        e = sub_by_sh.get(rh2sh.get((r["vpid"], p.get("rmw_subscription_handle")))) or (sub_by_nt.get(nt) if nt else None)
         if e is None: continue
         kind = int(p.get("kind", -1)); total = int(p.get("total", 0)); change = int(p.get("change", 0))
         if kind == 2: e.A_v["dds_lost_total"] = max(total, e.A_v.get("dds_lost_total", 0)); n_loss += 1
@@ -2012,6 +2066,257 @@ def detect_tf_links(session_id, nodes, entities, functions):
         f"{n_edges} tf read link(s) into {len(readers)} reader callback(s)")
 
 
+def _ipm_matches(session_id):
+    """fishwait25: the IntraProcessManager's matching as a set of (pid, topic, subscriber waitable ptr); (set, present)."""
+    pub, sub, out = {}, {}, set()
+    for d in _all_events(session_id, "ros2:fish_rclcpp_ipm_add_publisher"):
+        pub[(d.get("vpid"), int(d["payload"]["pub_id"]))] = d["payload"]["topic_name"]
+    for d in _all_events(session_id, "ros2:fish_rclcpp_ipm_add_subscription"):
+        sub[(d.get("vpid"), int(d["payload"]["sub_id"]))] = d["payload"]["waitable"]
+    for d in _all_events(session_id, "ros2:fish_rclcpp_ipm_match"):
+        pid, pl = d.get("vpid"), d["payload"]
+        t = pub.get((pid, int(pl["pub_id"]))); w = sub.get((pid, int(pl["sub_id"])))
+        if t and w:
+            out.add((pid, t, w))
+    return out, bool(sub)
+
+
+def _join_state_evidence(session_id, wins, wstarts, owner, pubs, functions, nodes, entities):
+    """Observed node-internal data flow (2026-10-25): (deposit F, consumer F) -> (label, [(t_deposit, t_consume)]).
+      container:observed    fish_container_op (fishwait27 shim): push into a std::deque / map member inside one callback
+                            instance, erase / clear of that container inside another -> the erasing instance absorbed it
+      exact:message_filters fish_mf_add / fish_mf_signal (fishwait21): the merge names its member deposits by stamp
+      pointer:held@publish  fish_msg_retain / release (fishwait24 probe): the message was held when ANOTHER callback of
+                            the node published -> the first such publish consumed it; a release without a publish during
+                            the hold is a DROP (returned separately, never an edge)
+      pointer:release@publisher  the hold ends inside another callback's instance that publishes later in that same
+                            instance (read + clear before the publish): consumption of the same strength as held@publish
+    The retain event fires right after the depositing callback returned: attributed to the window that just ended."""
+    import bisect
+    from collections import defaultdict
+    def owner_before(key, ts, slack=2_000_000):
+        ws = wins.get(key)
+        if not ws: return None
+        i = bisect.bisect_right(wstarts[key], ts) - 1
+        for j in range(i, max(-1, i - 8), -1):
+            t0, t1, f = ws[j]
+            if t1 <= ts <= t1 + slack: return f
+        return None
+    obs = {}
+    def add(label, fu, fv, td, tc):
+        k = (fu, fv)
+        if k not in obs: obs[k] = (label, [])
+        if obs[k][0] == label: obs[k][1].append((td, tc))
+    # 1. container operations
+    pend = defaultdict(list); n_c = 0
+    for r in pg_store.fetch_all(
+        "SELECT vpid, vtid, ts_ns, (payload->>'kind')::int AS kind, payload->>'container' AS c FROM ros2_trace "
+        "WHERE session_id=%s AND event='ros2:fish_container_op' ORDER BY ts_ns", (session_id,)):
+        key = (r["vpid"], r["vtid"]); ts = int(r["ts_ns"]); f = owner(key, ts)
+        if f is None: continue
+        ck = (r["vpid"], r["c"])
+        if r["kind"] in (1, 2, 5, 6): pend[ck].append((f, ts)); n_c += 1
+        elif r["kind"] in (3, 4):
+            for fu, td in pend.pop(ck, []):
+                if fu != f: add("container:observed", fu, f, td, ts)
+    # 2. message_filters merges
+    adds = {}; open_ = {}; n_mf = 0
+    for r in pg_store.fetch_all(
+        "SELECT vpid, vtid, ts_ns, event, payload FROM ros2_trace WHERE session_id=%s "
+        "AND event IN ('ros2:fish_mf_add','ros2:fish_mf_signal') ORDER BY ts_ns", (session_id,)):
+        key = (r["vpid"], r["vtid"]); ts = int(r["ts_ns"]); pl = r["payload"]; f = owner(key, ts)
+        if r["event"].endswith("mf_add"):
+            if f is not None: adds[(r["vpid"], pl["sync"], int(pl["index"]), int(pl["stamp_ns"]))] = (f, ts)
+        elif int(pl["phase"]) == 0:
+            open_[(key, pl["sync"])] = (ts, [int(pl[f"s{k}"]) for k in range(7)], f)
+        else:
+            o = open_.pop((key, pl["sync"]), None)
+            if o and o[2] is not None:
+                n_mf += 1
+                for k, st in enumerate(o[1]):
+                    a = adds.get((r["vpid"], pl["sync"], k, st)) if st else None
+                    if a and a[0] != o[2]: add("exact:message_filters", a[0], o[2], a[1], o[0])
+    # 3. pointer-held deposits
+    f2node = {f: n_id for n_id, node in nodes.items() for e_id in node.Z_v if e_id in entities for f in entities[e_id].Z_v}
+    all_pub = defaultdict(list)
+    for (t, f), lst in pubs.items(): all_pub[f].extend(lst)
+    for f in all_pub: all_pub[f].sort()
+    by_node = defaultdict(list)
+    for f in all_pub:
+        n_id = f2node.get(f)
+        if n_id is not None: by_node[n_id].append(f)
+    held = {}; drops = defaultdict(int); n_hold = 0
+    for r in pg_store.fetch_all(
+        "SELECT vpid, vtid, ts_ns, event, payload->>'subscription_handle' AS sh, payload->>'message' AS m FROM ros2_trace "
+        "WHERE session_id=%s AND event IN ('ros2:fish_msg_retain','ros2:fish_msg_release') ORDER BY ts_ns", (session_id,)):
+        key = (r["vpid"], r["vtid"]); ts = int(r["ts_ns"]); hk = (r["vpid"], r["sh"], r["m"])
+        if r["event"].endswith("retain"):
+            f = owner(key, ts)
+            if f is None: f = owner_before(key, ts)
+            if f is not None: held[hk] = (f, ts)
+        else:
+            h = held.pop(hk, None)
+            if h is None: continue
+            fu, tr = h; n_hold += 1; n_added = 0
+            # every OTHER callback of the node that published while the message was held is a candidate consumer (not only
+            # the nearest one: a 10 ms status timer publishes first, the 100 ms timer that reads the held pointer later);
+            # the source corroboration decides which of them reads the member
+            for v in by_node.get(f2node.get(fu), ()):
+                if v == fu: continue
+                lst = all_pub[v]; j = bisect.bisect_left(lst, tr)
+                if j < len(lst) and lst[j] <= ts: add("pointer:held@publish", fu, v, tr, lst[j]); n_added += 1
+            fr = owner(key, ts)
+            if fr is not None and fr != fu:
+                # 2026-10-25: released INSIDE another callback's instance that publishes later in the same instance (the map /
+                # slot is read and cleared before the publish: synthetic map_keyed_timeout, ptr_hold): the instance took the
+                # pointer and produced an output -> consumption evidence of the same strength as held@publish (necessary, not
+                # sufficient; the source corroboration decides). Independent of other callbacks that published during the hold
+                # (2026-10-26: a 10 ms status timer had masked the timeout timer's release+publish, er200 cb_171). A release in
+                # an instance that does not publish, with no publisher during the hold, stays a drop.
+                t1 = _window_end(wins, wstarts, key, ts)
+                lst = all_pub.get(fr, ()); j = bisect.bisect_left(lst, ts) if lst else 0
+                if t1 is not None and lst and j < len(lst) and lst[j] <= t1: add("pointer:release@publisher", fu, fr, tr, lst[j]); n_added += 1
+            if n_added == 0 and fr is not None and fr != fu: drops[(fu, fr)] += 1
+    # 4. stamp identity (fishwait24 probe fish_msg_stamp): a message taken by one callback carries a leading stamp; a
+    #    message published by ANOTHER callback of the same node carries the same stamp -> the input travelled into the
+    #    output (field copies that keep the header). Under simulated time now() returns the /clock tick, so tick-valued
+    #    stamps identify nothing and are ignored.
+    sub_rmw = {}; pub_rmw = {}
+    for r in pg_store.fetch_all("SELECT vpid, payload->>'rmw_subscription_handle' AS rh, payload->>'topic_name' AS t, payload->>'node_handle' AS nh FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_subscription_init'", (session_id,)):
+        sub_rmw[(r["vpid"], r["rh"])] = (r["t"], r["nh"])
+    for r in pg_store.fetch_all("SELECT vpid, payload->>'rmw_publisher_handle' AS rh, payload->>'topic_name' AS t, payload->>'node_handle' AS nh FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_publisher_init'", (session_id,)):
+        pub_rmw[(r["vpid"], r["rh"])] = (r["t"], r["nh"])
+    ticks = set(); IN = defaultdict(lambda: defaultdict(list)); OUT = []; n_st = 0
+    INFRA = ("/clock", "/parameter_events", "/rosout", "/tf", "/tf_static", "/diagnostics")
+    own_in = defaultdict(set)        # callback F -> stamps it took itself (DDS takes + intra-process takes resolved by message address)
+    unknown_in = defaultdict(int)    # callback F -> intra-process takes whose stamp is unknown (publisher had no rmw_publish stamp record)
+    pub_addr = {}                    # (vpid, message address) -> (ts, stamp) of the latest publish-side stamp record
+    for r in pg_store.fetch_all("SELECT vpid, vtid, ts_ns, payload->>'handle' AS h, (payload->>'is_pub')::int AS ip, (payload->>'stamp')::bigint AS st, payload->>'message' AS msg FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_msg_stamp' ORDER BY ts_ns", (session_id,)):
+        if r["st"] is None: continue
+        key = (r["vpid"], r["vtid"]); ts = int(r["ts_ns"]); v = int(r["st"]); n_st += 1
+        if r["ip"]:
+            t, nh = pub_rmw.get((r["vpid"], r["h"]), (None, None))
+            if t == "/clock": ticks.add(v)
+            if r["msg"]: pub_addr[(r["vpid"], r["msg"])] = (ts, v)
+            if t is None or t in INFRA: continue
+            f = owner(key, ts)
+            if f is not None: OUT.append((r["vpid"], nh, ts, f, v))
+        else:
+            t, nh = sub_rmw.get((r["vpid"], r["h"]), (None, None))
+            if t == "/clock": ticks.add(v)
+            if t is None or t in INFRA: continue
+            f = owner(key, ts)
+            # a take happens right BEFORE the callback it dispatches (same executor thread): the next window first;
+            # the previous window only as a fallback (owner_before first mis-attributed takes to the preceding callback
+            # on a multi-threaded executor -> the publisher's own input was not recognised, synth zoo_s1 FP 2026-10-25)
+            if f is None: f = _next_owner(wins, wstarts, key, ts) or owner_before(key, ts, 0)
+            if f is not None: IN[(r["vpid"], nh)][v].append((ts, f)); own_in[f].add(v)
+    # intra-process takes carry no rmw_take stamp record (the probe sits in rmw_cyclonedds): the stamp of the taken
+    # message is the publish-side record with the same message address in this process, when that publish also went
+    # to DDS; otherwise the callback's own input stamp is unknown and its outputs give no stamp evidence at all
+    for r in pg_store.fetch_all("SELECT vpid, vtid, ts_ns, payload->>'message' AS msg FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rclcpp_intra_take' ORDER BY ts_ns", (session_id,)):
+        key = (r["vpid"], r["vtid"]); ts = int(r["ts_ns"])
+        f = owner(key, ts) or _next_owner(wins, wstarts, key, ts)
+        if f is None: continue
+        pa = pub_addr.get((r["vpid"], r["msg"]))
+        if pa is not None and pa[0] <= ts and ts - pa[0] < 5_000_000_000: own_in[f].add(pa[1])
+        else: unknown_in[f] += 1
+    n_self_explained = 0; n_unknown_skipped = 0; n_ambiguous = 0; n_degenerate = 0
+    from collections import Counter as _Counter
+    for vpid, nh, ts, fo, v in OUT:
+        if v in ticks or v == 0: continue
+        # the publisher's OWN input carried this stamp (two subscribers of one topic, or the trigger message itself):
+        # the output stamp is explained by fo's trigger, not by another callback's deposit
+        if v in own_in.get(fo, ()): n_self_explained += 1; continue
+        if unknown_in.get(fo, 0): n_unknown_skipped += 1; continue     # intra-process input with unknown stamp: ambiguous
+        deps = [(tin, fi) for tin, fi in IN.get((vpid, nh), {}).get(v, ()) if fi != fo and tin <= ts]
+        if not deps: continue
+        by_f = _Counter(fi for _, fi in deps)
+        # 2026-10-26: a stamp identifies a deposit only when it is unique in the node. The same value deposited by TWO
+        # callbacks (the MRM handler stamps control / gear / turn-indicator commands alike -> vehicle_cmd_gate's gear_cmd
+        # output matched the control_cmd deposit, truth rows #29/#30 FALSE) or taken MANY times by one callback (a constant
+        # / frozen stamp) is no identity: no evidence, counted.
+        if len(by_f) > 1: n_ambiguous += 1; continue
+        if max(by_f.values()) > 2: n_degenerate += 1; continue
+        for tin, fi in deps: add("stamp:match", fi, fo, tin, ts)
+    return obs, drops, dict(container_ops=n_c, mf_merges=n_mf, holds=n_hold, stamps=n_st, ticks=len(ticks), stamp_self_explained=n_self_explained,
+                            stamp_unknown_intra=n_unknown_skipped, stamp_ambiguous=n_ambiguous, stamp_degenerate=n_degenerate)
+
+
+def _l3_keep_hop(G, u, v, key, values):
+    """2026-10-26: G is a DiGraph (one edge per ordered pair). A tie (join membership, state link, NITROS group) on a pair
+    that already carries an L3 MESSAGE hop — publisher F -> subscriber F inside one node (synthetic layered100: cb_024
+    publishes /synth/t024, consumed intra-process by cb_025 of the same node) — used to overwrite the hop's nature/topic
+    with add_edge: the observed trigger edge vanished (verify: trigger MISSING, the subscription became a 'sub-unpaired'
+    source). The hop keeps the pair in one component; the tie is kept as an attribute list on the hop. True = the caller
+    must not add its edge."""
+    if not G.has_edge(u, v):
+        return False
+    d = G.edges[u, v]
+    if str(d.get("nature") or "") != "msg":
+        return False
+    d.setdefault(key, []).extend(values)
+    return True
+
+
+def _window_end(wins, wstarts, key, ts):
+    """end of the callback window on this thread that contains ts (None when ts lies in no window)"""
+    import bisect
+    ws = wins.get(key)
+    if not ws: return None
+    i = bisect.bisect_right(wstarts[key], ts) - 1
+    if i >= 0 and ws[i][0] <= ts <= ws[i][1]: return ws[i][1]
+    return None
+
+
+POINTER_LABELS = ("pointer:held@publish", "pointer:release@publisher")   # pointer evidence: observed only with a retaining source deposit
+
+
+def _next_owner(wins, wstarts, key, ts, slack=5_000_000):
+    """the callback window that STARTS on this thread within slack after ts (a take dispatched right after)"""
+    import bisect
+    ws = wins.get(key)
+    if not ws: return None
+    i = bisect.bisect_left(wstarts[key], ts)
+    if i < len(ws) and ws[i][0] - ts <= slack: return ws[i][2]
+    return None
+
+
+def _source_verified_links(path, nodes, entities, functions):
+    """Source-level 'the reader READS the member the deposit wrote' relation -> set of (deposit F, reader F).
+    Accepts the hand-made truth table (TSV: node, deposit_topic, reader_etype, reader_ent, verdict REAL/FALSE; only REAL
+    rows count) or a JSON list [{node, deposit_topic, reader_etype, reader_ent}] from the static class analysis.
+    Path from the environment variable FISH_SOURCE_FLOW (empty = no source corroboration available)."""
+    import csv, json, os
+    if not path or not os.path.exists(path): return {}, None     # 2026-10-26: dict like the normal return (callers use .items/.get)
+    rows = []
+    if path.endswith('.json'):
+        rows = [r for r in json.load(open(path)) if r.get('verdict', 'REAL') == 'REAL']
+    else:
+        rows = [dict(r, deposit_pattern=r.get('pattern')) for r in csv.DictReader(open(path), delimiter='\t') if r.get('verdict') == 'REAL']
+    by_node = {}
+    for n_id, node in nodes.items():
+        name = (node.A_v.get('full') or node.A_v.get('label') or '').rsplit('/', 1)[-1]
+        fs = []
+        for e_id in node.Z_v:
+            e = entities.get(e_id)
+            if e is None: continue
+            for f in e.Z_v:
+                if f in functions: fs.append((f, e.A_v.get('etype') or '', e.A_v.get('label') or ''))
+        by_node.setdefault(name, []).extend(fs)
+    ok = {}
+    RETAIN = {'queue', 'keyed', 'ptr'}     # a held pointer is a hand-off only when the member RETAINS the message object (pointer,
+    for r in rows:                         # queue or map of messages); a value copied into a field / struct / helper object is a
+                                           # latest-value (sampled) read, not a task edge
+        fs = by_node.get(r['node'].rsplit('/', 1)[-1], [])
+        dep = [f for f, et, lab in fs if et == 'sub' and lab.endswith(r['deposit_topic'])]
+        rd = [f for f, et, lab in fs if et == r['reader_etype'] and (r['reader_ent'] in lab or lab.endswith(r['reader_ent']))]
+        retains = (r.get('deposit_pattern') in RETAIN)
+        for d_ in dep:
+            for r_ in rd: ok.setdefault((d_, r_), set()).add(r.get('deposit_pattern')); ok[(d_, r_)].add('__retain__' if retains else '__scalar__')
+    return ok, len(rows)
+
+
 def measure_flows(G, session_id, functions, nodes=None, entities=None):
     """Per-instance flow measurement on the finished graph (needs a session
     traced with [trace] per_instance = true: ros2:rcl_publish + ros2:rmw_take;
@@ -2061,6 +2366,7 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
         if f is None: continue
         pubs[(t, f)].append(int(r["ts_ns"])); n_pub += 1
     ipc_keys = set(); n_ipub = 0
+    ipm_set, ipm_present = _ipm_matches(session_id); n_ipm_relabel = 0   # fishwait25
     for r in pg_store.fetch_all(
         "SELECT vpid, vtid, ts_ns, payload->>'publisher_handle' AS h FROM ros2_trace "
         "WHERE session_id=%s AND event='ros2:fish_rclcpp_intra_publish'", (session_id,)):
@@ -2070,6 +2376,27 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
         if f is None: continue
         pubs[(t, f)].append(int(r["ts_ns"])); ipc_keys.add((t, f)); n_ipub += 1
     for k in pubs: pubs[k].sort()
+    # 2026-10-25: observed node-internal flow (container ops, message_filters merges, pointer holds) decides which
+    # state links / join ties are OBSERVED; the structural rest becomes a candidate (nature *_candidate), never an edge
+    # of the task layer.
+    obs_ev, drops_ev, ev_n = _join_state_evidence(session_id, wins, wstarts, owner, pubs, functions, nodes or {}, entities or {})
+    # 'pointer:held@publish' (held while another callback published) is necessary, not sufficient: the publisher must
+    # READ the member (vehicle_cmd_gate's timer publishes while steering_status is held and never reads it — truth
+    # table 2026-10-25). It becomes an observed edge only with a source-level corroboration (FISH_SOURCE_FLOW: the
+    # static class analysis, or the hand-made truth table); alone it is a candidate that carries its instance pairs.
+    source_ok, n_source = _source_verified_links(os.environ.get("FISH_SOURCE_FLOW", ""), nodes or {}, entities or {}, functions)
+    if os.environ.get("FISH_DEBUG_SOURCE"):
+        for (u_, v_), pats in list(source_ok.items())[:20]:
+            log(f"    [source] ok pair {u_} ({functions.get(u_).A_v.get('label') if u_ in functions else '?'}) -> {v_} ({functions.get(v_).A_v.get('label') if v_ in functions else '?'}): {pats}")
+    def _corroborated(label, u, v):
+        if label not in POINTER_LABELS: return True
+        pats = source_ok.get((u, v))
+        if os.environ.get("FISH_DEBUG_SOURCE"):
+            log(f"    [source] held@publish {u} ({functions.get(u).A_v.get('label') if u in functions else '?'}) -> {v} ({functions.get(v).A_v.get('label') if v in functions else '?'}): patterns={pats}")
+        return pats is not None and '__retain__' in pats     # held pointer corroborated only by a retaining deposit
+    f_etype = {f: (entities[e_id].A_v.get("etype") if e_id in entities else None)
+               for n_id, node in (nodes or {}).items() for e_id in node.Z_v if e_id in entities for f in entities[e_id].Z_v}
+    n_obs_edge = defaultdict(int); n_cand = defaultdict(int); n_new_edge = defaultdict(int)
     if n_pub == 0 and n_ipub == 0:
         log("measure_flows: no ros2:rcl_publish / fish_rclcpp_intra_publish events (per_instance off) — hop latencies skipped; state ages only")
 
@@ -2094,6 +2421,17 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
             rh = reader2rh.get((r["vpid"], int(r["rd"])))
             if rh is None: continue
             arrival.setdefault((r["vpid"], rh, int(r["st"])), int(r["ts_ns"])); n_arr += 1
+    arr_label = "rhc_store"
+    if not arrival:
+        # fastdds1 (2026-10-26): rmw_fastrtps overlay — the take event carries the sample's Fast DDS reception timestamp
+        # (arrival in the reader history), keyed like the Cyclone arrivals by (vpid, rmw_subscription_handle, source ts)
+        for r in pg_store.fetch_all(
+            "SELECT vpid, payload->>'rmw_subscription_handle' AS rh, (payload->>'source_timestamp')::bigint AS st, "
+            "(payload->>'reception_timestamp')::bigint AS rt FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rmw_take_id'", (session_id,)):
+            if r["rt"] and r["st"] is not None:
+                arrival.setdefault((r["vpid"], r["rh"], int(r["st"])), int(r["rt"])); n_arr += 1
+        if arrival:
+            arr_label = "sample_identity"
     take_rh = {}   # (topic, sub_F, take_ts) → (vpid, rh) for the arrival lookup
     takes = defaultdict(list)  # (topic, sub_F) → [(take_ts, src_ts)]   dispatched takes (hop latency)
     polled = defaultdict(list) # (topic, sub_F, reader_F) → [(take_ts, src_ts)]   polled reads (data age)
@@ -2131,6 +2469,29 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
         if d.get("rel") != "comm" or d.get("level") != "L3":
             continue
         nat = d.get("nature")
+        if nat in ("state", "join") and (u, v) in obs_ev and not d.get("polled") and not d.get("evidence"):
+            label, prs = obs_ev[(u, v)]
+            ages = [tc - td for td, tc in prs if tc >= td]
+            if ages:
+                if nat == "join" and f_etype.get(v) == "tmr":
+                    d["nature"] = "state"; nat = "state"   # a timer reader: sampled dependency, not join membership
+                if _corroborated(label, u, v):
+                    lab = label + ("+source" if label in POINTER_LABELS else "")
+                    d.update(inferred=False, evidence=lab, flow_n=len(ages), age_ns_p50=q(ages, .5), age_ns_p90=q(ages, .9),
+                             age_ns_max=max(ages), flow_method=lab, prov={"edge": "observed:" + lab, "age": "measured:" + label})
+                    n_obs_edge[lab] += 1
+                    continue
+                # held@publish without source corroboration: a candidate with its instance pairs
+                d.update(candidate=True, candidate_evidence=label, flow_n=len(ages), age_ns_p50=q(ages, .5), age_ns_p90=q(ages, .9),
+                         age_ns_max=max(ages), flow_method=label, prov={"edge": "candidate:" + label, "age": "measured:" + label})
+                d["nature"] = nat + "_candidate"; n_cand["held@publish"] += 1
+                continue
+        if nat == "join" and not d.get("evidence"):
+            d["nature"] = "join_candidate"; d["candidate"] = True; n_cand["join"] += 1
+            continue
+        if nat == "state" and d.get("inferred") and not d.get("polled"):
+            d["nature"] = "state_candidate"; d["candidate"] = True; n_cand["state"] += 1
+            # the age by start order below stays as information on the candidate
         if nat == "state":
             if d.get("polled"):
                 # measured read: age = take − DDS source_timestamp (publish time)
@@ -2166,6 +2527,9 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
         # (matches_any_intra_process_publishers), so those takes are not the
         # consumption and must not be paired.
         same_proc_ipc = (topic, u) in ipc_keys and f_vpid.get(u) is not None and f_vpid.get(u) == f_vpid.get(v)
+        if same_proc_ipc and ipm_present and (f_vpid.get(v), topic, functions[v].A_v.get("ipc_waitable")) not in ipm_set:
+            same_proc_ipc = False          # fishwait25: the IPM did not match this sub -> it is fed over DDS in-process
+            n_ipm_relabel += 1
         if tk and not same_proc_ipc:
             # inter-process: pair each take with the publish whose ts is closest to
             # the DDS source_timestamp (same host → same clock domain)
@@ -2210,7 +2574,7 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
             # provenance (tier experiment): measured = paired per sample from trace events, inferred = time-order heuristic
             d["prov"] = {"hop": "measured:" + method if method != "ipc_time" else "inferred:ipc_time",
                          "release": "measured:publish_instant" if rts else "n/a",
-                         "arrival": "measured:rhc_store" if arr else "absent"}
+                         "arrival": f"measured:{arr_label}" if arr else "absent"}
             if rts:
                 d.update(rts_n=len(rts), rts_ns_p50=q(rts, .5), rts_ns_p90=q(rts, .9), rts_ns_max=max(rts))
             if arr:
@@ -2224,6 +2588,45 @@ def measure_flows(G, session_id, functions, nodes=None, entities=None):
             for k_, v_ in pv.items(): prov_counts[f"{k_}={v_}"] = prov_counts.get(f"{k_}={v_}", 0) + 1
     if prov_counts:
         log("provenance of derived quantities: " + ", ".join(f"{k} {v}" for k, v in sorted(prov_counts.items())))
+    for (fu, fv), (label, prs) in obs_ev.items():
+        if G.has_edge(fu, fv) or fu not in functions or fv not in functions or len(prs) < 5:
+            continue
+        ages = [tc - td for td, tc in prs if tc >= td]
+        if not ages: continue
+        nat = "state" if f_etype.get(fv) == "tmr" else "join"
+        if _corroborated(label, fu, fv):
+            lab = label + ("+source" if label in POINTER_LABELS else "")
+            G.add_edge(fu, fv, rel="comm", level="L3", nature=nat, topic=label.split(":")[0], intra_node=True, inferred=False,
+                       evidence=lab, flow_n=len(ages), age_ns_p50=q(ages, .5), age_ns_p90=q(ages, .9), age_ns_max=max(ages),
+                       flow_method=lab, prov={"edge": "observed:" + lab, "age": "measured:" + label})
+            n_new_edge[nat] += 1
+        else:
+            G.add_edge(fu, fv, rel="comm", level="L3", nature=nat + "_candidate", topic=label.split(":")[0], intra_node=True,
+                       inferred=True, candidate=True, candidate_evidence=label, flow_n=len(ages), age_ns_p50=q(ages, .5),
+                       age_ns_p90=q(ages, .9), age_ns_max=max(ages), flow_method=label,
+                       prov={"edge": "candidate:" + label, "age": "measured:" + label})
+            n_cand["held@publish(new)"] += 1
+    # 2026-10-25: source-only candidates. A static deposit -> reader link (FISH_SOURCE_FLOW) without any runtime evidence
+    # (value copies into a deque / field: no retain, no container op for elements <= 256 B) is still a possible flow:
+    # listed as a candidate so that no node-internal edge is silently absent (observed or listed, never assumed).
+    n_src_cand = 0
+    for (fu, fv), pats in source_ok.items():
+        if fu == fv or G.has_edge(fu, fv) or fu not in functions or fv not in functions: continue
+        nat = "state" if f_etype.get(fv) == "tmr" else "join"
+        pat_s = ",".join(sorted(str(p_) for p_ in pats if p_ and not str(p_).startswith("__")))
+        G.add_edge(fu, fv, rel="comm", level="L3", nature=nat + "_candidate", topic="source", intra_node=True, inferred=True,
+                   candidate=True, candidate_evidence="source:" + pat_s, prov={"edge": "candidate:source"})
+        n_src_cand += 1
+    if n_src_cand: n_cand["source-only"] = n_src_cand
+    for (fu, fr), n_ in drops_ev.items():
+        if fu in functions: functions[fu].A_v.setdefault("drops_to", {})[str(fr)] = n_
+    log(f"  source corroboration (FISH_SOURCE_FLOW): {'none' if n_source is None else f'{n_source} REAL links -> {len(source_ok)} (F, F) pairs'}")
+    log(f"  node-internal flow (observed): evidence events container_ops={ev_n['container_ops']} mf_merges={ev_n['mf_merges']} holds={ev_n['holds']}; "
+        f"stamps: self-explained {ev_n.get('stamp_self_explained', 0)}, unknown intra {ev_n.get('stamp_unknown_intra', 0)}, ambiguous (two depositors) {ev_n.get('stamp_ambiguous', 0)}, degenerate (constant) {ev_n.get('stamp_degenerate', 0)}; "
+        f"edges observed {dict(n_obs_edge)}, new edges from evidence {dict(n_new_edge)}, demoted to candidates {dict(n_cand)}, "
+        f"drops {sum(drops_ev.values())} messages on {len(drops_ev)} (F, F) pairs")
+    if ipm_present:
+        log(f"  IPM (fishwait25): {n_ipm_relabel} same-process edge(s) not matched by the IntraProcessManager -> measured on the DDS path")
     log(f"measure_flows: {n_msg} msg edge(s) with hop latency ({n_pairs} pairs; publishes {n_pub} + {n_ipub} intra-process, takes {n_take}, polled takes {n_poll}, arrivals {n_arr}), "
         f"{n_state} state edge(s) with data age")
 
@@ -2575,6 +2978,31 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
                 elif aspect["aspect"] == "cli":
                     cli_index.setdefault(aspect["service"], []).append((e_id, n.id_v))
 
+    # fishwait25: the IntraProcessManager's matching (same process, same topic, compatible QoS) as an edge attribute —
+    # ipc_matched: the IPM delivers this edge in-process (ring buffer, waitable); ipc_buffer: the subscriber's buffer kind;
+    # ipc_copies: copies the IPM makes per publish on that publisher (0 = zero-copy; Humble do_intra_process_publish).
+    node_to_pid = {}
+    for ex in executors.values():
+        for n_id in ex.Z_v:
+            node_to_pid[n_id] = ex.A_v["pid"]
+    ipm_pub, ipm_sub, ipm_matched, ipm_mix = {}, {}, set(), collections.defaultdict(lambda: [0, 0])
+    for d in _all_events(session_id, "ros2:fish_rclcpp_ipm_add_publisher"):
+        ipm_pub[(d.get("vpid"), int(d["payload"]["pub_id"]))] = d["payload"]["topic_name"]
+    for d in _all_events(session_id, "ros2:fish_rclcpp_ipm_add_subscription"):
+        ipm_sub[(d.get("vpid"), int(d["payload"]["sub_id"]))] = (d["payload"]["waitable"], int(d["payload"]["take_shared"]))
+    for d in _all_events(session_id, "ros2:fish_rclcpp_ipm_match"):
+        pid, pl = d.get("vpid"), d["payload"]
+        t = ipm_pub.get((pid, int(pl["pub_id"]))); w = ipm_sub.get((pid, int(pl["sub_id"])))
+        if t is None or w is None:
+            continue
+        ipm_matched.add((pid, t, w[0]))
+        ipm_mix[(pid, int(pl["pub_id"]))][0 if int(pl["take_shared"]) else 1] += 1
+    ipm_copies = {}
+    for (pid, pub_id), (n_sh, n_own) in ipm_mix.items():
+        c = 0 if n_own == 0 else (n_sh + n_own - 1 if n_sh <= 1 else n_own)
+        t = ipm_pub[(pid, pub_id)]; ipm_copies[(pid, t)] = max(ipm_copies.get((pid, t), 0), c)
+    n_ipm_edges = 0
+
     l2_count = 0
     for topic, sub_list in sub_index.items():
         pub_entities = pub_index.get(topic, [])
@@ -2589,6 +3017,13 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
                     attrs = {"rel": "comm", "level": "L2", "nature": "msg", "topic": topic}
                     if intra_node:
                         attrs["intra_node"] = True
+                    if ipm_matched and node_to_pid.get(pub_n) == node_to_pid.get(sub_n):
+                        pid = node_to_pid.get(sub_n); sa = entities[sub_e].A_v
+                        if (pid, topic, sa.get("ipc_waitable")) in ipm_matched:
+                            attrs["ipc_matched"] = True
+                            attrs["ipc_buffer"] = sa.get("ipc_buffer")
+                            attrs["ipc_copies"] = ipm_copies.get((pid, topic), 0)
+                            n_ipm_edges += 1
                     if meta.get("msg_type"):
                         attrs["msg_type"] = meta["msg_type"]
                     if meta.get("avg_rate_hz"):
@@ -2607,7 +3042,7 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
                     G.add_edge(srv_e, cli_e, rel="comm", level="L2",
                                nature="dep", service=service, direction="response", **extra)
                     l2_count += 2
-    log(f"  L2 edges: {l2_count}")
+    log(f"  L2 edges: {l2_count}" + (f" ({n_ipm_edges} matched by the IntraProcessManager: ipc_matched)" if ipm_matched else ""))
 
     ext_count = 0
     all_pub_topics = set(pub_index.keys())
@@ -2730,22 +3165,28 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
                 if f == anchor_f:
                     continue
                 join_ties.setdefault((f, anchor_f), []).append(topic)
+    n_tie_on_hop = 0
     for (f, anchor_f), topics in join_ties.items():
+        if _l3_keep_hop(G, f, anchor_f, "join_tie_groups", topics):
+            n_tie_on_hop += 1; continue
         G.add_edge(f, anchor_f, rel="comm", level="L3", nature="join",
                    topic=topics[0], topics=topics, join_group=topics[0],
                    join_groups=topics, intra_node=True)
     if join_ties:
         n_groups = sum(len(t) for t in join_ties.values())
-        log(f"  Join ties: {len(join_ties)} L3 edges (nature=join) "
-            f"over {n_groups} join groups")
+        log(f"  Join ties: {len(join_ties) - n_tie_on_hop} L3 edges (nature=join) "
+            f"over {n_groups} join groups"
+            + (f"; {n_tie_on_hop} tie(s) on a pair that already carries a message hop: kept as attributes of the hop" if n_tie_on_hop else ""))
 
     # State links (detect_state_links / detect_polled_subs): sample-and-hold reads
     # inside a node — NOT precedence; FT grouping ignores nature='state'.
-    state_count = 0; polled_count = 0
+    state_count = 0; polled_count = 0; state_on_hop = 0
     for n_id, node in nodes.items():
         polled_set = {(a, b, t): n for a, b, t, n in (node.A_v.get("polled_links") or [])}
         for f_s, f_p, topic in (node.A_v.get("state_links") or []):
             if f_s in functions and f_p in functions:
+                if _l3_keep_hop(G, f_s, f_p, "state_link_topics", [topic]):
+                    state_on_hop += 1; continue
                 n_poll = polled_set.get((f_s, f_p, topic))
                 if n_poll:
                     # observed: rmw_take inside the reader's callback window
@@ -2757,7 +3198,8 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
                                topic=topic, inferred=True, intra_node=True)
                 state_count += 1
     if state_count:
-        log(f"  State links: {state_count} L3 edges (nature=state; {polled_count} polled/observed, rest inferred)")
+        log(f"  State links: {state_count} L3 edges (nature=state; {polled_count} polled/observed, rest inferred)"
+            + (f"; {state_on_hop} on a pair that already carries a message hop: kept as attributes of the hop" if state_on_hop else ""))
     # tf buffer reads (detect_tf_links): polled-msg edges listener sub F → reader F,
     # cross-node (the listener is a hidden node of the same process); ages measured there.
     tf_count = 0
@@ -2823,9 +3265,15 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
                 continue
             for e_id in _node_to_entities.get(n_id, []):
                 ent = entities[e_id]
-                if ent.A_v.get("etype") == "sub" and ent.A_v.get("label") == topic:
+                if ent.A_v.get("etype") == "sub" and ent.A_v.get("sub_handle") == sh:
                     sub_handle_to_entity_id[sh] = e_id
                     break
+            else:
+                for e_id in _node_to_entities.get(n_id, []):
+                    ent = entities[e_id]
+                    if ent.A_v.get("etype") == "sub" and ent.A_v.get("label") == topic and not ent.A_v.get("sub_handle"):
+                        sub_handle_to_entity_id[sh] = e_id
+                        break
 
         # waitable_handle → owning waitable entity id (1:1, since cb_addr ==
         # waitable_handle for waitable entities — see identify_entities).
@@ -2872,6 +3320,8 @@ def add_horizontal_edges(G, session_id, executors, nodes, entities, functions):
                     # F-level propagation: main F → main F
                     for sf in _funcs_main(src_eid):
                         for df in _funcs_main(dst_eid):
+                            if _l3_keep_hop(G, sf, df, "gxf_internal_groups", [str(ga)]):
+                                continue
                             G.add_edge(sf, df,
                                        rel="comm", level="L3",
                                        nature="gxf_internal",

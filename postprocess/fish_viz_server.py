@@ -1586,7 +1586,7 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
                 n_edges_topic_filtered += 1
                 continue
             nat = a.get('nature', '')
-            ecls = 'data' if nat == 'join' else ('state' if nat == 'state' else topic_class(topic))
+            ecls = 'candidate' if nat.endswith('_candidate') else ('data' if nat == 'join' else ('state' if nat == 'state' else topic_class(topic)))   # candidate = structural rule without evidence (2026-10-25)
             edges.append({
                 'src': s, 'dst': t,
                 'topic': topic,
@@ -1640,7 +1640,7 @@ def _fetch_wcc_payload(sid, scope, allowed, infra_mode='exclude',
         n['stats'] = cb_stats.get(n['cb_addr'])
 
     # FT grouping edges: data-only by default (see _INFRA_TOPIC_GLOBS).
-    group_edges = [e for e in edges if e['edge_class'] != 'state'
+    group_edges = [e for e in edges if e['edge_class'] not in ('state', 'candidate')
                    and (infra_mode == 'include' or e['edge_class'] != 'infra')]
     und = {fid: set() for fid in fnodes}
     for e in group_edges:
@@ -1892,7 +1892,7 @@ def _component_graph(fnodes, edges, depth=1, axis='ros', stream_of=None, focus=N
             comps.setdefault(a, {'name': a, 'n_f': 0, 'n_gpu': 0, 'nodes': [], 'n_nodes': 0, 'n_tmr': 0, 'n_sub': 0})
             comps[a].setdefault('n_internal_edges', 0); comps[a]['n_internal_edges'] += 1
             continue
-        kind = e['edge_class'] if e['edge_class'] in ('infra', 'state') else ('join' if e.get('nature') == 'join' else 'data')
+        kind = 'state' if e['edge_class'] in ('state', 'candidate') else (e['edge_class'] if e['edge_class'] == 'infra' else ('join' if e.get('nature') == 'join' else 'data'))
         if a == b and kind == 'state':
             comps[a].setdefault('n_internal_state', 0); comps[a]['n_internal_state'] += 1
             continue
@@ -1906,7 +1906,7 @@ def _component_graph(fnodes, edges, depth=1, axis='ros', stream_of=None, focus=N
     for L in links.values():
         out_links.append({
             'src': L['src'], 'dst': L['dst'], 'kind': L['kind'], 'n_edges': L['n_edges'],
-            'n_topics': len(L['topics']), 'topics': sorted(L['topics'])[:12], 'flow_n': L['flow_n'],
+            'n_topics': len(L['topics']), 'topics': sorted(L['topics'])[:12], 'topics_all': sorted(L['topics']), 'flow_n': L['flow_n'],
             'lat_ns_p50': med(L['lat_p50']), 'lat_ns_p90': med(L['lat_p90']),
             'age_ns_p50': med(L['age_p50']), 'age_ns_p90': med(L['age_p90']),
         })

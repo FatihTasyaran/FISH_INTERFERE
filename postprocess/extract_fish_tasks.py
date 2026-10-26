@@ -18,7 +18,7 @@ scheduling split (ksched_inst, written by ksched_split.py) and the per-message e
   checks    callbacks that fire on a data topic without any paired trigger (extraction gaps), edges that
             exist in the graph but carried no instance in the window.
 Times in ns. C is the observed on-CPU time, not a WCET."""
-import argparse, bisect, collections, json, re, sys
+import argparse, bisect, collections, json, os, re, sys
 import numpy as np
 import psycopg2
 sys.path.insert(0, __file__.rsplit('/', 1)[0] if '/' in __file__ else '.')
@@ -54,6 +54,12 @@ def main():
 
     W = steady_window(cur, sid, scope, warmup_s=0 if a.all_window else None)
     t_ss, t_end = W['t_ss'], W['t_end']
+    # 2026-10-26: per-message records (publishes, DDS writes, intra takes, holds, stamps) are loaded from the start of the data
+    # phase, not from a fixed 1-2 s margin before the window: a message can sit in a full ring buffer / reader cache for
+    # seconds before its take (synthetic layered100: 1.7-3.4 s), and a take inside the window whose publish lies before the
+    # margin lost its identity (2 takes of /synth/t022 fell back to the order rule). Pairs are still filtered by the
+    # consumer start inside the window (in_win).
+    t_lo = min(t_ss - 2_000_000_000, (W.get('t_data') or t_ss) - 1_000_000_000)
     print(f"session {sid}: window [{W['how']}] {(t_end - t_ss) / 1e9:.1f} s")
 
     # ---------------------------------------------------------------- graph
@@ -80,6 +86,8 @@ def main():
         f['node'] = (n or {}).get('full') or (n or {}).get('label') or '?'
         f['ent'] = (e or {}).get('label') or f['label']
         f['name'] = f"{f['node']} / {f['etype']}:{f['ent']}"
+        if (e or {}).get('attrs', {}).get('dup'):
+            f['name'] += f"#{e['attrs']['dup']}"        # 2026-10-25: k-th subscription of the node on the same topic (one F per rcl handle)
     # identity = (handle, [init, fini)): a callback address can be reused inside one process (re-created timers,
     # recycled handles), so a window is bound to the F whose lifetime contains its start
     cb2f_all = collections.defaultdict(list)
@@ -130,6 +138,17 @@ def main():
             if w[0][j] <= ts <= w[1][j] and w[2][j] >= 0:
                 return w[2][j]
         return -1
+    def owner_before(pid, vtid, ts, slack_ns=2_000_000):
+        """the callback instance that ENDED on this thread at most slack_ns before ts (events emitted right after the
+        callback returned, e.g. the retention probe), or -1"""
+        w = TW.get((pid, vtid))
+        if not w:
+            return -1
+        i = bisect.bisect_right(w[0], ts) - 1
+        for j in range(i, max(-1, i - 8), -1):
+            if w[1][j] <= ts <= w[1][j] + slack_ns and w[2][j] >= 0:
+                return w[2][j]
+        return -1
     def inst_idx(f, ts):
         """index of the instance of f whose window contains ts (or -1)."""
         s = I0.get(f)
@@ -164,11 +183,17 @@ def main():
     cur.execute("SELECT vpid, payload->>'publisher_handle', payload->>'topic_name' FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_publisher_init'", (sid,))
     pub_topic = {(v, h): t for v, h, t in cur.fetchall()}
     pubs = collections.defaultdict(list); ipubs = collections.defaultdict(list)   # (topic, f) -> [ts]
-    cur.execute("SELECT vpid, vtid, ts_ns, payload->>'publisher_handle', event FROM ros2_trace WHERE session_id=%s AND event IN "
+    cur.execute("SELECT vpid, vtid, ts_ns, payload->>'publisher_handle', event, payload->>'message' FROM ros2_trace WHERE session_id=%s AND event IN "
                 "('ros2:rcl_publish','ros2:fish_rcl_publish','ros2:fish_rclcpp_intra_publish') AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns",
-                (sid, t_ss - 1_000_000_000, t_end))
+                (sid, t_lo, t_end))
     n_pub_orphan = 0
-    for vpid, vtid, ts, h, ev in cur:
+    pub_rows = cur.fetchall()
+    # A publisher compiled against the overlay headers (fork images) reports every intra-process publish twice: once
+    # from the header with the message address, once from the library-side fallback with address 0x0. Count it once.
+    addr_pub = {(r[0], r[3]) for r in pub_rows if r[4].endswith('intra_publish') and r[5] not in (None, '0x0', '0')}
+    for vpid, vtid, ts, h, ev, msg in pub_rows:
+        if ev.endswith('intra_publish') and msg in (None, '0x0', '0') and (vpid, h) in addr_pub:
+            continue
         t = pub_topic.get((vpid, h))
         if not t or topic_class(t) == 'infra':
             continue
@@ -189,7 +214,7 @@ def main():
     if writer_topic:
         cur.execute("SELECT vpid, vtid, ts_ns, (payload->>'writer')::bigint, (payload->>'source_timestamp')::bigint, (payload->>'size')::bigint "
                     "FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_dds_write' AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns",
-                    (sid, t_ss - 1_000_000_000, t_end))
+                    (sid, t_lo, t_end))
         for vpid, vtid, ts, w, st, size in cur:
             t = writer_topic.get((vpid, w))
             if not t or topic_class(t) == 'infra':
@@ -200,45 +225,156 @@ def main():
             if f < 0:
                 continue
             WR[(t, st)] = (f, inst_idx(f, ts), ts, size); wr_by[(t, f)].append((st, ts, size))
+    # fastdds1 (2026-10-26): exact sample identity on rmw_fastrtps (Isaac images). fish_rmw_write (publishing thread, after the
+    # DataWriter write) carries the sample's (writer GUID, sequence number); fish_rmw_take_id (taking thread, inside rmw_take)
+    # carries the same pair plus the sample's Fast DDS source timestamp (= what ros2:rmw_take reports) and reception timestamp
+    # (arrival in the reader history = the Cyclone rhc_store instant). Joining the two fills the same WR / arrival tables the
+    # Cyclone shim fills, keyed by (topic, source timestamp); wr_by stays Cyclone-only (write duration / size are not known here).
+    FW = {}                                  # (guid_hi, guid_lo, seq) -> (topic, pub F, pub instance, write ts)
+    FW_ARR = {}                              # (vpid, rmw_subscription_handle, source ts) -> reception ts, merged into `arrival` below
+    n_fw_take = n_fw_hit = 0
+    if not WR and not os.environ.get('FISH_NO_FASTDDS_ID'):      # FISH_NO_FASTDDS_ID=1: A/B switch, ignore the Fast DDS identity records
+        cur.execute("SELECT vpid, vtid, ts_ns, payload->>'rmw_publisher_handle', payload->>'guid_hi', payload->>'guid_lo', (payload->>'seq')::bigint "
+                    "FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rmw_write' AND payload->>'ret'='1' AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns",
+                    (sid, t_lo, t_end))
+        for vpid, vtid, ts, h, ghi, glo, seq in cur:
+            t = rmwpub_topic.get((vpid, h))
+            if not t or topic_class(t) == 'infra':
+                continue
+            f = owner(vpid, vtid, ts)
+            if f < 0:
+                f = thread_f.get((vpid, vtid), -1)
+            if f < 0:
+                continue
+            FW[(ghi, glo, seq)] = (t, f, inst_idx(f, ts), ts)
+    if FW:
+        cur.execute("SELECT vpid, ts_ns, payload->>'rmw_subscription_handle', payload->>'guid_hi', payload->>'guid_lo', (payload->>'seq')::bigint, "
+                    "(payload->>'source_timestamp')::bigint, (payload->>'reception_timestamp')::bigint "
+                    "FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rmw_take_id' AND ts_ns BETWEEN %s AND %s", (sid, t_lo, t_end))
+        for vpid, ts, rh, ghi, glo, seq, st, rt in cur:
+            n_fw_take += 1
+            w = FW.get((ghi, glo, seq))
+            if w is None or st is None:
+                continue
+            n_fw_hit += 1
+            WR.setdefault((w[0], st), (w[1], w[2], w[3], 0))
+            # reception can precede the write-END record: Fast DDS delivers to same-participant readers inside write()
+            # (validation 152557: rt - write_end median +0.8 us, min -1.0 ms); accept up to 50 ms before it
+            if rt and w[3] - 50_000_000 <= rt <= ts:
+                FW_ARR.setdefault((vpid, rh, st), rt)
+        print(f"Fast DDS identity (fish_rmw_write / fish_rmw_take_id): {len(FW)} writes with a sample identity, {n_fw_take} identified takes, "
+              f"{n_fw_hit} matched to a write, {len(FW_ARR)} with a reception timestamp inside [write, take] as arrival")
+    DDS_ID_LABEL = 'dds_write' if writer_topic else 'sample_identity'     # what makes a DDS pair exact in this session
+    ARR_LABEL = 'sample_identity' if FW_ARR else 'rhc_store'               # where the arrival instant of a DDS pair comes from
     # Intra-process identity (needs binaries compiled against the overlay headers — a FORK image, e.g. fork-awintra1):
     # a zero-copy delivery hands the subscriber the publisher's object, so (process, message address) pairs the publish
     # with the take exactly. The library-side fallback of fish_rclcpp_intra_publish reports address 0x0 → not usable.
+    IPC_TAKE_RACE_NS = 1_000_000               # pop -> take tracepoint latency bound (normal publish -> take latency is >= 50 us)
     IPUB = collections.defaultdict(list)       # (vpid, message address) -> [(publish ts, publishing F, topic)]
+    ipub_feed = collections.defaultdict(list)  # (vpid, topic) -> [publish ts] — everything pushed into the in-process buffers of that topic
     cur.execute("SELECT vpid, vtid, ts_ns, payload->>'publisher_handle', payload->>'message' FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rclcpp_intra_publish' "
-                "AND payload->>'message' NOT IN ('0x0','0') AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns", (sid, t_ss - 1_000_000_000, t_end))
+                "AND payload->>'message' NOT IN ('0x0','0') AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns", (sid, t_lo, t_end))
     for vpid, vtid, ts, h, msg in cur:
         t = pub_topic.get((vpid, h))
         if not t or topic_class(t) == 'infra':
             continue
+        ipub_feed[(vpid, t)].append(ts)
         f = owner(vpid, vtid, ts)
         if f < 0:
             f = thread_f.get((vpid, vtid), -1)
         if f >= 0:
             IPUB[(vpid, msg)].append((ts, f, t))
+    for lst_ in ipub_feed.values():
+        lst_.sort()
+    # ring-buffer depth per subscriber waitable (fishwait25 IPM registration event; the QoS history depth)
+    cur.execute("SELECT vpid, payload->>'waitable', payload->>'depth' FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rclcpp_ipm_add_subscription'", (sid,))
+    ipm_depth = {(v, w): int(d) for v, w, d in cur.fetchall() if d is not None and str(d).isdigit()}
     ipairs = collections.defaultdict(list)     # (topic, publishing F, consuming F) -> [(u instance, publish ts, v instance, publish ts, v start)]
+    ipub_srcs = collections.defaultdict(set)   # topic -> publishing F's with address-identified intra publishes
+    for lst_ in IPUB.values():
+        for _ts, _f, _t in lst_:
+            ipub_srcs[_t].add(_f)
     n_itake = n_itake_exact = 0
+    n_itake_nopub = n_itake_evicted = n_itake_nodisp = n_itake_othertopic = 0   # why a take is not paired by address
     if IPUB:
         cur.execute("SELECT vpid, vtid, ts_ns, payload->>'waitable', payload->>'message' FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rclcpp_intra_take' "
-                    "AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns", (sid, t_ss - 1_000_000_000, t_end))
-        for vpid, vtid, ts, wt, msg in cur:
+                    "AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns", (sid, t_lo, t_end))
+        itakes = cur.fetchall()
+        take_ts_by_w = collections.defaultdict(list)       # (vpid, waitable) -> [take ts], for the intervening-take test
+        for vpid, vtid, ts, wt, msg in itakes:
+            take_ts_by_w[(vpid, wt)].append(ts)
+        for vpid, vtid, ts, wt, msg in itakes:
+            if ts < t_ss - 1_000_000_000:
+                continue        # its dispatch (<= 1 s after the take, see below) ends before the window: never a pair; keeps the counters meaningful
             ft = cb_owner(vpid, wt, ts)
             if ft < 0 or ft not in I0:
                 continue
             n_itake += 1
             lst = IPUB.get((vpid, msg))
             if not lst:
-                continue
+                n_itake_nopub += 1; continue
             j = bisect.bisect_right(lst, (ts, 1 << 62, '')) - 1      # the last publish of this address before the take
-            if j < 0 or ts - lst[j][0] > 2_000_000_000:
-                continue
+            if j < 0:
+                n_itake_nopub += 1; continue
+            # 2026-10-26: the address must have been published on the TAKER's topic. One process reuses message addresses
+            # across topics (TASK 4 ess session: NITROS buffers published on /r2b/left/image_rect were "taken" by the
+            # MonitorNode's /r2b/disparity subscription — 3152 false identities, consumed by no edge). Walk back to the latest
+            # publish of this address on that topic; the ring-buffer test below still bounds how old it may be.
+            sub_topic = F[ft]['ent'] if F[ft].get('etype') == 'sub' and str(F[ft].get('ent') or '').startswith('/') else None
+            if sub_topic is not None and lst[j][2] != sub_topic:
+                while j >= 0 and lst[j][2] != sub_topic:
+                    j -= 1
+                if j < 0:
+                    n_itake_othertopic += 1; continue
             tp, fs, topic = lst[j]
+            # 2026-10-26: the matched publish m must still be able to sit in the subscriber's ring buffer (depth D, drop-oldest
+            # on overflow; a take removes the oldest). Every publish newer than m stays behind m, so at the take the buffer
+            # holds m plus all P publishes made after it: feasible only if P <= D - 1. A match with P >= D is a reused
+            # address whose own publish event is missing (dropped trace event). This replaces the fixed 2 s age bound, which
+            # rejected correct identities whenever the buffer stayed full (synthetic layered100: cb_023's buffer held every
+            # message 1.7-3.4 s, 14 + 113 in-window takes fell back to the order rule -> 'mixed' instead of exact).
+            # Race tolerance: the take tracepoint fires after the buffer pop, so a publish that lands in between (Autoware
+            # 134134, concatenated/pointcloud depth 1: the newer publish 80 us before the take of a 211 ms old message) is not
+            # "newer than m while m waited" — publishes within IPC_TAKE_RACE_NS before the take are not counted.
+            feed = ipub_feed.get((vpid, topic), ())
+            P = bisect.bisect_left(feed, ts - IPC_TAKE_RACE_NS) - bisect.bisect_right(feed, tp)
+            D = ipm_depth.get((vpid, wt))
+            if (D is not None and P >= D) or (D is None and ts - tp > 30_000_000_000):
+                n_itake_evicted += 1; continue
             vi = int(np.searchsorted(I0[ft], ts, side='left'))        # the dispatch that follows the take
             if vi > 0 and I0[ft][vi - 1] <= ts <= I1[ft][vi - 1]:
                 vi -= 1                                                # the take lies inside the waitable's window
-            if vi >= len(I0[ft]) or I0[ft][vi] - ts > TAKE2START_NS:
-                continue
+            if vi >= len(I0[ft]):
+                n_itake_nodisp += 1; continue
+            if I0[ft][vi] - ts > TAKE2START_NS:
+                # the dispatch came late (preempted / throttled executor thread): still this take's dispatch as long as
+                # no other take of the same waitable lies in between and the gap stays below 1 s
+                tl = take_ts_by_w[(vpid, wt)]; k2 = bisect.bisect_right(tl, ts)
+                if I0[ft][vi] - ts > 1_000_000_000 or (k2 < len(tl) and tl[k2] < I0[ft][vi]):
+                    n_itake_nodisp += 1; continue
             ipairs[(topic, fs, ft)].append((inst_idx(fs, tp), tp, vi, tp, int(I0[ft][vi]))); n_itake_exact += 1
-        print(f"intra-process identity: {sum(map(len, IPUB.values()))} publishes with a message address, {n_itake} takes, {n_itake_exact} paired by address")
+        print(f"intra-process identity: {sum(map(len, IPUB.values()))} publishes with a message address, {n_itake} takes, {n_itake_exact} paired by address "
+              f"(not paired: {n_itake_nopub} no publish with that address, {n_itake_othertopic} address last published on another topic (reused buffer), {n_itake_evicted} matched publish cannot still be in the ring buffer (>= depth newer publishes: reused address), "
+              f"{n_itake_nodisp} no dispatch within {TAKE2START_NS // 1_000_000} ms of the take)")
+    # IntraProcessManager matching (fishwait25, init-time events): the set of (process, topic, subscriber waitable) the IPM
+    # delivers in-process. With these events present, a same-process edge is 'intra' ONLY if the IPM matched it; otherwise
+    # the subscription is fed over DDS (intra-process not enabled for it, or QoS incompatible) even though it shares the
+    # process with an intra-capable publisher (e.g. Autoware's voxel_based_compare_map_filter, 2026-10-19).
+    IPM = set(); ipm_pub = {}; ipm_sub = {}
+    cur.execute("SELECT vpid, payload->>'pub_id', payload->>'topic_name' FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rclcpp_ipm_add_publisher'", (sid,))
+    for v_, pid_, t_ in cur.fetchall():
+        ipm_pub[(v_, int(pid_))] = t_
+    cur.execute("SELECT vpid, payload->>'sub_id', payload->>'waitable' FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rclcpp_ipm_add_subscription'", (sid,))
+    for v_, sid_, w_ in cur.fetchall():
+        ipm_sub[(v_, int(sid_))] = w_
+    cur.execute("SELECT vpid, payload->>'pub_id', payload->>'sub_id' FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rclcpp_ipm_match'", (sid,))
+    for v_, pid_, sid_ in cur.fetchall():
+        t_ = ipm_pub.get((v_, int(pid_))); w_ = ipm_sub.get((v_, int(sid_)))
+        if t_ and w_:
+            IPM.add((v_, t_, w_))
+    IPM_PRESENT = bool(ipm_sub); n_ipm_relabel = [0]
+    if IPM_PRESENT:
+        print(f"IntraProcessManager matching: {len(ipm_pub)} publishers, {len(ipm_sub)} subscriptions, {len(IPM)} matched (process, topic, subscription) triples")
     cur.execute("SELECT vpid, payload->>'rmw_subscription_handle', payload->>'topic_name', payload->>'node_handle' FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_subscription_init'", (sid,))
     rmw2topic = {}; rmw2node = {}
     for v, h, t, nh in cur.fetchall():
@@ -256,14 +392,15 @@ def main():
         cur.execute("SELECT r.vpid, (r.payload->>'reader')::bigint, (r.payload->>'source_timestamp')::bigint, r.ts_ns FROM ros2_trace r "
                     f"JOIN (VALUES {vals}) AS w(vpid, rd) ON r.vpid = w.vpid AND r.payload->>'reader' = w.rd "
                     "WHERE r.session_id=%s AND r.event='ros2:fish_dds_rhc_store' AND r.payload->>'has_data'='1' AND r.ts_ns BETWEEN %s AND %s",
-                    (sid, t_ss - 1_000_000_000, t_end))
+                    (sid, t_lo, t_end))
         for vpid, rd, st, ts in cur:
             arrival.setdefault((vpid, reader2rh[(vpid, rd)], st), ts)
+    arrival.update(FW_ARR)
     takes = collections.defaultdict(list)   # (topic, f) -> [(take_ts, src_ts, inst_idx, arrival_ts)]
     manual = []
     cur.execute("SELECT vpid, vtid, ts_ns, payload->>'rmw_subscription_handle', (payload->>'source_timestamp')::bigint FROM ros2_trace "
                 "WHERE session_id=%s AND event IN ('ros2:rmw_take','ros2:fish_rcl_take') AND payload->>'taken' IN ('1','true') AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns",
-                (sid, t_ss - 1_000_000_000, t_end))
+                (sid, t_lo, t_end))
     for vpid, vtid, ts, rh, st in cur:
         t = rmw2topic.get((vpid, rh))
         if not t or topic_class(t) == 'infra':
@@ -315,7 +452,7 @@ def main():
         # InterProcessPollingSubscriber on /localization/kinematic_state) the shared F carries polled=true although its
         # callback fires — a callback with executor instances is always a trigger target here.
         return f not in inst and (bool(F[f]['attrs'].get('polled')) or (F[f]['etype'] == 'sub' and bool(F[f]['attrs'].get('poll_readers'))))
-    trig, sampled, inactive = [], [], []
+    trig, sampled, inactive, candidates = [], [], [], []
     exact_n = [0]
     PAIRS = {}       # edge index in trig -> list of (u_inst, pub_ts, v_inst, arr_ts, v_start)
     for s, t, at in EDGES:
@@ -323,6 +460,8 @@ def main():
         topic = at.get('topic')
         if nat == 'state':
             sampled.append((s, t, at)); continue
+        if nat in ('state_candidate', 'join_candidate'):
+            candidates.append((s, t, at)); continue        # structural rule without evidence: reported, never an edge
         if nat == 'join':
             trig.append(dict(u=s, v=t, kind='join', topic=topic, attrs=at, pairs=[])); continue
         if nat == 'dep':
@@ -342,14 +481,20 @@ def main():
             continue
         if F[s]['ptype'] == 'ext' or F[t]['ptype'] == 'ext' or is_polled_sub(t):
             continue          # boundary / first half of a sampled dependency
-        pairs = []; kind = 'dds'
+        pairs = []; kind = 'dds'; n_dds_exact = 0
         ip = ipubs.get((topic, s)); dp = pubs.get((topic, s))
         same_proc = F[s]['vpid'] is not None and F[s]['vpid'] == F[t]['vpid']
-        if ip and same_proc:
+        ipm_ok = (not IPM_PRESENT) or ((F[t]['vpid'], topic, F[t]['attrs'].get('ipc_waitable')) in IPM)
+        if ip and same_proc and not ipm_ok:
+            n_ipm_relabel[0] += 1          # same process, intra-capable publisher, but the IPM did not match this sub: DDS
+        if ip and same_proc and ipm_ok:
             kind = 'intra'
             v0 = I0.get(t)
             ex = ipairs.get((topic, s, t)) or []
-            done = {p[2] for p in ex}
+            # consumer instances already identified by message address with ANY publisher of this topic are never
+            # re-paired by order (two publishing callbacks of one node, e.g. concatenate_data's sub + timer paths,
+            # publish within 50 ms of each other: the order rule attributed the timer's message to the sub as well)
+            done = {p[2] for ss in ipub_srcs.get(topic, ()) for p in ipairs.get((topic, ss, t), ())}
             pairs.extend(ex); n_intra_exact = len([p for p in ex if in_win(p[4])])
             if v0 is not None:
                 for vi, tv in enumerate(v0):
@@ -366,6 +511,8 @@ def main():
                     if w[0] == s and vi >= 0:
                         pairs.append((w[1], src, vi, arr if src <= arr <= take_ts else 0, int(I0[t][vi])))
                         exact_n[0] += 1
+                        if in_win(int(I0[t][vi])):
+                            n_dds_exact += 1
                     continue
                 ref = src or take_ts
                 j = bisect.bisect_left(dp, ref)
@@ -379,12 +526,23 @@ def main():
         e = dict(u=s, v=t, kind=kind, topic=topic, attrs=at, pairs=pairs)
         if kind == 'intra':
             e['n_exact'] = n_intra_exact
+        elif kind == 'dds':
+            e['n_exact'] = n_dds_exact
         w = wr_by.get((topic, s))
         if w and kind == 'dds':
             ww = [x for x in w if in_win(x[1])]
             e['write'] = qs([end - st for st, end, _ in ww]); e['size'] = qs([sz for _, _, sz in ww])
         (trig if len(pairs) >= a.min_n else inactive).append(e)
 
+    # 2026-10-26: address-identified intra pairs that NO model edge consumed (the take's publishing / consuming F differ from
+    # the endpoints of every intra edge) — TASK 4 ess session: 3152 takes paired by address, yet every intra edge had n_exact = 0.
+    # Evidence must never vanish silently: report where it went.
+    _used = {(e['topic'], e['u'], e['v']) for e in trig + inactive if e.get('kind') == 'intra'}
+    _lost = {k: len(v) for k, v in ipairs.items() if k not in _used}
+    if _lost:
+        _top = sorted(_lost.items(), key=lambda kv: -kv[1])[:8]
+        print(f"intra identity NOT consumed by any model edge: {sum(_lost.values())} address pairs on {len(_lost)} (topic, F, F) triples: "
+              + "; ".join(f"{t_} {F[fs_]['name']} -> {F[ft_]['name']} ({n_})" for (t_, fs_, ft_), n_ in _top))
     # ---------------------------------------------------------------- Agnocast (zero-copy pub/sub that bypasses rmw and DDS)
     # libagnocast ships its own LTTng provider (events agnocast:*; the library must be built against a tracing-enabled
     # tracetools — the stock Humble one compiles them out). Vertices: every Agnocast subscription callback and Agnocast timer
@@ -474,7 +632,7 @@ def main():
     # (client_guid, sequence_number); response reception = fish_rclcpp_client_response_received(client_handle, seq))
     cur.execute("SELECT vpid, vtid, ts_ns, event, payload FROM ros2_trace WHERE session_id=%s AND event IN "
                 "('ros2:fish_srv_request','ros2:fish_rclcpp_client_response_received') AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns",
-                (sid, t_ss - 2_000_000_000, t_end))
+                (sid, t_lo, t_end))
     srv_rows = cur.fetchall()
     if any(r[3].endswith('fish_srv_request') for r in srv_rows):
         cur.execute("SELECT vpid, payload->>'service_handle', payload->>'service_name' FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_service_init'", (sid,))
@@ -598,6 +756,318 @@ def main():
             ratio = (float(np.median(gaps)) / T_cfg) if (T_cfg and len(gaps)) else None
             v['arrival'] = dict(kind='periodic', T_cfg=T_cfg, gap=qs(gaps), obs_over_cfg=round(ratio, 3) if ratio else None,
                                 clock='ros-time(replay-scaled)' if ratio and ratio > 1.5 else 'wall' if ratio and 0.9 < ratio < 1.1 else 'irregular')
+    # observed joins through member containers (image >= fishwait27, FISH_CONTAINER_SHIM=1: ros2:fish_container_op from the
+    # generated LD_PRELOAD shim): a push into a std::deque / map member inside one callback instance, the erase (clear /
+    # pop) of the same container inside another instance -> that instance consumed the deposit. Observed, not inferred;
+    # replaces the structural join tie's empty pair list (prov 'container:observed').
+    cur.execute("SELECT vpid, vtid, ts_ns, payload FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_container_op' "
+                "AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns", (sid, t_lo, t_end))
+    cont_ops = cur.fetchall()
+    cpairs = collections.defaultdict(list)      # (deposit F, consumer F) -> [(ui, push ts, vi, erase ts, v start)]
+    if cont_ops:
+        pend = collections.defaultdict(list); n_push = n_erase = n_cp = n_self = n_noowner = 0
+        for vpid, vtid, ts, pl in cont_ops:
+            f = owner(vpid, vtid, ts)
+            if f < 0:
+                n_noowner += 1; continue
+            i = inst_idx(f, ts); k = int(pl['kind']); key = (vpid, pl['container'])
+            if k in (1, 2, 5, 6):
+                pend[key].append((f, i, ts)); n_push += 1
+            elif k in (3, 4):
+                n_erase += 1
+                for fu, iu, tp in pend.pop(key, []):
+                    if (fu, iu) == (f, i):
+                        n_self += 1; continue
+                    if not in_win(tp):
+                        continue
+                    vs = int(I0[f][i]) if f in I0 and 0 <= i < len(I0[f]) else ts
+                    cpairs[(fu, f)].append((iu, tp, i, ts, vs)); n_cp += 1
+        print(f"container joins (fish_container_op): {n_push} deposits, {n_erase} erases ({n_noowner} outside any callback window); "
+              f"{n_cp} deposit -> consumer instance pairs on {len(cpairs)} (F, F) pairs, {n_self} consumed by the depositing instance itself; "
+              f"on {len(cpairs)} (F, F) pairs")
+
+    # exact joins (fishwait21: hooks in message_filters::Synchronizer, see docker/overlay_patches/fishwait21_mf.py):
+    # fish_mf_add(sync, index, stamp) = a deposit inside an input callback; fish_mf_signal(sync, phase 0/1, s0..s6) =
+    # start / end of the merge inside the completing callback, with the header stamps of the set it delivers.
+    # pred(merge) = for each member stamp the deposit with the same (sync, index, stamp) → its callback instance.
+    cur.execute("SELECT vpid, vtid, ts_ns, event, payload FROM ros2_trace WHERE session_id=%s AND event IN ('ros2:fish_mf_add','ros2:fish_mf_signal') "
+                "AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns", (sid, t_lo, t_end))
+    mf_adds = {}; mf_open = {}; mf_merges = collections.defaultdict(list); mfpairs = collections.defaultdict(list)
+    for vpid, vtid, ts, ev, pl in cur.fetchall():
+        f = owner(vpid, vtid, ts); i = inst_idx(f, ts) if f >= 0 else -1
+        if ev.endswith('mf_add'):
+            mf_adds[(vpid, pl['sync'], int(pl['index']), int(pl['stamp_ns']))] = (f, i, ts)
+        elif int(pl['phase']) == 0:
+            mf_open[(vpid, vtid, pl['sync'])] = (ts, [int(pl[f's{k}']) for k in range(7)], f, i)
+        else:
+            o = mf_open.pop((vpid, vtid, pl['sync']), None)
+            if o and o[2] >= 0 and o[3] >= 0 and in_win(o[0]):
+                preds = [mf_adds.get((vpid, pl['sync'], k, st)) for k, st in enumerate(o[1]) if st]
+                mf_merges[(vpid, pl['sync'])].append((o[2], o[3], o[0], ts, preds))
+    if mf_merges:
+        n_m = n_p = n_ok = 0
+        per_f = collections.defaultdict(list)
+        for key, lst in mf_merges.items():
+            for f, i, a0, a1, preds in lst:
+                n_m += 1; per_f[f].append((a1 - a0, len(preds), sum(1 for p_ in preds if p_ and p_[0] >= 0 and p_[1] >= 0)))
+                for p_ in preds:
+                    n_p += 1
+                    if p_ and p_[0] >= 0 and p_[1] >= 0:
+                        n_ok += 1
+                        if p_[:2] != (f, i) and p_[0] in V and f in V:
+                            mfpairs[(p_[0], f)].append((p_[1], p_[2], i, a0, int(I0[f][i]) if f in I0 and 0 <= i < len(I0[f]) else a0))
+        for f, lst in per_f.items():
+            if f in V:
+                V[f].setdefault('join', {})['exact'] = dict(n_merges=len(lst), merge_window=qs([x[0] for x in lst]),
+                                                            members=round(float(np.mean([x[1] for x in lst])), 2),
+                                                            preds_resolved=round(sum(x[2] for x in lst) / max(1, sum(x[1] for x in lst)), 3))
+                V[f]['activation'] = 'AND-join(exact preds)+OR'
+        print(f"exact joins (message_filters hooks): {n_m} merges in {len(mf_merges)} synchronizer(s) inside {len(per_f)} callback(s); "
+              f"member deposits resolved to a callback instance: {n_ok}/{n_p}")
+
+    # pointer-held deposits (fishwait24 probe, FISH_EXTRA_EVENTS fish_msg_retain/release): a callback instance keeps a
+    # reference to its message (retain), the last reference is dropped inside ANOTHER callback instance (release) ->
+    # that instance consumed it. Observed per message; replaces the structural tie (prov 'pointer:retention').
+    rpairs = collections.defaultdict(list); hpairs = collections.defaultdict(list); n_ret = n_rel = n_rp = n_hp = n_rself = 0
+    rhpairs = collections.defaultdict(list); n_rhp = 0        # released inside another callback's instance that publishes later in that instance
+    cur.execute("SELECT vpid, vtid, ts_ns, event, payload FROM ros2_trace WHERE session_id=%s AND event IN ('ros2:fish_msg_retain','ros2:fish_msg_release') "
+                "AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns", (sid, t_lo, t_end))
+    held = {}; holds = []                        # (fu, iu, t_retain, t_release, releasing F, releasing instance)
+    for vpid, vtid, ts, ev, pl in cur.fetchall():
+        f = owner(vpid, vtid, ts); key = (vpid, pl.get('subscription_handle'), pl.get('message'))
+        if ev.endswith('retain'):
+            n_ret += 1
+            if f < 0:
+                f = owner_before(vpid, vtid, ts)                # emitted right after the callback returned
+                i_ = int(np.searchsorted(I0[f], ts, side='right')) - 1 if f >= 0 and f in I0 else -1
+            else:
+                i_ = inst_idx(f, ts)
+            if f >= 0 and i_ >= 0: held[key] = (f, i_, ts)
+        else:
+            n_rel += 1; h = held.pop(key, None)
+            if h is None: continue
+            fu, iu, tr = h
+            if in_win(tr): holds.append((fu, iu, tr, ts, f, inst_idx(f, ts) if f >= 0 else -1))
+    if holds:
+        # A release says only that the last reference was dropped there (used OR discarded: concatenate_data drops the
+        # previous cycle's clouds when the next cycle's first cloud reshapes its map). The consumption of a pointer-held
+        # deposit is the first PUBLISH of another callback of the same node while the message is held: observed from the
+        # hold interval (retain -> release) and the publish attribution.  prov 'pointer:held@publish'. Holds during which
+        # nobody published are absorbed by the releasing instance (prov 'pointer:release', the drop).
+        all_pub = collections.defaultdict(list)
+        for (t_, f_), lst_ in list(pubs.items()) + list(ipubs.items()):
+            all_pub[f_].extend(lst_)
+        for f_ in all_pub: all_pub[f_].sort()
+        node_of = {f_: (F[f_].get('N') or {}).get('id') for f_ in F}
+        by_node = collections.defaultdict(list)
+        for f_, n_ in node_of.items():
+            if f_ in all_pub and n_ is not None: by_node[n_].append(f_)
+        for fu, iu, tr, trel, fr, ir in holds:
+            best = None
+            for v in by_node.get(node_of.get(fu), ()):
+                if v == fu: continue
+                j = bisect.bisect_left(all_pub[v], tr)
+                if j < len(all_pub[v]) and all_pub[v][j] <= trel and (best is None or all_pub[v][j] < best[1]):
+                    best = (v, all_pub[v][j])
+            got = False
+            if best is not None:
+                v, pt = best; iv = inst_idx(v, pt)
+                if iv >= 0 and (v, iv) != (fu, iu):
+                    hpairs[(fu, v)].append((iu, tr, iv, pt, int(I0[v][iv]))); n_hp += 1; got = True
+            if fr >= 0 and ir >= 0:
+                if (fr, ir) == (fu, iu):
+                    if not got: n_rself += 1
+                    continue
+                # 2026-10-25: the releasing instance publishes later in the same instance (read + clear before the
+                # publish: synthetic map_keyed_timeout / ptr_hold joins) -> consumption evidence of the same strength as
+                # held@publish (prov 'pointer:release@publisher', corroborated by a retaining source deposit like held@publish).
+                # 2026-10-26: recorded independently of a publish by another callback during the hold (a 10 ms status timer
+                # masked the timeout timer's release+publish, er200 cb_171).
+                lst_ = all_pub.get(fr, []); j_ = bisect.bisect_left(lst_, trel)
+                if fr in I1 and 0 <= ir < len(I1[fr]) and j_ < len(lst_) and lst_[j_] <= I1[fr][ir]:
+                    rhpairs[(fu, fr)].append((iu, tr, ir, lst_[j_], int(I0[fr][ir]))); n_rhp += 1; continue
+                if not got: rpairs[(fu, fr)].append((iu, tr, ir, trel, int(I0[fr][ir]) if fr in I0 and 0 <= ir < len(I0[fr]) else trel)); n_rp += 1
+        print(f"retention (fish_msg_retain/release): {n_ret} retained, {n_rel} released, {len(holds)} holds in the window; consumed by a publish while held: {n_hp} "
+              f"pairs on {len(hpairs)} (F, F) pairs; released inside an instance that then published: {n_rhp} on {len(rhpairs)}; "
+              f"dropped by another instance without a publish: {n_rp} on {len(rpairs)}; dropped by the depositing instance: {n_rself}")
+
+    # method probes (fishwait29, FISH_METHOD_SHIM=1): the application's own deposit / read methods listed in
+    # config/fish_method_probes.txt, wrapped by the generated libfish_method_shim.so. A deposit records (key, stamp) inside
+    # the depositing callback instance, a read records (key, lo, hi) — the read's OWN selection band — inside the reading
+    # instance: a deposit with lo <= stamp <= hi made before the read was consumed by that read instance. The membership is
+    # the application's rule applied to recorded arguments, not a timing guess -> evidence `probe:band`.
+    ppairs = collections.defaultdict(list); plpairs = collections.defaultdict(list); n_pdep = n_prd = n_pp = n_pl = n_pnoinst = 0
+    probe_names = {}        # (F deposit, F read) -> 'Class::depositMethod → readMethod' (the probed pair, used as the link's name instead of a topic)
+    _mt = {}
+    for _cand in (f"/home/tue037807/fish_traces/{sid}/fishlog/fish_method_shim.json",):
+        if os.path.exists(_cand):
+            try:
+                _mt = {int(r['sym']): r for r in json.load(open(_cand))}
+            except Exception as _e:
+                print(f"method probe table unreadable ({_e})")
+    cur.execute("SELECT count(*) FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_method'", (sid,))
+    n_pev = cur.fetchone()[0]
+    if n_pev and not _mt:
+        print(f"method probes: {n_pev} fish_method events but no fishlog/fish_method_shim.json for this session — cannot interpret them")
+    if n_pev and _mt:
+        cur.execute("SELECT vpid, vtid, ts_ns, (payload->>'sym')::int, payload->>'key', (payload->>'v1')::bigint, (payload->>'v2')::bigint FROM ros2_trace "
+                    "WHERE session_id=%s AND event='ros2:fish_method' AND payload->>'phase'='0' AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns", (sid, t_lo, t_end))
+        P_DEP = collections.defaultdict(list)      # (vpid, key) -> [(stamp, ts, f, inst)]
+        P_RD = []; P_RDL = []                      # band reads / latest reads
+        hits = collections.Counter()
+        for vpid, vtid, ts, sym, key, v1, v2 in cur.fetchall():
+            r = _mt.get(sym)
+            if r is None: continue
+            hits[sym] += 1
+            f = owner(vpid, vtid, ts)
+            if f < 0: n_pnoinst += 1; continue
+            if r['role'] == 'deposit':
+                P_DEP[(vpid, key)].append((int(v1 or 0), ts, f, inst_idx(f, ts), sym)); n_pdep += 1
+            elif r['role'] == 'read' and r.get('mode') == 'latest':
+                P_RDL.append((vpid, key, ts, f, inst_idx(f, ts), sym)); n_prd += 1
+            elif r['role'] == 'read':
+                P_RD.append((vpid, key, int(v1 or 0), int(v2 or 0), ts, f, inst_idx(f, ts), sym)); n_prd += 1
+        for lst_ in P_DEP.values(): lst_.sort(key=lambda x: x[1])
+
+        def _pshort(sy):
+            return '::'.join(_mt[sy]['name'].split('(')[0].split('::')[-2:])
+
+        def _pname(sd, sr):
+            return f"{_pshort(sd)} → {_pshort(sr).split('::')[-1]}"
+        consumed = set()
+        for vpid, key, lo, hi, ts, fr, ir, sr in P_RD:
+            if ir < 0: continue
+            for j_, (st_, td_, fd_, id_, sd) in enumerate(P_DEP.get((vpid, key), ())):
+                if td_ >= ts: break
+                if lo <= st_ <= hi and (vpid, key, j_) not in consumed and id_ >= 0 and fd_ != fr:
+                    consumed.add((vpid, key, j_)); ppairs[(fd_, fr)].append((id_, td_, ir, ts, int(I0[fr][ir]))); n_pp += 1; probe_names.setdefault((fd_, fr), _pname(sd, sr))
+        # latest-mode reads (a timer publishing the current state): each deposit is consumed by the FIRST read of the same key after
+        # it (the read that propagates the new state); later reads re-publish the same state and are not pairs
+        P_RDL.sort(key=lambda x: x[2]); rd_by_key = collections.defaultdict(list)
+        for vpid, key, ts, fr, ir, sr in P_RDL: rd_by_key[(vpid, key)].append((ts, fr, ir, sr))
+        for (vpid, key), deps in P_DEP.items():
+            rl = rd_by_key.get((vpid, key))
+            if not rl: continue
+            rts = [x[0] for x in rl]
+            for st_, td_, fd_, id_, sd in deps:
+                k_ = bisect.bisect_right(rts, td_)
+                if k_ < len(rl) and id_ >= 0 and rl[k_][2] >= 0 and rl[k_][1] != fd_ and rl[k_][0] - td_ < 1_000_000_000:
+                    ts_r, fr_, ir_, sr_ = rl[k_]; plpairs[(fd_, fr_)].append((id_, td_, ir_, ts_r, int(I0[fr_][ir_]))); n_pl += 1; probe_names.setdefault((fd_, fr_), _pname(sd, sr_))
+        print(f"method probes (fish_method, {len(_mt)} listed method(s)): hits per probe " + ', '.join(f"{_mt[k]['name'].split('(')[0].split('::')[-1]}={hits[k]}" for k in sorted(_mt))
+              + f"; {n_pdep} deposits, {n_prd} reads ({n_pnoinst} outside any callback instance); {n_pp} deposit -> read pairs (band) on {len(ppairs)} (F, F) pairs, "
+                f"{n_pl} deposit -> next read pairs (latest) on {len(plpairs)}")
+    # stamp identity (fish_msg_stamp): a non-tick leading stamp taken by one callback reappears in the output of another
+    # callback of the same node -> the input travelled into the output (field copies that keep the header)
+    spairs = collections.defaultdict(list); n_stamp = 0
+    cur.execute("SELECT vpid, payload->>'rmw_subscription_handle', payload->>'node_handle' FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_subscription_init'", (sid,))
+    s_node = {(v_, h_): nh_ for v_, h_, nh_ in cur.fetchall()}
+    cur.execute("SELECT vpid, payload->>'rmw_publisher_handle', payload->>'node_handle', payload->>'topic_name' FROM ros2_trace WHERE session_id=%s AND event='ros2:rcl_publisher_init'", (sid,))
+    p_node = {(v_, h_): (nh_, t_) for v_, h_, nh_, t_ in cur.fetchall()}
+    cur.execute("SELECT vpid, vtid, ts_ns, payload->>'handle', (payload->>'is_pub')::int, (payload->>'stamp')::bigint, payload->>'message' FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_msg_stamp' "
+                "AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns", (sid, t_lo, t_end))
+    S_IN = collections.defaultdict(lambda: collections.defaultdict(list)); S_OUT = []; ticks = set()
+    s_own = collections.defaultdict(set); s_unknown = collections.defaultdict(int); s_pub_addr = {}
+    for vpid, vtid, ts, h, ip, st, msg_ in cur.fetchall():
+        if st is None: continue
+        n_stamp += 1
+        if ip:
+            nh, t_ = p_node.get((vpid, h), (None, None))
+            if t_ == '/clock': ticks.add(int(st))
+            if msg_: s_pub_addr[(vpid, msg_)] = (ts, int(st))
+            if nh is None or topic_class(t_ or '') == 'infra': continue
+            f = owner(vpid, vtid, ts)
+            if f >= 0: S_OUT.append((vpid, nh, ts, f, int(st)))
+        else:
+            nh = s_node.get((vpid, h))
+            if nh is None: continue
+            f = owner(vpid, vtid, ts)
+            if f < 0:                                   # the take right before the dispatch: next window on the thread
+                w_ = TW.get((vpid, vtid))
+                if w_:
+                    j_ = bisect.bisect_left(w_[0], ts)
+                    if j_ < len(w_[0]) and w_[0][j_] - ts <= TAKE2START_NS and w_[2][j_] >= 0: f = w_[2][j_]
+            if f >= 0: S_IN[(vpid, nh)][int(st)].append((ts, f)); s_own[f].add(int(st))
+    # intra-process takes: stamp via the publish-side record of the same message address, else unknown (no evidence for that callback)
+    cur.execute("SELECT vpid, vtid, ts_ns, payload->>'message' FROM ros2_trace WHERE session_id=%s AND event='ros2:fish_rclcpp_intra_take' AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns", (sid, t_lo, t_end))
+    for vpid, vtid, ts, msg_ in cur.fetchall():
+        f = owner(vpid, vtid, ts)
+        if f < 0:
+            w_ = TW.get((vpid, vtid))
+            if w_:
+                j_ = bisect.bisect_left(w_[0], ts)
+                if j_ < len(w_[0]) and w_[0][j_] - ts <= TAKE2START_NS and w_[2][j_] >= 0: f = w_[2][j_]
+        if f < 0: continue
+        pa = s_pub_addr.get((vpid, msg_))
+        if pa is not None and pa[0] <= ts and ts - pa[0] < 5_000_000_000: s_own[f].add(pa[1])
+        else: s_unknown[f] += 1
+    n_self_expl = 0; n_unknown = 0; n_ambig = 0; n_degen = 0
+    for vpid, nh, ts, fo, v in S_OUT:
+        if v in ticks or v == 0: continue
+        if v in s_own.get(fo, ()): n_self_expl += 1; continue   # stamp came in through fo's OWN input: no deposit evidence
+        if s_unknown.get(fo, 0): n_unknown += 1; continue       # intra-process input of unknown stamp: ambiguous
+        deps_ = [(tin, fi) for tin, fi in S_IN.get((vpid, nh), {}).get(v, ()) if fi != fo and tin <= ts]
+        if not deps_: continue
+        by_f_ = collections.Counter(fi for _, fi in deps_)
+        # 2026-10-26: a stamp identifies a deposit only when it is unique in the node — not when two callbacks deposited the
+        # same value (MRM handler stamps all its commands alike) or one callback took it many times (constant / frozen stamp)
+        if len(by_f_) > 1: n_ambig += 1; continue
+        if max(by_f_.values()) > 2: n_degen += 1; continue
+        for tin, fi in deps_:
+            iu = inst_idx(fi, tin); iv = inst_idx(fo, ts)
+            if iu >= 0 and iv >= 0: spairs[(fi, fo)].append((iu, tin, iv, ts, int(I0[fo][iv])))
+    if n_stamp:
+        print(f"stamp identity (fish_msg_stamp): {n_stamp} stamps, {len(ticks)} tick values; {sum(map(len, spairs.values()))} deposit -> consumer pairs on {len(spairs)} (F, F) pairs; {n_self_expl} outputs explained by the publisher's own input, {n_unknown} with an intra-process input of unknown stamp (both ignored); {n_ambig} outputs with an ambiguous stamp (two depositors), {n_degen} with a degenerate stamp (constant) — no evidence")
+
+    # evidence -> join edges. Existing structural ties take their pairs from the evidence that has them (prov says which);
+    # an observed deposit -> consumer flow the model has no tie for becomes a new join edge. Nothing stays by assumption.
+    def _naive_agree(fu, fv, prs):
+        n_ = ok_ = 0
+        for ui, tp, vi, te, vs in prs:
+            if fu in I1 and fv in I0 and 0 <= ui < len(I1[fu]):
+                n_ += 1; ok_ += (int(np.searchsorted(I0[fv], I1[fu][ui], side='left')) == vi)
+        return round(ok_ / n_, 3) if n_ else None
+    # Which edge does the evidence make?  consumer dispatched by its OWN trigger (a timer, or a subscription of another
+    # topic that publishes using the held data) and the deposit only read there -> a SAMPLED dependency, now with exact
+    # instance pairs (exact ages) instead of the structural rule; consumer activated by the set it completes (a member
+    # of the join) -> a JOIN membership edge.  Here: timer consumers = sampled; subscription consumers = join.
+    # 'pointer:release' pairs are DROPS (the last reference went without a publish): reported, never an edge.
+    n_assigned = collections.Counter(); n_created = collections.Counter(); obs_sampled = {}; drops = collections.Counter()
+    have = {(e['u'], e['v']): e for e in trig if e['kind'] == 'join'}
+    # held@publish is corroborated by the model (source-level 'reads' relation, FISH_SOURCE_FLOW): only pairs on an
+    # edge the model marked observed with that evidence become edges here; the rest are candidates WITH their pairs
+    POINTER_LABELS = ('pointer:held@publish', 'pointer:release@publisher')
+    corroborated = {(u_, v_) for (u_, v_, a_) in EDGES if str((a_ or {}).get('evidence', '')).startswith('pointer:')}
+    cand_pairs = {}
+    for label, src in (('container:observed', cpairs), ('exact:message_filters', mfpairs), ('probe:band', ppairs), ('probe:latest', plpairs), ('stamp:match', spairs), ('pointer:held@publish', hpairs),
+                       ('pointer:release@publisher', rhpairs), ('pointer:release', rpairs)):
+        for (fu, fv), prs in src.items():
+            if fu == fv or fu not in V or fv not in V: continue
+            if label == 'pointer:release':
+                drops[(fu, fv)] += len(prs); continue
+            if label in POINTER_LABELS and (fu, fv) not in corroborated:
+                cand_pairs[(fu, fv)] = (label, len(prs)); continue
+            if V[fv]['etype'] == 'tmr' and label != 'exact:message_filters':
+                if (fu, fv) not in obs_sampled: obs_sampled[(fu, fv)] = (label, sorted(prs))
+                e = have.get((fu, fv))
+                if e is not None and not e['pairs']: e['demote'] = True        # a structural tie to a timer: it is a sampled dependency
+                continue
+            e = have.get((fu, fv))
+            if e is not None:
+                if e['pairs']: continue                       # already observed by an earlier evidence kind
+                e['pairs'] = sorted(prs); e['prov'] = label; e['order_rule_agrees'] = _naive_agree(fu, fv, prs); n_assigned[label] += 1
+            elif len(prs) >= a.min_n:
+                e = dict(u=fu, v=fv, kind='join', topic=(probe_names.get((fu, fv)) if label.startswith('probe') else None) or label.split(':')[0], attrs={}, pairs=sorted(prs), prov=label, order_rule_agrees=_naive_agree(fu, fv, prs))
+                trig.append(e); have[(fu, fv)] = e; n_created[label] += 1
+    trig = [e for e in trig if not e.get('demote')]
+    _obs = {(e['u'], e['v']) for e in trig if e['pairs']} | set(obs_sampled)   # observed join / trigger edge, or an observed sampled dependency into a timer
+    n_cand_closed = sum(1 for c_ in candidates if (c_[0], c_[1]) in _obs)
+    candidates = [c_ for c_ in candidates if (c_[0], c_[1]) not in _obs]      # observed by evidence (e.g. a method probe): an edge or a measured sampled read now
+    if n_cand_closed: print(f"candidates closed by evidence: {n_cand_closed}")
+    n_struct = sum(1 for e in trig if e['kind'] == 'join' and not e['pairs'])
+    print(f"join edges: {sum(1 for e in trig if e['kind'] == 'join')} — observed via {dict(n_assigned)} (ties), created from evidence {dict(n_created)}; "
+          f"still structural (no evidence): {n_struct}; observed sampled dependencies (timer readers): {len(obs_sampled)}; held@publish without source corroboration (candidates with pairs): {len(cand_pairs)}; "
+          f"drops (last reference released without a publish): {sum(drops.values())} messages on {len(drops)} (F, F) pairs")
+
     # publish position inside the window (cut point): tail = end - publish, per out-edge topic
     trig = [e for e in trig if e['u'] in V and e['v'] in V and (e['kind'] not in ('join',) or True)]
     for e in trig:
@@ -607,6 +1077,9 @@ def main():
         u, v = e['u'], e['v']
         tails = [int(I1[u][ui] - pt) for ui, pt, vi, arr, vs in prs if ui >= 0]
         e['pub_tail'] = qs(tails)
+        if e['kind'] == 'join':
+            e['delta'] = qs([te - tp for ui, tp, vi, te, vs in prs if te >= tp]); e['dispatch'] = None
+            e['n_pairs'] = len(prs); continue
         if e['kind'].startswith('srv'):
             if e.get('exact'):     # pairs = (pred instance, send ts, succ instance, take/receive ts, succ start)
                 e['delta'] = qs([arr - pt for ui, pt, vi, arr, vs in prs if arr >= pt]); e['dispatch'] = qs([vs - arr for ui, pt, vi, arr, vs in prs if vs >= arr])
@@ -622,9 +1095,13 @@ def main():
             arrs = [(arr - pt, vs - arr) for ui, pt, vi, arr, vs in prs if arr]
             if len(arrs) >= max(3, len(prs) // 2):
                 e['delta'] = qs([x[0] for x in arrs]); e['dispatch'] = qs([x[1] for x in arrs])
-                e['prov'] = 'measured:agnocast-entry-id' if e['kind'] == 'agnocast' else 'measured:rhc_store'
+                e['prov'] = 'measured:agnocast-entry-id' if e['kind'] == 'agnocast' else f'measured:{ARR_LABEL}'
             else:
-                e['delta'] = qs([vs - pt for ui, pt, vi, arr, vs in prs]); e['dispatch'] = None; e['prov'] = 'inferred:upper-bound(start-publish)'
+                e['delta'] = qs([vs - pt for ui, pt, vi, arr, vs in prs]); e['dispatch'] = None
+                # every pair identified by sample identity but no arrival instants (reception timestamp missing): the pairing is
+                # exact, only the hop latency is an upper bound (start - publish)
+                e['prov'] = (f'exact:{DDS_ID_LABEL}' if e['kind'] == 'dds' and prs and e.get('n_exact', 0) >= len(prs)
+                             else 'inferred:upper-bound(start-publish)')
         e['n_pairs'] = len(prs)
         npub = (e['npub'] if e.get('npub') else sum(1 for x in wr_by[(e['topic'], u)] if in_win(x[1])) if e['kind'] == 'dds' and wr_by.get((e['topic'], u))
                 else sum(1 for x in (ipubs if e['kind'] == 'intra' else pubs).get((e['topic'], u), ()) if in_win(x)))
@@ -686,45 +1163,11 @@ def main():
             elif ui >= 0:
                 nxt[(e['u'], ui)].append((e['v'], vi))
 
-    # exact joins (fishwait21: hooks in message_filters::Synchronizer, see docker/overlay_patches/fishwait21_mf.py):
-    # fish_mf_add(sync, index, stamp) = a deposit inside an input callback; fish_mf_signal(sync, phase 0/1, s0..s6) =
-    # start / end of the merge inside the completing callback, with the header stamps of the set it delivers.
-    # pred(merge) = for each member stamp the deposit with the same (sync, index, stamp) → its callback instance.
-    cur.execute("SELECT vpid, vtid, ts_ns, event, payload FROM ros2_trace WHERE session_id=%s AND event IN ('ros2:fish_mf_add','ros2:fish_mf_signal') "
-                "AND ts_ns BETWEEN %s AND %s ORDER BY ts_ns", (sid, t_ss - 2_000_000_000, t_end))
-    mf_adds = {}; mf_open = {}; mf_merges = collections.defaultdict(list)
-    for vpid, vtid, ts, ev, pl in cur.fetchall():
-        f = owner(vpid, vtid, ts); i = inst_idx(f, ts) if f >= 0 else -1
-        if ev.endswith('mf_add'):
-            mf_adds[(vpid, pl['sync'], int(pl['index']), int(pl['stamp_ns']))] = (f, i)
-        elif int(pl['phase']) == 0:
-            mf_open[(vpid, vtid, pl['sync'])] = (ts, [int(pl[f's{k}']) for k in range(7)], f, i)
-        else:
-            o = mf_open.pop((vpid, vtid, pl['sync']), None)
-            if o and o[2] >= 0 and o[3] >= 0 and in_win(o[0]):
-                preds = [mf_adds.get((vpid, pl['sync'], k, st)) for k, st in enumerate(o[1]) if st]
-                mf_merges[(vpid, pl['sync'])].append((o[2], o[3], o[0], ts, preds))
-    if mf_merges:
-        n_m = n_p = n_ok = 0
-        per_f = collections.defaultdict(list)
-        for key, lst in mf_merges.items():
-            for f, i, a0, a1, preds in lst:
-                n_m += 1; per_f[f].append((a1 - a0, len(preds), sum(1 for p_ in preds if p_ and p_[0] >= 0 and p_[1] >= 0)))
-                for p_ in preds:
-                    n_p += 1
-                    if p_ and p_[0] >= 0 and p_[1] >= 0:
-                        n_ok += 1
-                        if p_ != (f, i) and p_[0] in V and f in V:
-                            nxt[p_].append((f, i))       # the deposit instance of another input is a predecessor of this merge
-        for f, lst in per_f.items():
-            if f in V:
-                V[f].setdefault('join', {})['exact'] = dict(n_merges=len(lst), merge_window=qs([x[0] for x in lst]),
-                                                            members=round(float(np.mean([x[1] for x in lst])), 2),
-                                                            preds_resolved=round(sum(x[2] for x in lst) / max(1, sum(x[1] for x in lst)), 3))
-                V[f]['activation'] = 'AND-join(exact preds)+OR'
-        print(f"exact joins (message_filters hooks): {n_m} merges in {len(mf_merges)} synchronizer(s) inside {len(per_f)} callback(s); "
-              f"member deposits resolved to a callback instance: {n_ok}/{n_p}")
-
+    # every observed join edge (container, message_filters, retention) feeds the job closure
+    for e in trig:
+        if e['kind'] == 'join' and e['pairs']:
+            for ui, tp, vi, te, vs in e['pairs']:
+                nxt[(e['u'], ui)].append((e['v'], vi))
     def closure(roots):
         """roots: list of (release_ts, [(v, vi) start set]). Returns per-vertex response list, shapes Counter, job R list."""
         resp = collections.defaultdict(list); shapes = collections.Counter(); jobR = []
@@ -748,7 +1191,7 @@ def main():
         srcs = [f for f in ms if indeg[f] == 0]
         T = dict(id=len(tasks), size=len(ms), infra=all(V[f]['infra'] for f in ms),
                  vertices=[V[f] for f in ms],
-                 edges=[{k: e.get(k) for k in ('u', 'v', 'kind', 'topic', 'delta', 'dispatch', 'prov', 'n_pairs', 'deliv_ratio', 'pub_tail', 'write', 'size')} for e in es],
+                 edges=[{k: e.get(k) for k in ('u', 'v', 'kind', 'topic', 'delta', 'dispatch', 'prov', 'n_pairs', 'n_exact', 'order_rule_agrees', 'deliv_ratio', 'pub_tail', 'write', 'size')} for e in es],
                  sources=[], executors=sorted({str(V[f]['resource']['executor']) for f in ms}),
                  gpu=any(V[f]['gpu'] for f in ms))
         mset = set(ms)
@@ -791,7 +1234,20 @@ def main():
             writers = sorted({task_of.get(u) for (u, v2, a2) in EDGES if v2 == s and a2.get('nature') == 'msg' and u in task_of} - {None}) or [task_of.get(s)]
             deps.append(dict(writer_vertex=s, reader_vertex=t, writer_tasks=writers, reader_task=task_of.get(t), topic=at.get('topic'),
                              method=at.get('flow_method'), n=at.get('flow_n'), age_p50=at.get('age_ns_p50'), age_max=at.get('age_ns_max'),
-                             prov=(at.get('prov') or {}).get('age')))
+                             prov=(at.get('prov') or {}).get('age'), prov_edge=(at.get('prov') or {}).get('edge'),
+                             candidate=bool(at.get('candidate')), candidate_evidence=at.get('candidate_evidence')))
+    # observed sampled dependencies (deposit held / queued, consumed at the reader's publish): exact ages, per instance
+    seen_dep = {(d_['writer_vertex'], d_['reader_vertex']): d_ for d_ in deps}
+    for (fu, fv), (label, prs) in obs_sampled.items():
+        ages = sorted(pt - tr for ui, tr, vi, pt, vs in prs if pt >= tr)
+        if not ages: continue
+        rec = dict(writer_vertex=fu, reader_vertex=fv, writer_tasks=[task_of.get(fu)], reader_task=task_of.get(fv), topic=(probe_names.get((fu, fv)) if label.startswith('probe') else None) or label.split(':')[0],
+                   method=label, n=len(ages), age_p50=ages[len(ages) // 2], age_max=ages[-1], prov='observed:' + label, prov_edge='observed:' + label,
+                   order_rule_agrees=_naive_agree(fu, fv, prs))
+        d_ = seen_dep.get((fu, fv))
+        if d_ is not None: d_.update(rec)
+        else: deps.append(rec); seen_dep[(fu, fv)] = rec
+    drop_rows = [dict(u=u_, v=v_, n=n_) for (u_, v_), n_ in sorted(drops.items(), key=lambda kv: -kv[1])]
 
     # ---------------------------------------------------------------- checks
     gaps_rows = []
@@ -806,11 +1262,13 @@ def main():
 
     # ---------------------------------------------------------------- report
     data_tasks = [t for t in tasks if not t['infra']]
+    if IPM_PRESENT:
+        print(f"IPM: {n_ipm_relabel[0]} same-process edge(s) with an intra-capable publisher NOT matched by the IntraProcessManager -> paired on the DDS path")
     print(f"\nvertices: {len(V)} callbacks with >= {a.min_n} instances in the window ({sum(1 for v in V.values() if v['infra'])} infra); "
           f"trigger edges with instances: {sum(1 for e in trig if e['pairs'])} ({sum(1 for e in trig if e['kind'] == 'intra' and e['pairs'])} intra, "
           f"{sum(1 for e in trig if e['kind'] == 'dds' and e['pairs'])} dds, {sum(1 for e in trig if e['kind'] == 'agnocast' and e['pairs'])} agnocast), join ties {sum(1 for e in trig if e['kind'] == 'join')}, "
-          f"srv {sum(1 for e in trig if e['kind'].startswith('srv'))}; edges without instances in the window: {len(inactive)}; sampled dependencies: {len(deps)}"
-          + (f"; dds pairs by exact identity (writer + source timestamp): {exact_n[0]}" if WR else '; dds pairs by nearest source timestamp (no fish_dds_write in this session)'))
+          f"srv {sum(1 for e in trig if e['kind'].startswith('srv'))}; edges without instances in the window: {len(inactive)}; sampled dependencies: {len(deps)}; candidates (structural, no evidence): {len(candidates)}"
+          + (f"; dds pairs by exact identity ({DDS_ID_LABEL}): {exact_n[0]}" if WR else '; dds pairs by nearest source timestamp (no fish_dds_write / fish_rmw_write identity in this session)'))
     print(f"FISH tasks: {len(tasks)} components = {len(data_tasks)} data tasks + {len(tasks) - len(data_tasks)} infra-only; "
           f"multi-vertex: {sum(1 for t in data_tasks if t['size'] > 1)}; strict EDD (one source): {sum(1 for t in data_tasks if t['strict_edd'])}")
     ms_ = lambda x: f"{x / 1e6:.2f}" if x is not None else '-'
@@ -941,6 +1399,9 @@ def main():
         json.dump(dump, open(a.releases, 'w'))
         print(f"point releases of {len(dump)} data-triggered callbacks → {a.releases}")
     if a.out:
+        out['drops'] = drop_rows
+        out['candidates'] = [dict(u=s_, v=t_, topic=(a_ or {}).get('topic'), nature=(a_ or {}).get('nature'), candidate_evidence=(a_ or {}).get('candidate_evidence')) for s_, t_, a_ in candidates]
+        out['candidate_pairs'] = [dict(u=u_, v=v_, evidence=l_, n=n_) for (u_, v_), (l_, n_) in cand_pairs.items()]
         json.dump(out, open(a.out, 'w'), default=lambda o: int(o) if isinstance(o, np.integer) else float(o) if isinstance(o, np.floating) else str(o))
         print(f"\n→ {a.out}")
 

@@ -167,10 +167,10 @@ def main():
     # ---------------------------------------------------------------- 1: retention
     cur.execute("SELECT vpid, vtid, ts_ns, event, payload->>'subscription_handle', payload->>'message', (payload->>'refs')::int FROM ros2_trace "
                 "WHERE session_id=%s AND event IN ('ros2:fish_msg_retain','ros2:fish_msg_release') ORDER BY ts_ns", (sid,))
-    open_ = {}                                   # (vpid, message) -> record
+    open_ = {}                                   # (vpid, subscription / waitable, message) -> record
     RET = []                                     # dict(vpid, addr, size, t0, t1, f_dep, sh, refs, rel_f, rel_same_inst)
     for vpid, vtid, ts, ev, sh, msg, refs in cur:
-        key = (vpid, msg)
+        key = (vpid, sh, msg)      # per subscription: an intra-process message is SHARED, two callbacks can hold the same address
         if ev.endswith('retain'):
             fdep, w0 = prev_window(vpid, vtid, ts)
             rh, topic, nh = sub_rcl.get((vpid, sh)) or (None, '?', None)

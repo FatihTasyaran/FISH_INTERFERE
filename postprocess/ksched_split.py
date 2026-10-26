@@ -213,11 +213,18 @@ def main():
     ap.add_argument('--steady', default='window', choices=('window', 'legacy'),
                     help="window = fish_window.steady_window (phases + stimulus + warm-up); legacy = centerpoint's last >=900 ms stall")
     ap.add_argument('--no-inst', action='store_true', help='do not write per-instance rows to PG table ksched_inst')
+    ap.add_argument('--parallel', nargs='?', const=0, type=int, default=None, metavar='N',
+                    help='parse the kernel trace with N workers (default N = one per CPU stream); same result as the sequential parser (ksched_parse_parallel.py)')
     args = ap.parse_args()
     sid = args.session_id or os.path.basename(args.session_dir.rstrip('/'))
 
-    (on_tid, on_t0, on_t1), (off_tid, off_t0, off_t1, off_st), ctx, (wk_ts, wk_waker, wk_wakee), (fx_tid, fx_t0, fx_t1, fx_addr), (gp_tid, gp_ts) = \
-        parse_kernel(args.session_dir, args.tz)
+    if args.parallel is not None:
+        from ksched_parse_parallel import parse_kernel_parallel
+        (on_tid, on_t0, on_t1), (off_tid, off_t0, off_t1, off_st), ctx, (wk_ts, wk_waker, wk_wakee), (fx_tid, fx_t0, fx_t1, fx_addr), (gp_tid, gp_ts) = \
+            parse_kernel_parallel(args.session_dir, args.tz, workers=args.parallel or None)
+    else:
+        (on_tid, on_t0, on_t1), (off_tid, off_t0, off_t1, off_st), ctx, (wk_ts, wk_waker, wk_wakee), (fx_tid, fx_t0, fx_t1, fx_addr), (gp_tid, gp_ts) = \
+            parse_kernel(args.session_dir, args.tz)
     GP = per_thread(gp_tid, gp_ts) if len(gp_tid) else {}   # master tid -> (region start ts[],)  (A0.2, kernel uprobe — usually empty)
     FX = per_thread(fx_tid, fx_t0, fx_t1, fx_addr) if len(fx_tid) else {}   # tid -> (t0[], t1[], addr[]) futex waits (A0.4)
     LOCKS = collections.defaultdict(set)

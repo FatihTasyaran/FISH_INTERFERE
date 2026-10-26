@@ -632,7 +632,7 @@ def ingest_ros2_trace(session_id: str, session_dir: str, trace_date: datetime):
     workers = _ingest_workers()
     col_list = ", ".join(f'"{c}"' for c in cols)
     base_midnight = trace_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    base_epoch = int(base_midnight.timestamp())
+    hour_epoch: dict = {}
     roll = {"last": None, "extra_days": 0}
     with pg_store.get_cursor() as (conn, cur):
         conn.autocommit = False
@@ -676,7 +676,13 @@ def ingest_ros2_trace(session_id: str, session_dir: str, trace_date: datetime):
                             if roll["last"] is not None and day_sec < roll["last"] - 43200:
                                 roll["extra_days"] += 1
                             roll["last"] = day_sec
-                            ts_ns = (base_epoch + roll["extra_days"] * 86400 + day_sec) * 1_000_000_000 + nanos
+                            # DST-safe: epoch of the (day, hour) wall-clock hour via the tz-aware datetime, cached per hour.
+                            # midnight_epoch + day_sec is 1 h off after a DST switch inside the day (bit us on 2026-10-25).
+                            hk = (roll["extra_days"], day_sec // 3600)
+                            he = hour_epoch.get(hk)
+                            if he is None:
+                                he = int((base_midnight + timedelta(days=hk[0])).replace(hour=hk[1]).timestamp()); hour_epoch[hk] = he
+                            ts_ns = (he + day_sec % 3600) * 1_000_000_000 + nanos
                             out.write(f"{ts_ns}\t{tail}\n"); n_buf += 1
                         if n_buf >= BATCH_SIZE:
                             out.seek(0); cur.copy_expert(f"COPY ros2_trace ({col_list}) FROM STDIN", out)
@@ -1346,9 +1352,22 @@ def ingest_session(session_dir: str, *,
     lc_path = os.path.join(session_dir, "launch_components.json")
     if os.path.isfile(lc_path):
         try:
-            with open(lc_path) as f:
-                components_loaded = json.load(f)
-        except (OSError, json.JSONDecodeError):
+            with open(lc_path, errors="replace") as f:
+                lc_txt = f.read()
+            try:
+                components_loaded = json.loads(lc_txt)
+            except json.JSONDecodeError:
+                # 2026-10-26: tolerate stdout pollution ahead of the JSON (ess: trtexec engine build output written by a
+                # subprocess of the inspected test script) — parse from the first line that opens a JSON value.
+                lines = lc_txt.splitlines(keepends=True)
+                for i, line in enumerate(lines):
+                    if line.lstrip()[:1] in ("{", "["):
+                        try:
+                            components_loaded = json.JSONDecoder().raw_decode("".join(lines[i:]).lstrip())[0]
+                            break
+                        except json.JSONDecodeError:
+                            continue
+        except OSError:
             pass
 
     pg_store.register_session(
