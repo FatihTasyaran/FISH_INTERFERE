@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FISH synthetic application descriptor (ground truth)",
+  "type": "object",
+  "required": ["name", "seed", "callbacks", "edges", "deployment"],
+  "properties": {
+    "name": {"type": "string"}, "seed": {"type": "integer"}, "family": {"type": "string", "description": "er | ba | layered | chain | tree | star | bipartite | cycle | zoo | archetype:<S1..S6>"},
+    "callbacks": {"type": "array", "items": {"type": "object", "required": ["id", "role", "node"], "properties": {
+        "id": {"type": "string"},
+        "role": {"type": "string", "enum": ["timer_source", "subscription", "service_server", "service_client", "join", "timer_reader", "sink"]},
+        "node": {"type": "string"},
+        "period_ms": {"type": "number"}, "topic_in": {"type": "string"}, "topics_in": {"type": "array", "items": {"type": "string"}},
+        "topics_out": {"type": "array", "items": {"type": "string"}}, "msg_type": {"type": "string", "description": "small | medium | pointcloud(600k) | custom:<bytes>"},
+        "compute": {"type": "object", "description": "busy_us: const|uniform|bimodal|heavy with params; omp_threads; cuda: {kernel_us, memcpy_bytes, stream: per_cb|shared|n, sync}; sleep_us; lock: shared mutex id"},
+        "data_pattern": {"type": "string", "enum": ["none", "field_overwrite", "queue_batch_clear", "deque_sliding_pop", "map_keyed_timeout", "mf_exact", "mf_approx", "ptr_hold", "copy", "conditional_deposit", "value_window"]},
+        "consumes": {"type": "array", "items": {"type": "string"}, "description": "callback ids whose deposits this callback consumes (join / reader semantics)"},
+        "language": {"type": "string", "enum": ["rclcpp", "rclpy"]},
+        "callback_group": {"type": "string", "enum": ["default", "mx:<name>", "re:<name>"]}
+    }}},
+    "edges": {"type": "array", "items": {"type": "object", "required": ["from", "to", "mechanism"], "properties": {
+        "from": {"type": "string"}, "to": {"type": "string"},
+        "mechanism": {"type": "string", "enum": ["topic_dds", "topic_intra", "service", "member_field", "member_queue", "member_deque", "member_map", "mf_sync", "ptr_hold", "tf"]},
+        "topic": {"type": "string"}, "qos": {"type": "object"},
+        "expected": {"type": "string", "enum": ["trigger", "join", "sampled"], "description": "what FISH must extract: a trigger edge with instance identity, a join membership, or a sampled dependency with ages"}
+    }}},
+    "deployment": {"type": "object", "properties": {
+        "nodes": {"type": "object", "additionalProperties": {"type": "object", "properties": {
+            "process": {"type": "string"}, "container": {"type": "string", "description": "component_container | component_container_mt | component_container_isolated | none (standalone)"},
+            "executor": {"type": "string", "enum": ["single", "static_single", "multi"]}, "threads": {"type": "integer"},
+            "intra_process": {"type": "boolean"}, "priority": {"type": "integer"}, "language": {"type": "string"}}}}},
+        "use_sim_time": {"type": "boolean"}, "duration_s": {"type": "number"}
+    }},
+    "legality": {"type": "object", "description": "checks the generator proved: sources per component, cycles broken, bounded queues, cpu budget, process cap"}
+  }
+}

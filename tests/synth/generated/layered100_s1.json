@@ -1,0 +1,3401 @@
+{
+ "name": "synth_layered_n100_s1",
+ "seed": 1,
+ "family": "layered",
+ "callbacks": [
+  {
+   "id": "cb_000",
+   "role": "timer_source",
+   "node": "node_000",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t000"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 50
+  },
+  {
+   "id": "cb_001",
+   "role": "subscription",
+   "node": "node_000",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t001"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t090",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_002",
+   "role": "join",
+   "node": "node_000",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t002"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t011",
+    "/synth/t051"
+   ],
+   "data_pattern": "queue_batch_clear",
+   "consumes": [
+    "cb_011",
+    "cb_051"
+   ]
+  },
+  {
+   "id": "cb_003",
+   "role": "subscription",
+   "node": "node_000",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t003"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "const",
+    "busy_us": 1000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t042",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_004",
+   "role": "subscription",
+   "node": "node_001",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t004"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t073",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_005",
+   "role": "subscription",
+   "node": "node_001",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t005"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t094",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_006",
+   "role": "subscription",
+   "node": "node_001",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t006"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "const",
+    "busy_us": 1000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t085",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_007",
+   "role": "sink",
+   "node": "node_001",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 200.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t036",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_008",
+   "role": "subscription",
+   "node": "node_002",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t008"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t017",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_009",
+   "role": "subscription",
+   "node": "node_002",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t009"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t018",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_010",
+   "role": "timer_source",
+   "node": "node_002",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t010"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 20
+  },
+  {
+   "id": "cb_011",
+   "role": "subscription",
+   "node": "node_002",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t011"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t040",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_012",
+   "role": "timer_reader",
+   "node": "node_003",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t012"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "const",
+    "busy_us": 1000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "period_ms": 20,
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_001"
+   ]
+  },
+  {
+   "id": "cb_013",
+   "role": "subscription",
+   "node": "node_003",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t013"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t062",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_014",
+   "role": "sink",
+   "node": "node_003",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 200.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t063",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_015",
+   "role": "join",
+   "node": "node_003",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t015"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t064",
+    "/synth/t094"
+   ],
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_064",
+    "cb_094"
+   ]
+  },
+  {
+   "id": "cb_016",
+   "role": "join",
+   "node": "node_004",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t016"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t035",
+    "/synth/t065"
+   ],
+   "data_pattern": "queue_batch_clear",
+   "consumes": [
+    "cb_035",
+    "cb_065"
+   ]
+  },
+  {
+   "id": "cb_017",
+   "role": "join",
+   "node": "node_004",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t017"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 500.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t026",
+    "/synth/t086"
+   ],
+   "data_pattern": "map_keyed_timeout",
+   "consumes": [
+    "cb_026",
+    "cb_086"
+   ]
+  },
+  {
+   "id": "cb_018",
+   "role": "timer_reader",
+   "node": "node_004",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t018"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 20,
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_027"
+   ]
+  },
+  {
+   "id": "cb_019",
+   "role": "subscription",
+   "node": "node_004",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t019"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 200.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t088",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_020",
+   "role": "timer_source",
+   "node": "node_005",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t020"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "const",
+    "busy_us": 1000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "period_ms": 50
+  },
+  {
+   "id": "cb_021",
+   "role": "subscription",
+   "node": "node_005",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t021"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t070",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_022",
+   "role": "subscription",
+   "node": "node_005",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t022"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 200.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t081",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_023",
+   "role": "join",
+   "node": "node_005",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t023"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t012",
+    "/synth/t022"
+   ],
+   "data_pattern": "map_keyed_timeout",
+   "consumes": [
+    "cb_012",
+    "cb_022"
+   ]
+  },
+  {
+   "id": "cb_024",
+   "role": "subscription",
+   "node": "node_006",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t024"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t023",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_025",
+   "role": "join",
+   "node": "node_006",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t025"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t024",
+    "/synth/t094"
+   ],
+   "data_pattern": "map_keyed_timeout",
+   "consumes": [
+    "cb_024",
+    "cb_094"
+   ]
+  },
+  {
+   "id": "cb_026",
+   "role": "subscription",
+   "node": "node_006",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t026"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "const",
+    "busy_us": 1000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t075",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_027",
+   "role": "join",
+   "node": "node_006",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t027"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t016",
+    "/synth/t026"
+   ],
+   "data_pattern": "mf_exact",
+   "consumes": [
+    "cb_016",
+    "cb_026"
+   ]
+  },
+  {
+   "id": "cb_028",
+   "role": "subscription",
+   "node": "node_007",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t028"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 200.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t087",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_029",
+   "role": "subscription",
+   "node": "node_007",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t029"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t098",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_030",
+   "role": "timer_source",
+   "node": "node_007",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t030"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 200
+  },
+  {
+   "id": "cb_031",
+   "role": "subscription",
+   "node": "node_007",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t031"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t070",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_032",
+   "role": "subscription",
+   "node": "node_008",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t032"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "const",
+    "busy_us": 2000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t061",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_033",
+   "role": "join",
+   "node": "node_008",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t033"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t012",
+    "/synth/t042"
+   ],
+   "data_pattern": "mf_approx",
+   "consumes": [
+    "cb_012",
+    "cb_042"
+   ]
+  },
+  {
+   "id": "cb_034",
+   "role": "subscription",
+   "node": "node_008",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t034"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t083",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_035",
+   "role": "join",
+   "node": "node_008",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t035"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "const",
+    "busy_us": 1000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t004",
+    "/synth/t034"
+   ],
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_004",
+    "cb_034"
+   ]
+  },
+  {
+   "id": "cb_036",
+   "role": "timer_reader",
+   "node": "node_009",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t036"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 50,
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_095"
+   ]
+  },
+  {
+   "id": "cb_037",
+   "role": "join",
+   "node": "node_009",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t037"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t006",
+    "/synth/t046"
+   ],
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_006",
+    "cb_046"
+   ]
+  },
+  {
+   "id": "cb_038",
+   "role": "sink",
+   "node": "node_009",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "small",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t047",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_039",
+   "role": "subscription",
+   "node": "node_009",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t039"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t008",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_040",
+   "role": "timer_source",
+   "node": "node_010",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t040"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 20
+  },
+  {
+   "id": "cb_041",
+   "role": "join",
+   "node": "node_010",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t041"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t030",
+    "/synth/t060"
+   ],
+   "data_pattern": "map_keyed_timeout",
+   "consumes": [
+    "cb_030",
+    "cb_060"
+   ]
+  },
+  {
+   "id": "cb_042",
+   "role": "join",
+   "node": "node_010",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t042"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t031",
+    "/synth/t061"
+   ],
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_031",
+    "cb_061"
+   ]
+  },
+  {
+   "id": "cb_043",
+   "role": "join",
+   "node": "node_010",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t043"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t052",
+    "/synth/t082"
+   ],
+   "data_pattern": "queue_batch_clear",
+   "consumes": [
+    "cb_052",
+    "cb_082"
+   ]
+  },
+  {
+   "id": "cb_044",
+   "role": "join",
+   "node": "node_011",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t044"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t013",
+    "/synth/t053"
+   ],
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_013",
+    "cb_053"
+   ]
+  },
+  {
+   "id": "cb_045",
+   "role": "sink",
+   "node": "node_011",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t084",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_046",
+   "role": "join",
+   "node": "node_011",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t046"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t035",
+    "/synth/t085"
+   ],
+   "data_pattern": "mf_exact",
+   "consumes": [
+    "cb_035",
+    "cb_085"
+   ]
+  },
+  {
+   "id": "cb_047",
+   "role": "join",
+   "node": "node_011",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t047"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t016",
+    "/synth/t096"
+   ],
+   "data_pattern": "queue_batch_clear",
+   "consumes": [
+    "cb_016",
+    "cb_096"
+   ]
+  },
+  {
+   "id": "cb_048",
+   "role": "join",
+   "node": "node_012",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t048"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t047",
+    "/synth/t077"
+   ],
+   "data_pattern": "map_keyed_timeout",
+   "consumes": [
+    "cb_047",
+    "cb_077"
+   ]
+  },
+  {
+   "id": "cb_049",
+   "role": "sink",
+   "node": "node_012",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t008",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_050",
+   "role": "timer_source",
+   "node": "node_012",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t050"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 2000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "period_ms": 100
+  },
+  {
+   "id": "cb_051",
+   "role": "subscription",
+   "node": "node_012",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t051"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t070",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_052",
+   "role": "join",
+   "node": "node_013",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t052"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t001",
+    "/synth/t081"
+   ],
+   "data_pattern": "queue_batch_clear",
+   "consumes": [
+    "cb_001",
+    "cb_081"
+   ]
+  },
+  {
+   "id": "cb_053",
+   "role": "subscription",
+   "node": "node_013",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t053"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 1000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t082",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_054",
+   "role": "subscription",
+   "node": "node_013",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t054"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 1000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t083",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_055",
+   "role": "join",
+   "node": "node_013",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t055"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 500.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t034",
+    "/synth/t064"
+   ],
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_034",
+    "cb_064"
+   ]
+  },
+  {
+   "id": "cb_056",
+   "role": "subscription",
+   "node": "node_014",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t056"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 2000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t075",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_057",
+   "role": "subscription",
+   "node": "node_014",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t057"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t076",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_058",
+   "role": "join",
+   "node": "node_014",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t058"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t057",
+    "/synth/t077"
+   ],
+   "data_pattern": "mf_approx",
+   "consumes": [
+    "cb_057",
+    "cb_077"
+   ]
+  },
+  {
+   "id": "cb_059",
+   "role": "sink",
+   "node": "node_014",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t028",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_060",
+   "role": "timer_source",
+   "node": "node_015",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t060"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 200
+  },
+  {
+   "id": "cb_061",
+   "role": "subscription",
+   "node": "node_015",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t061"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "const",
+    "busy_us": 1000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t060",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_062",
+   "role": "subscription",
+   "node": "node_015",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t062"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t071",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_063",
+   "role": "join",
+   "node": "node_015",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t063"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 500.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t032",
+    "/synth/t042"
+   ],
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_032",
+    "cb_042"
+   ]
+  },
+  {
+   "id": "cb_064",
+   "role": "timer_reader",
+   "node": "node_016",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t064"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "const",
+    "busy_us": 200.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "period_ms": 100,
+   "data_pattern": "deque_sliding_pop",
+   "consumes": [
+    "cb_023"
+   ]
+  },
+  {
+   "id": "cb_065",
+   "role": "join",
+   "node": "node_016",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t065"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t054",
+    "/synth/t094"
+   ],
+   "data_pattern": "map_keyed_timeout",
+   "consumes": [
+    "cb_054",
+    "cb_094"
+   ]
+  },
+  {
+   "id": "cb_066",
+   "role": "sink",
+   "node": "node_016",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t065",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_067",
+   "role": "sink",
+   "node": "node_016",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t046",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_068",
+   "role": "subscription",
+   "node": "node_017",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t068"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t017",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_069",
+   "role": "subscription",
+   "node": "node_017",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t069"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t028",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_070",
+   "role": "timer_source",
+   "node": "node_017",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t070"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "const",
+    "busy_us": 500.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "period_ms": 200
+  },
+  {
+   "id": "cb_071",
+   "role": "subscription",
+   "node": "node_017",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t071"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t090",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_072",
+   "role": "sink",
+   "node": "node_018",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "small",
+   "compute": {
+    "kind": "const",
+    "busy_us": 200.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t081",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_073",
+   "role": "timer_reader",
+   "node": "node_018",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t073"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 5000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "period_ms": 50,
+   "data_pattern": "deque_sliding_pop",
+   "consumes": [
+    "cb_092"
+   ]
+  },
+  {
+   "id": "cb_074",
+   "role": "join",
+   "node": "node_018",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t074"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 200.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t053",
+    "/synth/t063"
+   ],
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_053",
+    "cb_063"
+   ]
+  },
+  {
+   "id": "cb_075",
+   "role": "subscription",
+   "node": "node_018",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t075"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t044",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_076",
+   "role": "subscription",
+   "node": "node_019",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t076"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t005",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_077",
+   "role": "subscription",
+   "node": "node_019",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t077"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "const",
+    "busy_us": 200.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t046",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_078",
+   "role": "sink",
+   "node": "node_019",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t047",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_079",
+   "role": "subscription",
+   "node": "node_019",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t079"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t088",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_080",
+   "role": "timer_source",
+   "node": "node_020",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t080"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 200.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 100
+  },
+  {
+   "id": "cb_081",
+   "role": "subscription",
+   "node": "node_020",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t081"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t070",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_082",
+   "role": "subscription",
+   "node": "node_020",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t082"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t051",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_083",
+   "role": "subscription",
+   "node": "node_020",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t083"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t082",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_084",
+   "role": "subscription",
+   "node": "node_021",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t084"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t003",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_085",
+   "role": "join",
+   "node": "node_021",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t085"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t004",
+    "/synth/t084"
+   ],
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_004",
+    "cb_084"
+   ]
+  },
+  {
+   "id": "cb_086",
+   "role": "join",
+   "node": "node_021",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t086"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t055",
+    "/synth/t085"
+   ],
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_055",
+    "cb_085"
+   ]
+  },
+  {
+   "id": "cb_087",
+   "role": "timer_reader",
+   "node": "node_021",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t087"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 50,
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_096"
+   ]
+  },
+  {
+   "id": "cb_088",
+   "role": "timer_reader",
+   "node": "node_022",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t088"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "const",
+    "busy_us": 2000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "period_ms": 100,
+   "data_pattern": "field_overwrite",
+   "consumes": [
+    "cb_057"
+   ]
+  },
+  {
+   "id": "cb_089",
+   "role": "join",
+   "node": "node_022",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t089"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 200.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topics_in": [
+    "/synth/t068",
+    "/synth/t088"
+   ],
+   "data_pattern": "mf_approx",
+   "consumes": [
+    "cb_068",
+    "cb_088"
+   ]
+  },
+  {
+   "id": "cb_090",
+   "role": "timer_source",
+   "node": "node_022",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t090"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 50
+  },
+  {
+   "id": "cb_091",
+   "role": "sink",
+   "node": "node_022",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "small",
+   "compute": {
+    "kind": "const",
+    "busy_us": 5000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t030",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_092",
+   "role": "timer_reader",
+   "node": "node_023",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t092"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 100,
+   "data_pattern": "ptr_hold",
+   "consumes": [
+    "cb_031"
+   ]
+  },
+  {
+   "id": "cb_093",
+   "role": "subscription",
+   "node": "node_023",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t093"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 500.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t092",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_094",
+   "role": "subscription",
+   "node": "node_023",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t094"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t003",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_095",
+   "role": "subscription",
+   "node": "node_023",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t095"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t084",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_096",
+   "role": "subscription",
+   "node": "node_024",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t096"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "bimodal",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t095",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_097",
+   "role": "subscription",
+   "node": "node_024",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t097"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 200.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t056",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_098",
+   "role": "subscription",
+   "node": "node_024",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t098"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "const",
+    "busy_us": 2000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t037",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_099",
+   "role": "subscription",
+   "node": "node_024",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t099"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t088",
+   "data_pattern": "none"
+  }
+ ],
+ "edges": [
+  {
+   "from": "cb_001",
+   "to": "cb_012",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t001",
+   "expected": "trigger",
+   "via_deposit": true
+  },
+  {
+   "from": "cb_001_deposit",
+   "to": "cb_012",
+   "mechanism": "ptr_hold",
+   "expected": "sampled"
+  },
+  {
+   "from": "cb_001",
+   "to": "cb_052",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t001",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_001",
+   "to": "cb_052",
+   "mechanism": "member_queue",
+   "expected": "join"
+  },
+  {
+   "from": "cb_003",
+   "to": "cb_084",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t003",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_003",
+   "to": "cb_094",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t003",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_004",
+   "to": "cb_035",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t004",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_004",
+   "to": "cb_035",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_004",
+   "to": "cb_085",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t004",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_004",
+   "to": "cb_085",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_005",
+   "to": "cb_076",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t005",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_006",
+   "to": "cb_037",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t006",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_006",
+   "to": "cb_037",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_008",
+   "to": "cb_039",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t008",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_008",
+   "to": "cb_049",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t008",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_011",
+   "to": "cb_002",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t011",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_011",
+   "to": "cb_002",
+   "mechanism": "member_queue",
+   "expected": "join"
+  },
+  {
+   "from": "cb_012",
+   "to": "cb_023",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t012",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_012",
+   "to": "cb_023",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_012",
+   "to": "cb_033",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t012",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_012",
+   "to": "cb_033",
+   "mechanism": "mf_sync",
+   "expected": "join"
+  },
+  {
+   "from": "cb_013",
+   "to": "cb_044",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t013",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_013",
+   "to": "cb_044",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_016",
+   "to": "cb_027",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t016",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_016",
+   "to": "cb_027",
+   "mechanism": "mf_sync",
+   "expected": "join"
+  },
+  {
+   "from": "cb_016",
+   "to": "cb_047",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t016",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_016",
+   "to": "cb_047",
+   "mechanism": "member_queue",
+   "expected": "join"
+  },
+  {
+   "from": "cb_017",
+   "to": "cb_008",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t017",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_017",
+   "to": "cb_068",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t017",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_018",
+   "to": "cb_009",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t018",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_022",
+   "to": "cb_023",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t022",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_022",
+   "to": "cb_023",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_023",
+   "to": "cb_024",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t023",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_023",
+   "to": "cb_064",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t023",
+   "expected": "trigger",
+   "via_deposit": true
+  },
+  {
+   "from": "cb_023_deposit",
+   "to": "cb_064",
+   "mechanism": "member_deque",
+   "expected": "sampled"
+  },
+  {
+   "from": "cb_024",
+   "to": "cb_025",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t024",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_024",
+   "to": "cb_025",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_026",
+   "to": "cb_017",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t026",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_026",
+   "to": "cb_017",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_026",
+   "to": "cb_027",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t026",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_026",
+   "to": "cb_027",
+   "mechanism": "mf_sync",
+   "expected": "join"
+  },
+  {
+   "from": "cb_027",
+   "to": "cb_018",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t027",
+   "expected": "trigger",
+   "via_deposit": true
+  },
+  {
+   "from": "cb_027_deposit",
+   "to": "cb_018",
+   "mechanism": "ptr_hold",
+   "expected": "sampled"
+  },
+  {
+   "from": "cb_028",
+   "to": "cb_059",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t028",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_028",
+   "to": "cb_069",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t028",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_030",
+   "to": "cb_041",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t030",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_030",
+   "to": "cb_041",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_030",
+   "to": "cb_091",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t030",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_031",
+   "to": "cb_042",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t031",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_031",
+   "to": "cb_042",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_031",
+   "to": "cb_092",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t031",
+   "expected": "trigger",
+   "via_deposit": true
+  },
+  {
+   "from": "cb_031_deposit",
+   "to": "cb_092",
+   "mechanism": "ptr_hold",
+   "expected": "sampled"
+  },
+  {
+   "from": "cb_032",
+   "to": "cb_063",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t032",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_032",
+   "to": "cb_063",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_034",
+   "to": "cb_035",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t034",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_034",
+   "to": "cb_035",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_034",
+   "to": "cb_055",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t034",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_034",
+   "to": "cb_055",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_035",
+   "to": "cb_016",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t035",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_035",
+   "to": "cb_016",
+   "mechanism": "member_queue",
+   "expected": "join"
+  },
+  {
+   "from": "cb_035",
+   "to": "cb_046",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t035",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_035",
+   "to": "cb_046",
+   "mechanism": "mf_sync",
+   "expected": "join"
+  },
+  {
+   "from": "cb_036",
+   "to": "cb_007",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t036",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_037",
+   "to": "cb_098",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t037",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_040",
+   "to": "cb_011",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t040",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_042",
+   "to": "cb_003",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t042",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_042",
+   "to": "cb_033",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t042",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_042",
+   "to": "cb_033",
+   "mechanism": "mf_sync",
+   "expected": "join"
+  },
+  {
+   "from": "cb_042",
+   "to": "cb_063",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t042",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_042",
+   "to": "cb_063",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_044",
+   "to": "cb_075",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t044",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_046",
+   "to": "cb_037",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t046",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_046",
+   "to": "cb_037",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_046",
+   "to": "cb_067",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t046",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_046",
+   "to": "cb_077",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t046",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_047",
+   "to": "cb_038",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t047",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_047",
+   "to": "cb_048",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t047",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_047",
+   "to": "cb_048",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_047",
+   "to": "cb_078",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t047",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_051",
+   "to": "cb_002",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t051",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_051",
+   "to": "cb_002",
+   "mechanism": "member_queue",
+   "expected": "join"
+  },
+  {
+   "from": "cb_051",
+   "to": "cb_082",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t051",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_052",
+   "to": "cb_043",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t052",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_052",
+   "to": "cb_043",
+   "mechanism": "member_queue",
+   "expected": "join"
+  },
+  {
+   "from": "cb_053",
+   "to": "cb_044",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t053",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_053",
+   "to": "cb_044",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_053",
+   "to": "cb_074",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t053",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_053",
+   "to": "cb_074",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_054",
+   "to": "cb_065",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t054",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_054",
+   "to": "cb_065",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_055",
+   "to": "cb_086",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t055",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_055",
+   "to": "cb_086",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_056",
+   "to": "cb_097",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t056",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_057",
+   "to": "cb_058",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t057",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_057",
+   "to": "cb_058",
+   "mechanism": "mf_sync",
+   "expected": "join"
+  },
+  {
+   "from": "cb_057",
+   "to": "cb_088",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t057",
+   "expected": "trigger",
+   "via_deposit": true
+  },
+  {
+   "from": "cb_057_deposit",
+   "to": "cb_088",
+   "mechanism": "member_field",
+   "expected": "sampled"
+  },
+  {
+   "from": "cb_060",
+   "to": "cb_041",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t060",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_060",
+   "to": "cb_041",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_060",
+   "to": "cb_061",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t060",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_061",
+   "to": "cb_032",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t061",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_061",
+   "to": "cb_042",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t061",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_061",
+   "to": "cb_042",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_062",
+   "to": "cb_013",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t062",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_063",
+   "to": "cb_014",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t063",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_063",
+   "to": "cb_074",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t063",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_063",
+   "to": "cb_074",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_064",
+   "to": "cb_015",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t064",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_064",
+   "to": "cb_015",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_064",
+   "to": "cb_055",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t064",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_064",
+   "to": "cb_055",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_065",
+   "to": "cb_016",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t065",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_065",
+   "to": "cb_016",
+   "mechanism": "member_queue",
+   "expected": "join"
+  },
+  {
+   "from": "cb_065",
+   "to": "cb_066",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t065",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_068",
+   "to": "cb_089",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t068",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_068",
+   "to": "cb_089",
+   "mechanism": "mf_sync",
+   "expected": "join"
+  },
+  {
+   "from": "cb_070",
+   "to": "cb_021",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t070",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_070",
+   "to": "cb_031",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t070",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_070",
+   "to": "cb_051",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t070",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_070",
+   "to": "cb_081",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t070",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_071",
+   "to": "cb_062",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t071",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_073",
+   "to": "cb_004",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t073",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_075",
+   "to": "cb_026",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t075",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_075",
+   "to": "cb_056",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t075",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_076",
+   "to": "cb_057",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t076",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_077",
+   "to": "cb_048",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t077",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_077",
+   "to": "cb_048",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_077",
+   "to": "cb_058",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t077",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_077",
+   "to": "cb_058",
+   "mechanism": "mf_sync",
+   "expected": "join"
+  },
+  {
+   "from": "cb_081",
+   "to": "cb_022",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t081",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_081",
+   "to": "cb_052",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t081",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_081",
+   "to": "cb_052",
+   "mechanism": "member_queue",
+   "expected": "join"
+  },
+  {
+   "from": "cb_081",
+   "to": "cb_072",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t081",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_082",
+   "to": "cb_043",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t082",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_082",
+   "to": "cb_043",
+   "mechanism": "member_queue",
+   "expected": "join"
+  },
+  {
+   "from": "cb_082",
+   "to": "cb_053",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t082",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_082",
+   "to": "cb_083",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t082",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_083",
+   "to": "cb_034",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t083",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_083",
+   "to": "cb_054",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t083",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_084",
+   "to": "cb_045",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t084",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_084",
+   "to": "cb_085",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t084",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_084",
+   "to": "cb_085",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_084",
+   "to": "cb_095",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t084",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_085",
+   "to": "cb_006",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t085",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_085",
+   "to": "cb_046",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t085",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_085",
+   "to": "cb_046",
+   "mechanism": "mf_sync",
+   "expected": "join"
+  },
+  {
+   "from": "cb_085",
+   "to": "cb_086",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t085",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_085",
+   "to": "cb_086",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_086",
+   "to": "cb_017",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t086",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_086",
+   "to": "cb_017",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_087",
+   "to": "cb_028",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t087",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_088",
+   "to": "cb_019",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t088",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_088",
+   "to": "cb_079",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t088",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_088",
+   "to": "cb_089",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t088",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_088",
+   "to": "cb_089",
+   "mechanism": "mf_sync",
+   "expected": "join"
+  },
+  {
+   "from": "cb_088",
+   "to": "cb_099",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t088",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_090",
+   "to": "cb_001",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t090",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_090",
+   "to": "cb_071",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t090",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_092",
+   "to": "cb_073",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t092",
+   "expected": "trigger",
+   "via_deposit": true
+  },
+  {
+   "from": "cb_092_deposit",
+   "to": "cb_073",
+   "mechanism": "member_deque",
+   "expected": "sampled"
+  },
+  {
+   "from": "cb_092",
+   "to": "cb_093",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t092",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_094",
+   "to": "cb_005",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t094",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_094",
+   "to": "cb_015",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t094",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_094",
+   "to": "cb_015",
+   "mechanism": "ptr_hold",
+   "expected": "join"
+  },
+  {
+   "from": "cb_094",
+   "to": "cb_025",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t094",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_094",
+   "to": "cb_025",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_094",
+   "to": "cb_065",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t094",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_094",
+   "to": "cb_065",
+   "mechanism": "member_map",
+   "expected": "join"
+  },
+  {
+   "from": "cb_095",
+   "to": "cb_036",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t095",
+   "expected": "trigger",
+   "via_deposit": true
+  },
+  {
+   "from": "cb_095_deposit",
+   "to": "cb_036",
+   "mechanism": "ptr_hold",
+   "expected": "sampled"
+  },
+  {
+   "from": "cb_095",
+   "to": "cb_096",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t095",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_096",
+   "to": "cb_047",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t096",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_096",
+   "to": "cb_047",
+   "mechanism": "member_queue",
+   "expected": "join"
+  },
+  {
+   "from": "cb_096",
+   "to": "cb_087",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t096",
+   "expected": "trigger",
+   "via_deposit": true
+  },
+  {
+   "from": "cb_096_deposit",
+   "to": "cb_087",
+   "mechanism": "ptr_hold",
+   "expected": "sampled"
+  },
+  {
+   "from": "cb_098",
+   "to": "cb_029",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t098",
+   "expected": "trigger"
+  }
+ ],
+ "deployment": {
+  "nodes": {
+   "node_000": {
+    "process": "proc_000",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_001": {
+    "process": "proc_000",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_002": {
+    "process": "proc_000",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_003": {
+    "process": "proc_000",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_004": {
+    "process": "proc_000",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_005": {
+    "process": "proc_000",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_006": {
+    "process": "proc_001",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_007": {
+    "process": "proc_001",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_008": {
+    "process": "proc_001",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_009": {
+    "process": "proc_001",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_010": {
+    "process": "proc_001",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_011": {
+    "process": "proc_001",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_012": {
+    "process": "proc_002",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_013": {
+    "process": "proc_002",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_014": {
+    "process": "proc_002",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_015": {
+    "process": "proc_002",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_016": {
+    "process": "proc_002",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_017": {
+    "process": "proc_002",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_018": {
+    "process": "proc_003",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_019": {
+    "process": "proc_003",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_020": {
+    "process": "proc_003",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_021": {
+    "process": "proc_003",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_022": {
+    "process": "proc_003",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_023": {
+    "process": "proc_003",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_024": {
+    "process": "proc_004",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   }
+  },
+  "use_sim_time": false,
+  "duration_s": 90.0
+ },
+ "legality": {
+  "components": 6,
+  "sources": 10,
+  "cycles_broken": 8,
+  "processes": 5,
+  "cpu_demand_cores": 2.77
+ }
+}

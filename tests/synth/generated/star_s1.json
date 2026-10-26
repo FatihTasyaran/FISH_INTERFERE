@@ -1,0 +1,242 @@
+{
+ "name": "synth_star_n8_s1",
+ "seed": 1,
+ "family": "star",
+ "callbacks": [
+  {
+   "id": "cb_000",
+   "role": "timer_source",
+   "node": "node_000",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t000"
+   ],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 5000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 10
+  },
+  {
+   "id": "cb_001",
+   "role": "sink",
+   "node": "node_000",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "medium",
+   "compute": {
+    "kind": "const",
+    "busy_us": 200.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t000",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_002",
+   "role": "subscription",
+   "node": "node_001",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t002"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "const",
+    "busy_us": 2000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t000",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_003",
+   "role": "subscription",
+   "node": "node_001",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t003"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t000",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_004",
+   "role": "sink",
+   "node": "node_002",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 5000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t000",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_005",
+   "role": "sink",
+   "node": "node_002",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t000",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_006",
+   "role": "sink",
+   "node": "node_003",
+   "language": "rclcpp",
+   "topics_out": [],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t000",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_007",
+   "role": "subscription",
+   "node": "node_003",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t007"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t000",
+   "data_pattern": "none"
+  }
+ ],
+ "edges": [
+  {
+   "from": "cb_000",
+   "to": "cb_001",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t000",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_000",
+   "to": "cb_002",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t000",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_000",
+   "to": "cb_003",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t000",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_000",
+   "to": "cb_004",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t000",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_000",
+   "to": "cb_005",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t000",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_000",
+   "to": "cb_006",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t000",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_000",
+   "to": "cb_007",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t000",
+   "expected": "trigger"
+  }
+ ],
+ "deployment": {
+  "nodes": {
+   "node_000": {
+    "process": "proc_000",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_001": {
+    "process": "proc_000",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_002": {
+    "process": "proc_000",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_003": {
+    "process": "proc_001",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   }
+  },
+  "use_sim_time": false,
+  "duration_s": 60.0
+ },
+ "legality": {
+  "components": 1,
+  "sources": 1,
+  "cycles_broken": 0,
+  "processes": 2,
+  "cpu_demand_cores": 1.92
+ }
+}

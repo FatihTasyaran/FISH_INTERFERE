@@ -1,0 +1,219 @@
+{
+ "name": "synth_cycle_n6_s1",
+ "seed": 1,
+ "family": "cycle",
+ "callbacks": [
+  {
+   "id": "cb_000",
+   "role": "timer_reader",
+   "node": "node_000",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t000"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 100,
+   "data_pattern": "field_overwrite",
+   "consumes": [
+    "cb_005"
+   ]
+  },
+  {
+   "id": "cb_001",
+   "role": "timer_reader",
+   "node": "node_000",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t001"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "heavy",
+    "busy_us": 1000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "period_ms": 100,
+   "data_pattern": "field_overwrite",
+   "consumes": [
+    "cb_000"
+   ]
+  },
+  {
+   "id": "cb_002",
+   "role": "subscription",
+   "node": "node_001",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t002"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 1000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t001",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_003",
+   "role": "subscription",
+   "node": "node_001",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t003"
+   ],
+   "msg_type": "small",
+   "compute": {
+    "kind": "const",
+    "busy_us": 200.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t002",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_004",
+   "role": "subscription",
+   "node": "node_002",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t004"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "const",
+    "busy_us": 2000.0,
+    "spread": 0.0
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t003",
+   "data_pattern": "none"
+  },
+  {
+   "id": "cb_005",
+   "role": "subscription",
+   "node": "node_002",
+   "language": "rclcpp",
+   "topics_out": [
+    "/synth/t005"
+   ],
+   "msg_type": "pointcloud",
+   "compute": {
+    "kind": "uniform",
+    "busy_us": 2000.0,
+    "spread": 0.3
+   },
+   "callback_group": "default",
+   "topic_in": "/synth/t004",
+   "data_pattern": "none"
+  }
+ ],
+ "edges": [
+  {
+   "from": "cb_000",
+   "to": "cb_001",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t000",
+   "expected": "trigger",
+   "via_deposit": true
+  },
+  {
+   "from": "cb_000_deposit",
+   "to": "cb_001",
+   "mechanism": "member_field",
+   "expected": "sampled"
+  },
+  {
+   "from": "cb_001",
+   "to": "cb_002",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t001",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_002",
+   "to": "cb_003",
+   "mechanism": "topic_intra",
+   "topic": "/synth/t002",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_003",
+   "to": "cb_004",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t003",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_004",
+   "to": "cb_005",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t004",
+   "expected": "trigger"
+  },
+  {
+   "from": "cb_005",
+   "to": "cb_000",
+   "mechanism": "topic_dds",
+   "topic": "/synth/t005",
+   "expected": "trigger",
+   "via_deposit": true
+  },
+  {
+   "from": "cb_005_deposit",
+   "to": "cb_000",
+   "mechanism": "member_field",
+   "expected": "sampled"
+  }
+ ],
+ "deployment": {
+  "nodes": {
+   "node_000": {
+    "process": "proc_000",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_001": {
+    "process": "proc_000",
+    "container": "component_container_mt",
+    "executor": "multi",
+    "threads": 4,
+    "intra_process": true,
+    "language": "rclcpp",
+    "priority": 0
+   },
+   "node_002": {
+    "process": "proc_000",
+    "container": "component_container",
+    "executor": "single",
+    "threads": 1,
+    "intra_process": false,
+    "language": "rclcpp",
+    "priority": 0
+   }
+  },
+  "use_sim_time": false,
+  "duration_s": 60.0
+ },
+ "legality": {
+  "components": 1,
+  "sources": 0,
+  "cycles_broken": 2,
+  "processes": 1,
+  "cpu_demand_cores": 0.08
+ }
+}
